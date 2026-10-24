@@ -51,6 +51,12 @@ int main() {
         std::cout << "CPU example: " << y[0] << ' ' << y[1] << ' ' << y[2] << '\n';
         test(prs::Backend::CPU);
         std::cout << "CPU tests passed\n";
+        if (prs::metal_available()) {
+            test(prs::Backend::Metal);
+            std::cout << "Metal tests passed\n";
+        } else {
+            std::cout << "Metal tests skipped: backend or device unavailable\n";
+        }
         if (prs::cuda_available()) {
             test(prs::Backend::CUDA);
             std::cout << "CUDA tests passed\n";

@@ -10,6 +10,19 @@ void axpy_cuda(float alpha, const float* x, float* y, std::size_t n);
 bool cuda_device_available();
 #endif
 
+#ifdef PRS_HAS_METAL
+void axpy_metal(float alpha, const float* x, float* y, std::size_t n);
+bool metal_device_available();
+#endif
+
+bool metal_available() {
+#ifdef PRS_HAS_METAL
+    return metal_device_available();
+#else
+    return false;
+#endif
+}
+
 bool cuda_available() {
 #ifdef PRS_HAS_CUDA
     return cuda_device_available();
@@ -39,6 +52,13 @@ void axpy(float alpha, const std::vector<float>& x, std::vector<float>& y,
         return;
 #else
         throw std::runtime_error("AXPY: CUDA support was not built");
+#endif
+    case Backend::Metal:
+#ifdef PRS_HAS_METAL
+        axpy_metal(alpha, x.data(), y.data(), x.size());
+        return;
+#else
+        throw std::runtime_error("AXPY: Metal support was not built");
 #endif
     }
     throw std::invalid_argument("AXPY: unknown backend");
