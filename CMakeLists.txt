@@ -1,0 +1,31 @@
+cmake_minimum_required(VERSION 3.18)
+project(prs_kernels LANGUAGES CXX)
+
+option(PRS_ENABLE_CUDA "Build the NVIDIA CUDA backend when available" ON)
+
+add_library(prs src/axpy.cpp)
+target_include_directories(prs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(prs PUBLIC cxx_std_17)
+
+find_package(OpenMP QUIET COMPONENTS CXX)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(prs PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+if(PRS_ENABLE_CUDA)
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        target_sources(prs PRIVATE src/axpy_cuda.cu)
+        target_compile_definitions(prs PRIVATE PRS_HAS_CUDA=1)
+        set_target_properties(prs PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES)
+    else()
+        message(STATUS "CUDA compiler not found; building CPU backend only")
+    endif()
+endif()
+
+enable_testing()
+add_executable(axpy_test tests/axpy_test.cpp)
+target_link_libraries(axpy_test PRIVATE prs)
+add_test(NAME axpy COMMAND axpy_test)
