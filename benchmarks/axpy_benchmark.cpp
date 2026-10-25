@@ -1,4 +1,4 @@
-#include "prs/axpy.hpp"
+#include "prs/ops.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -59,18 +59,17 @@ void benchmark(std::size_t n, int batch, prs::Backend gpu) {
 
 int main() {
     try {
-        const auto gpu = prs::metal_available() ? prs::Backend::Metal : prs::Backend::CUDA;
-        if (gpu == prs::Backend::CUDA && !prs::cuda_available()) {
-            throw std::runtime_error("No GPU backend/device available");
-        }
-        std::cout << "GPU: " << (gpu == prs::Backend::Metal ? "Metal" : "CUDA")
+        const auto gpu = prs::resolve_backend();
+        std::cout << "Selected backend: " << prs::backend_name(gpu)
                   << "\nMedian full API call time, milliseconds (11 trials).\n"
                   << "Includes GPU allocations, copies, execution, and synchronization.\n"
                   << "Excludes first-use compilation; speedup = CPU time / GPU time.\n"
                   << "CPU uses OpenMP if found at build time; otherwise a serial loop.\n\n"
                   << std::setw(12) << "Elements" << std::setw(16) << "CPU ms"
-                  << std::setw(16) << "GPU ms" << std::setw(16) << "GPU speedup" << '\n'
+                  << std::setw(16) << "Backend ms" << std::setw(16) << "Speedup" << '\n'
                   << std::fixed << std::setprecision(6);
+        if (gpu == prs::Backend::CPU)
+            std::cout << "No GPU available; comparing two CPU runs.\n";
         benchmark(1024, 100, gpu);
         benchmark(16 * 1024 * 1024, 1, gpu);
         std::cout << "Correctness checks passed.\n";

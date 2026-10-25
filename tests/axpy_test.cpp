@@ -51,6 +51,8 @@ int main() {
         std::cout << "CPU example: " << y[0] << ' ' << y[1] << ' ' << y[2] << '\n';
         test(prs::Backend::CPU);
         std::cout << "CPU tests passed\n";
+        test(prs::Backend::Auto);
+        std::cout << "Auto AXPY tests passed\n";
         if (prs::metal_available()) {
             test(prs::Backend::Metal);
             std::cout << "Metal tests passed\n";
