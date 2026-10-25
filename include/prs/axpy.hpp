@@ -1,3 +1,5 @@
+// Compatibility header for the original AXPY API. Both operations are now
+// declared in prs/ops.hpp; existing callers can keep including this file.
 #pragma once
-// Backward-compatible include; new code may include prs/ops.hpp directly.
+
 #include "prs/ops.hpp"

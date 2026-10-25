@@ -1,0 +1,10 @@
+# Shared formatting for C++, CUDA, and Objective-C++. Editors can use this file too.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Left
+# Keep a blank line between function, class, and enum definitions.
+SeparateDefinitionBlocks: Always
+# Preserve explanatory comments and embedded Metal shader source text.
+ReflowComments: false
+RawStringFormats: []

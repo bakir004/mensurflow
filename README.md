@@ -1,5 +1,8 @@
 # PRS: CPU/CUDA/Metal operations
 
+<!-- Project guide: setup, API contracts, source navigation, and measured workloads.
+     Every source/configuration file also documents its own role in this setup. -->
+
 Float32 **AXPY**, `y[i] = alpha * x[i] + y[i]`, and rectangular **matrix multiplication**,
 `C[M,N] = A[M,K] * B[K,N]`, share one API for CPU, NVIDIA CUDA, and Apple Metal.
 This is a starting kernel library, not a graph engine. Autotuning is not implemented yet.
@@ -42,6 +45,30 @@ boundaries, larger inputs, aliasing, zero alpha, and size errors. CUDA tests
 are explicitly skipped if no device/backend is available; this does not verify
 CUDA correctness. Run on an NVIDIA machine and check for `CUDA tests passed`.
 On your Mac, the same test suite runs on Metal and prints `Metal tests passed`.
+
+## Formatting
+
+Install `clang-format`, then configure and format the project:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target format
+```
+
+The optional `format` target applies `.clang-format` to all C++ headers/sources,
+CUDA files, and Objective-C++ Metal wrappers. Embedded Metal shaders are preserved.
+Editors can use the same config for format-on-save. Use the same clang-format
+version across the team for identical results.
+
+If clang-format is not on PATH, configure with
+`-DPRS_CLANG_FORMAT=/path/to/clang-format`. It is only required for formatting.
+
+VS Code formats C++ and CUDA files automatically on save using the C/C++ extension
+(`ms-vscode.cpptools`) and the shared `.vscode/settings.json`. That extension
+includes clang-format. Files save automatically when you switch files or move
+focus out of the editor; Ctrl+S (Cmd+S on macOS) also works. Objective-C++ `.mm`
+files use the clangd extension and require an
+installed clangd server; accept that extension's installation prompt if needed.
 
 ## Use
 
@@ -105,6 +132,12 @@ src/
     metal/utils.hpp           # Cached device/queue, pipeline and buffer helpers
 benchmarks/{axpy,matmul}_benchmark.cpp
 tests/{axpy,matmul}_test.cpp
+.clang-format                # Shared C++/CUDA/Objective-C++ formatting
+.vscode/settings.json        # Automatic formatting when saving source files in VS Code
+CMakeLists.txt               # Library, backend, executable, and test configuration
+build.sh / build.bat         # Release benchmark shortcuts for POSIX / Windows
+.gitignore                   # Generated builds and local metadata
+README.md                    # Setup, API contracts, source map, and performance notes
 ```
 
 Each backend implements the same internal interface. Metal caches device/queue

@@ -1,3 +1,5 @@
+// Public mathematical operations and their host-vector contracts. Validation,
+// backend selection, and alias handling are implemented in src/ops.cpp.
 #pragma once
 
 #include "prs/backend.hpp"
@@ -6,6 +8,7 @@
 
 namespace prs {
 // Synchronous host-buffer operations. GPU calls include allocations and copies.
+// Results are ready in the output vector when the function returns.
 // y[i] = alpha*x[i] + y[i]. Sizes must match; x and y may be the same vector.
 // CPU remains the default for compatibility with the original AXPY API.
 void axpy(float alpha, const std::vector<float>& x, std::vector<float>& y,
@@ -16,7 +19,6 @@ void axpy(float alpha, const std::vector<float>& x, std::vector<float>& y,
 // K=0 fills C with zeros; M=0 or N=0 produces an empty C.
 // Invalid sizes throw invalid_argument; dimension/byte overflow throws
 // overflow_error; unavailable backends and GPU errors throw runtime_error.
-void matmul(const std::vector<float>& a, const std::vector<float>& b,
-            std::vector<float>& c, std::size_t m, std::size_t n, std::size_t k,
-            Backend backend = Backend::Auto);
+void matmul(const std::vector<float>& a, const std::vector<float>& b, std::vector<float>& c,
+            std::size_t m, std::size_t n, std::size_t k, Backend backend = Backend::Auto);
 } // namespace prs

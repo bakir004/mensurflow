@@ -1,0 +1,20 @@
+{
+    // Save when leaving an editor, allowing format-on-save to run as well.
+    "files.autoSave": "onFocusChange",
+    // Format saved source files with the repository's .clang-format settings.
+    "C_Cpp.formatting": "clangFormat",
+    "C_Cpp.clang_format_style": "file",
+    "[cpp]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.formatOnSave": true
+    },
+    "[cuda-cpp]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.formatOnSave": true
+    },
+    // Objective-C++ formatting requires the clangd extension and its server.
+    "[objective-cpp]": {
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+        "editor.formatOnSave": true
+    }
+}

@@ -1,3 +1,5 @@
+# Generated CMake build directories are not source.
 build/
 build-*/
+# Local macOS metadata.
 .DS_Store

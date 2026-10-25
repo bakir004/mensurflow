@@ -1,20 +1,26 @@
+# Build the prs library, optional GPU backends, correctness tests, and benchmarks.
 cmake_minimum_required(VERSION 3.18)
 project(prs_kernels LANGUAGES CXX)
 
+# CPU is always present. Metal defaults to enabled only on Apple platforms.
 option(PRS_ENABLE_CUDA "Build the NVIDIA CUDA backend when available" ON)
 option(PRS_ENABLE_METAL "Build the Apple Metal backend" ${APPLE})
 
+# The shared API validates inputs before dispatching to an internal backend.
 add_library(prs
     src/ops.cpp src/backend.cpp
     src/backends/cpu/backend.cpp src/backends/cpu/axpy.cpp src/backends/cpu/matmul.cpp)
+# PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(prs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(prs PUBLIC cxx_std_17)
 
+# OpenMP parallelizes large CPU AXPY workloads; it is an optional dependency.
 find_package(OpenMP QUIET COMPONENTS CXX)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(prs PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# Objective-C++ sources bridge the portable API to Apple's Metal framework.
 if(PRS_ENABLE_METAL)
     if(NOT APPLE)
         message(FATAL_ERROR "Metal requires macOS")
@@ -22,6 +28,7 @@ if(PRS_ENABLE_METAL)
     enable_language(OBJCXX)
     target_sources(prs PRIVATE
         src/backends/metal/backend.mm src/backends/metal/axpy.mm src/backends/metal/matmul.mm)
+    # Only library sources need the feature macro used by internal #ifdef checks.
     target_compile_definitions(prs PRIVATE PRS_HAS_METAL=1)
     target_compile_options(prs PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
     set_target_properties(prs PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES)
@@ -80,6 +87,7 @@ if(PRS_ENABLE_CUDA)
         endif()
     endif()
 
+    # Missing CUDA tools disable this backend while keeping CPU builds usable.
     include(CheckLanguage)
     check_language(CUDA)
     if(CMAKE_CUDA_COMPILER)
@@ -94,6 +102,7 @@ if(PRS_ENABLE_CUDA)
     endif()
 endif()
 
+# Register correctness programs with CTest; benchmarks are separate executables.
 enable_testing()
 add_executable(axpy_test tests/axpy_test.cpp)
 target_link_libraries(axpy_test PRIVATE prs)
@@ -109,9 +118,23 @@ add_test(NAME matmul COMMAND matmul_test)
 add_executable(matmul_benchmark benchmarks/matmul_benchmark.cpp)
 target_link_libraries(matmul_benchmark PRIVATE prs)
 
+# Build dependencies before running both benchmarks; this is used by build scripts.
 add_custom_target(run_benchmarks
     COMMAND $<TARGET_FILE:axpy_benchmark>
     COMMAND $<TARGET_FILE:matmul_benchmark>
     DEPENDS axpy_benchmark matmul_benchmark
     USES_TERMINAL
     COMMENT "Running benchmarks on the available backend")
+
+# Optional formatting shortcut. Normal builds do not require clang-format.
+find_program(PRS_CLANG_FORMAT NAMES clang-format clang-format-18)
+if(PRS_CLANG_FORMAT)
+    file(GLOB_RECURSE PRS_FORMAT_SOURCES CONFIGURE_DEPENDS
+        include/*.hpp src/*.hpp src/*.cpp src/*.cu src/*.cuh src/*.mm
+        tests/*.cpp benchmarks/*.cpp)
+    add_custom_target(format
+        COMMAND "${PRS_CLANG_FORMAT}" -i --style=file ${PRS_FORMAT_SOURCES}
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Formatting project sources"
+        VERBATIM)
+endif()
