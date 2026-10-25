@@ -1,0 +1,7 @@
+CompileFlags:
+  Add:
+    - "-std=c++17"
+    - "-I../../../include"
+    - "-I../../../build/_deps/opencl-headers-src"
+    - "-I../../../build-auto/_deps/opencl-headers-src"
+    - "-I../../../build-opencl/_deps/opencl-headers-src"

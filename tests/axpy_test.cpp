@@ -1,6 +1,6 @@
 // Tests the public AXPY API on the CPU, Auto, and each available GPU backend.
 // Covers numerical results, shared input/output storage, and size validation.
-#include "prs/axpy.hpp"
+#include "prs/ops.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -77,6 +77,12 @@ int main() {
             std::cout << "CUDA tests passed\n";
         } else {
             std::cout << "CUDA tests skipped: backend or device unavailable\n";
+        }
+        if (prs::opencl_available()) {
+            test(prs::Backend::OpenCL);
+            std::cout << "OpenCL tests passed\n";
+        } else {
+            std::cout << "OpenCL tests skipped: backend or device unavailable\n";
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

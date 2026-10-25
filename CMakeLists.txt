@@ -1,10 +1,12 @@
 # Build the prs library, optional GPU backends, correctness tests, and benchmarks.
 cmake_minimum_required(VERSION 3.18)
 project(prs_kernels LANGUAGES CXX)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # CPU is always present. Metal defaults to enabled only on Apple platforms.
 option(PRS_ENABLE_CUDA "Build the NVIDIA CUDA backend when available" ON)
 option(PRS_ENABLE_METAL "Build the Apple Metal backend" ${APPLE})
+option(PRS_ENABLE_OPENCL "Build the OpenCL backend (AMD, Intel, NVIDIA) when available" ON)
 
 # The shared API validates inputs before dispatching to an internal backend.
 add_library(prs
@@ -99,6 +101,45 @@ if(PRS_ENABLE_CUDA)
             CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     else()
         message(STATUS "CUDA compiler not found; NVIDIA backend disabled")
+    endif()
+endif()
+
+# OpenCL runs on AMD GPUs that ROCm/HIP does not support.
+# FindOpenCL locates the Khronos headers and the ICD loader library; missing development
+# files disable this backend while keeping CPU builds usable.
+if(PRS_ENABLE_OPENCL)
+    find_package(OpenCL QUIET)
+    if(NOT OpenCL_FOUND)
+        # Fetch the Khronos SDK pieces automatically when no local development package exists.
+        include(FetchContent)
+        set(BUILD_TESTING OFF CACHE BOOL "Disable tests in fetched OpenCL dependencies" FORCE)
+        set(OPENCL_ICD_LOADER_BUILD_TESTS OFF CACHE BOOL "Disable OpenCL loader tests" FORCE)
+        set(OPENCL_ICD_LOADER_HEADERS_DIR "" CACHE PATH "Use fetched OpenCL headers")
+        FetchContent_Declare(
+            OpenCL-Headers
+            GIT_REPOSITORY https://github.com/KhronosGroup/OpenCL-Headers.git
+            GIT_TAG main
+            GIT_SHALLOW TRUE)
+        FetchContent_Declare(
+            OpenCL-ICD-Loader
+            GIT_REPOSITORY https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
+            GIT_TAG main
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(OpenCL-Headers OpenCL-ICD-Loader)
+        if(TARGET OpenCL::OpenCL)
+            set(OpenCL_FOUND TRUE)
+        endif()
+    endif()
+    if(OpenCL_FOUND AND TARGET OpenCL::OpenCL)
+        target_sources(prs PRIVATE
+            src/backends/opencl/backend.cpp src/backends/opencl/axpy.cpp
+            src/backends/opencl/matmul.cpp)
+        # Target OpenCL 1.2 for the widest driver support; silence Apple's deprecation notices.
+        target_compile_definitions(prs PRIVATE PRS_HAS_OPENCL=1 CL_TARGET_OPENCL_VERSION=120
+                                               CL_SILENCE_DEPRECATION)
+        target_link_libraries(prs PRIVATE OpenCL::OpenCL)
+    else()
+        message(STATUS "OpenCL development files unavailable; OpenCL backend disabled")
     endif()
 endif()
 

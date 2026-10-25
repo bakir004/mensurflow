@@ -106,18 +106,19 @@ void test(prs::Backend backend) {
 }
 
 void test_selection() {
-    // Auto prefers CUDA, then Metal, and finally the always-available CPU.
+    // Auto prefers CUDA, then Metal, then OpenCL, and finally the always-available CPU.
     const auto selected = prs::resolve_backend();
-    require(selected == (prs::cuda_available()    ? prs::Backend::CUDA
-                         : prs::metal_available() ? prs::Backend::Metal
-                                                  : prs::Backend::CPU),
+    require(selected == (prs::cuda_available()     ? prs::Backend::CUDA
+                         : prs::metal_available()  ? prs::Backend::Metal
+                         : prs::opencl_available() ? prs::Backend::OpenCL
+                                                   : prs::Backend::CPU),
             "Auto preference failed");
     require(prs::backend_available(prs::Backend::Auto), "Auto unavailable");
     // Exercise rejection of an enum value outside the supported backends.
     const auto invalid = static_cast<prs::Backend>(99);
     rejects<std::invalid_argument>([&] { prs::resolve_backend(invalid); },
                                    "Accepted unknown backend");
-    for (auto backend : {prs::Backend::CUDA, prs::Backend::Metal}) {
+    for (auto backend : {prs::Backend::CUDA, prs::Backend::Metal, prs::Backend::OpenCL}) {
         if (!prs::backend_available(backend)) {
             // Explicit unavailable backends must fail even for empty workloads.
             std::vector<float> empty;
@@ -134,8 +135,8 @@ int main() {
     try {
         test_selection();
         // Skip unavailable devices while retaining coverage in CPU-only builds.
-        for (auto backend :
-             {prs::Backend::CPU, prs::Backend::CUDA, prs::Backend::Metal, prs::Backend::Auto}) {
+        for (auto backend : {prs::Backend::CPU, prs::Backend::CUDA, prs::Backend::Metal,
+                             prs::Backend::OpenCL, prs::Backend::Auto}) {
             if (prs::backend_available(backend)) {
                 test(backend);
                 std::cout << prs::backend_name(backend) << " matmul tests passed\n";

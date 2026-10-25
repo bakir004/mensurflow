@@ -9,7 +9,7 @@ void cpu_axpy(float alpha, const float* x, float* y, std::size_t count) {
 #ifdef _OPENMP
 #pragma omp parallel for if (count >= 16384)
 #endif
-    for (std::size_t i = 0; i < count; ++i) {
+    for (std::ptrdiff_t i = 0; i < static_cast<std::ptrdiff_t>(count); ++i) {
         y[i] = alpha * x[i] + y[i];
     }
 }

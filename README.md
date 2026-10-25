@@ -1,21 +1,24 @@
-# PRS: CPU/CUDA/Metal operations
+# PRS: CPU/CUDA/Metal/OpenCL operations
 
 <!-- Project guide: setup, API contracts, source navigation, and measured workloads.
      Every source/configuration file also documents its own role in this setup. -->
 
 Float32 **AXPY**, `y[i] = alpha * x[i] + y[i]`, and rectangular **matrix multiplication**,
-`C[M,N] = A[M,K] * B[K,N]`, share one API for CPU, NVIDIA CUDA, and Apple Metal.
+`C[M,N] = A[M,K] * B[K,N]`, share one API for CPU, NVIDIA CUDA, Apple Metal, and OpenCL (AMD, Intel, and NVIDIA GPUs).
 This is a starting kernel library, not a graph engine. Autotuning is not implemented yet.
 
 ## Build and run
 
 Run `./build.sh` on Linux/macOS or `build.bat` on Windows. These scripts configure
-`build-auto` in Release mode, build in parallel, and run both benchmarks with
-automatic GPU detection. They can be invoked from any working directory and stop
-on errors. Windows needs CMake, the CUDA Toolkit, and a supported MSVC C++ toolchain
-(e.g. an x64 Visual Studio Developer Command Prompt). Without a GPU backend, the
-benchmarks still run using CPU. The scripts build/run benchmarks; run `ctest`
-separately for the full test suite.
+`build-auto` in Release mode, build in parallel, run the complete CTest correctness
+suite, and run both benchmarks with automatic backend detection. They can be invoked
+from any working directory and stop on errors. Windows needs CMake and a supported
+MSVC C++ toolchain (for example, an x64 Visual Studio Developer Command Prompt);
+CUDA is optional. When OpenCL is enabled and no development package is installed,
+CMake automatically downloads and builds the Khronos headers and ICD loader during
+the first configure, so internet access is required for that configure. Without a
+usable GPU backend, the benchmarks and tests still run using CPU and report skipped
+GPU tests.
 
 ## Build and test
 
@@ -34,17 +37,21 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 CMake disables the NVIDIA backend if it cannot find a CUDA compiler; Metal can
-still run on macOS. To force CPU-only, add
-`-DPRS_ENABLE_CUDA=OFF -DPRS_ENABLE_METAL=OFF`. If needed, specify your GPU architecture
+still run on macOS. OpenCL is enabled by default and uses an installed development
+package when available, otherwise the Khronos dependencies are fetched automatically.
+To force CPU-only, add
+`-DPRS_ENABLE_CUDA=OFF -DPRS_ENABLE_METAL=OFF -DPRS_ENABLE_OPENCL=OFF`. If needed, specify your GPU architecture
 with e.g. `-DCMAKE_CUDA_ARCHITECTURES=86` (replace 86 with your GPU's compute
 capability without the decimal). OpenMP is optional; without it CPU execution
 uses a serial loop. With it, large vectors use multiple CPU threads.
 
 The test prints a small example (`12 24 36`) and checks empty vectors, block
-boundaries, larger inputs, aliasing, zero alpha, and size errors. CUDA tests
-are explicitly skipped if no device/backend is available; this does not verify
-CUDA correctness. Run on an NVIDIA machine and check for `CUDA tests passed`.
-On your Mac, the same test suite runs on Metal and prints `Metal tests passed`.
+boundaries, larger inputs, aliasing, zero alpha, and size errors. CUDA and OpenCL
+tests are explicitly skipped if their backend or device is unavailable; a skipped
+test does not verify that backend. Run on an NVIDIA machine and check for
+`CUDA tests passed`, or on an OpenCL-capable machine and check for `OpenCL tests
+passed` and `OpenCL matmul tests passed`. On your Mac, the same test suite runs on
+Metal and prints `Metal tests passed`.
 
 ## Formatting
 
@@ -89,6 +96,11 @@ if (prs::cuda_available()) {
     prs::axpy(2.0f, x, y, prs::Backend::CUDA); // same result
 }
 
+if (prs::opencl_available()) {
+    y = {10, 20, 30};
+    prs::axpy(2.0f, x, y, prs::Backend::OpenCL); // AMD, Intel, or NVIDIA GPU
+}
+
 // Row-major A[2,3] * B[3,2] = C[2,2]. C must be sized before the call.
 std::vector<float> a{1, 2, 3, 4, 5, 6};
 std::vector<float> b{7, 8, 9, 10, 11, 12};
@@ -96,7 +108,7 @@ std::vector<float> c(4);
 prs::matmul(a, b, c, 2, 2, 3); // default Auto; c = {58, 64, 139, 154}
 ```
 
-`Backend::Auto` prefers available CUDA, then Metal, otherwise CPU. Explicit GPU
+`Backend::Auto` prefers available CUDA, then Metal, then OpenCL, otherwise CPU. Explicit GPU
 requests throw if unavailable; there is no silent fallback. `axpy` retains its
 CPU default for compatibility; pass `Backend::Auto` for automatic selection.
 `resolve_backend()` and `backend_available()` expose selection and availability.
@@ -130,6 +142,8 @@ src/
     cuda/utils.cuh            # Shared CUDA errors and allocation ownership
     metal/{backend,axpy,matmul}.mm
     metal/utils.hpp           # Cached device/queue, pipeline and buffer helpers
+    opencl/{backend,axpy,matmul}.cpp
+    opencl/utils.hpp          # Device discovery, cached context/queue, kernel and buffer helpers
 benchmarks/{axpy,matmul}_benchmark.cpp
 tests/{axpy,matmul}_test.cpp
 .clang-format                # Shared C++/CUDA/Objective-C++ formatting
@@ -151,6 +165,31 @@ CUDA and Metal use rectangular 16x16 shared-memory tiled kernels.
 GPU calls currently allocate and copy on every invocation. This makes usage easy
 but may be slower than CPU for small inputs. A future performance-oriented API
 could retain tensors on the GPU, reuse allocations, and autotune block sizes.
+
+## AMD GPUs (OpenCL)
+
+AMD's ROCm/HIP does not officially support RDNA1 cards, so the
+AMD path uses OpenCL, which their drivers provide. The backend needs an OpenCL runtime (driver), the Khronos headers, and the ICD loader library at build time. CMake uses an installed development package when available; otherwise it downloads and builds the Khronos headers and ICD loader automatically during configuration. The first configure requires internet access.
+
+```sh
+# Debian/Ubuntu: Mesa's OpenCL driver, the ICD loader, headers, and clinfo for checking.
+sudo apt install mesa-opencl-icd ocl-icd-opencl-dev opencl-headers clinfo
+RUSTICL_ENABLE=radeonsi clinfo -l      # must list "AMD Radeon RX 5700"
+export RUSTICL_ENABLE=radeonsi         # needed by Mesa's rusticl driver
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure -V
+```
+
+On Windows, install the current AMD Adrenalin driver (it includes the OpenCL runtime), then configure normally. If no OpenCL development package is installed, CMake downloads the Khronos headers and loader automatically:
+
+```powershell
+cmake -S . -B build-opencl -DPRS_ENABLE_CUDA=OFF -DPRS_ENABLE_METAL=OFF -DPRS_ENABLE_OPENCL=ON
+cmake --build build-opencl --config Release
+ctest --test-dir build-opencl -C Release --output-on-failure -V
+```
+
+Verify that the tests print `OpenCL tests passed`, not a skip. Only GPU devices count: software runtimes such as PoCL are ignored unless `PRS_OPENCL_ALLOW_CPU=1` is set. That setting runs the OpenCL kernels on the CPU, which tests the backend without a GPU but says nothing about speed. The OpenCL kernels use the same tiled 16x16 algorithm as CUDA and Metal and have the same per-call allocation and copy overhead.
 
 ## CPU vs. GPU benchmark
 
@@ -224,5 +263,3 @@ CPU output outside timing. Matrix multiplication does O(N^3) arithmetic on
 O(N^2) input/output data, giving the GPU much more useful work per byte than AXPY.
 This compares our custom implementations, **not** optimized CPU BLAS such as
 Apple Accelerate, which may substantially change the comparison.
-
-

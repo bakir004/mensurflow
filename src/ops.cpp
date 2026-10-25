@@ -22,6 +22,10 @@ const detail::BackendInterface& implementation(Backend backend) {
     case Backend::Metal:
         return detail::metal_backend();
 #endif
+#ifdef PRS_HAS_OPENCL
+    case Backend::OpenCL:
+        return detail::opencl_backend();
+#endif
     default:
         throw std::runtime_error("Backend implementation unavailable");
     }

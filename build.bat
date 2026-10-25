@@ -1,6 +1,6 @@
 @echo off
-rem Windows shortcut: configure a Release build and run both API benchmarks.
-rem Build all targets and run CTest separately for the correctness suite.
+rem Windows shortcut: configure a Release build, run correctness tests, and run benchmarks.
+rem OpenCL headers and the ICD loader are fetched automatically when not installed.
 setlocal
 
 rem Resolve paths relative to this script, not the caller's working directory.
@@ -11,7 +11,13 @@ rem Detect optional GPU toolchains and generate build instructions.
 cmake -S "%PROJECT_DIR%." -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release
 if errorlevel 1 exit /b 1
 
-cmake --build "%BUILD_DIR%" --config Release --target run_benchmarks --parallel
+cmake --build "%BUILD_DIR%" --config Release --parallel
+if errorlevel 1 exit /b 1
+
+ctest --test-dir "%BUILD_DIR%" -C Release --output-on-failure
+if errorlevel 1 exit /b 1
+
+cmake --build "%BUILD_DIR%" --config Release --target run_benchmarks
 if errorlevel 1 exit /b 1
 
 exit /b 0

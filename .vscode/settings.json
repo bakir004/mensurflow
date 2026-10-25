@@ -5,7 +5,7 @@
     "C_Cpp.formatting": "clangFormat",
     "C_Cpp.clang_format_style": "file",
     "[cpp]": {
-        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
         "editor.formatOnSave": true
     },
     "[cuda-cpp]": {

@@ -23,6 +23,14 @@ bool metal_available() {
 #endif
 }
 
+bool opencl_available() {
+#ifdef PRS_HAS_OPENCL
+    return detail::opencl_backend().available();
+#else
+    return false;
+#endif
+}
+
 bool backend_available(Backend backend) {
     switch (backend) {
     case Backend::Auto:
@@ -30,6 +38,8 @@ bool backend_available(Backend backend) {
         return true;
     case Backend::CUDA:
         return cuda_available();
+    case Backend::OpenCL:
+        return opencl_available();
     case Backend::Metal:
         return metal_available();
     }
@@ -44,6 +54,8 @@ const char* backend_name(Backend backend) {
         return "CUDA";
     case Backend::Metal:
         return "Metal";
+    case Backend::OpenCL:
+        return "OpenCL";
     case Backend::Auto:
         return "Auto";
     }
@@ -58,6 +70,9 @@ Backend resolve_backend(Backend backend) {
         }
         if (metal_available()) {
             return Backend::Metal;
+        }
+        if (opencl_available()) {
+            return Backend::OpenCL;
         }
         return Backend::CPU;
     }

@@ -30,4 +30,6 @@ const BackendInterface& cpu_backend();
 const BackendInterface& cuda_backend();
 
 const BackendInterface& metal_backend();
+
+const BackendInterface& opencl_backend();
 } // namespace prs::detail
