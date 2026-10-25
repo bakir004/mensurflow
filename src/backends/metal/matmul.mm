@@ -1,9 +1,16 @@
+// Metal matrix multiplication for row-major A(M x K), B(K x N), and C(M x N).
+// utils.hpp supplies the shared device, resource checks, and command completion.
 #include "utils.hpp"
 #include <cstring>
 
 namespace prs::detail {
+// Keep the shader pipeline accessor local to this translation unit.
 namespace {
 id<MTLComputePipelineState> pipeline() {
+    // Compile once and cache this pipeline. The embedded shader assigns a 16 x 16
+    // output tile to each threadgroup, with one output element per thread.
+    // Threads cooperatively load input tiles, zero-fill edges, and synchronize
+    // before reading a tile and before replacing it with the next K slice.
     static id<MTLComputePipelineState> instance = metal_pipeline(@R"metal(
 #include <metal_stdlib>
 using namespace metal;
@@ -33,6 +40,7 @@ kernel void matmul(device const float* a [[buffer(0)]],
 }
 void metal_matmul(const float* a, const float* b, float* c,
                   std::size_t m, std::size_t n, std::size_t k) {
+    // Bound temporary Objective-C object lifetimes to this completed operation.
     @autoreleasepool {
         // Roundup and the shader's base += 16 must also fit uint32.
         constexpr auto limit = std::numeric_limits<std::uint32_t>::max() - 15;
@@ -41,11 +49,14 @@ void metal_matmul(const float* a, const float* b, float* c,
         }
         auto& ctx = metal_context();
         auto state = pipeline();
+        // The tiled shader needs 256 threads to cooperate in each threadgroup.
         if (state.maxTotalThreadsPerThreadgroup < 256) {
             throw std::runtime_error("Metal device cannot support 16x16 threadgroups");
         }
+        // Copy A and B into checked buffers; C is output-only and needs no initial data.
         id<MTLBuffer> da = metal_buffer(a, m*k), db = metal_buffer(b, k*n);
         id<MTLBuffer> dc = metal_buffer(nullptr, m*n);
+        // Record one compute dispatch in a fresh command buffer.
         id<MTLCommandBuffer> command = [ctx.queue commandBuffer];
         if (!command) throw std::runtime_error("Cannot create Metal command buffer");
         id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
@@ -53,14 +64,17 @@ void metal_matmul(const float* a, const float* b, float* c,
         // uint3 in MSL has 16-byte size/alignment; supply four host uints.
         const std::uint32_t dims[4] = {static_cast<std::uint32_t>(m),
             static_cast<std::uint32_t>(n), static_cast<std::uint32_t>(k), 0};
+        // Argument indices correspond to the shader's [[buffer(...)]] declarations.
         [encoder setComputePipelineState:state];
         [encoder setBuffer:da offset:0 atIndex:0];
         [encoder setBuffer:db offset:0 atIndex:1];
         [encoder setBuffer:dc offset:0 atIndex:2];
         [encoder setBytes:dims length:sizeof(dims) atIndex:3];
+        // Round up to cover partial tiles; shader bounds checks protect their edges.
         [encoder dispatchThreadgroups:MTLSizeMake((n+15)/16, (m+15)/16, 1)
                 threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
         [encoder endEncoding];
+        // The public API is synchronous: finish GPU work before copying C to the caller.
         metal_wait(command);
         std::memcpy(c, dc.contents, m*n*sizeof(float));
     }

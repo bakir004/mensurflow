@@ -1,8 +1,11 @@
+// CUDA AXPY: compute y = alpha * x + y using a GPU kernel.
+// The host wrapper handles transfers; utils.cuh owns temporary device buffers.
 #include "utils.cuh"
 #include <algorithm>
 #include <limits>
 
 namespace prs::detail {
+// The kernel is an implementation detail used only by this translation unit.
 namespace {
 __global__ void axpy_kernel(float alpha, const float* x, float* y,
                             std::size_t n) {
@@ -23,16 +26,19 @@ void cuda_axpy(float alpha, const float* x, float* y, std::size_t n) {
         throw std::runtime_error("AXPY: allocation size overflow");
     }
 
+    // Both vectors are needed on the device because the kernel reads the old y.
     const std::size_t bytes = n * sizeof(float);
     DeviceBuffer dx(bytes);
     DeviceBuffer dy(bytes);
     cuda_check(cudaMemcpy(dx.data, x, bytes, cudaMemcpyHostToDevice), "copy x to GPU");
     cuda_check(cudaMemcpy(dy.data, y, bytes, cudaMemcpyHostToDevice), "copy y to GPU");
 
+    // Cap the block count; the grid-stride loop still covers the entire vector.
     constexpr unsigned threads = 256;
     const unsigned blocks = static_cast<unsigned>(
         std::min<std::size_t>(1 + (n - 1) / threads, 65535));
     axpy_kernel<<<blocks, threads>>>(alpha, dx.data, dy.data, n);
+    // Check launch errors, then wait for execution before returning host results.
     cuda_check(cudaGetLastError(), "launch AXPY");
     cuda_check(cudaDeviceSynchronize(), "execute AXPY");
     cuda_check(cudaMemcpy(y, dy.data, bytes, cudaMemcpyDeviceToHost), "copy y to CPU");

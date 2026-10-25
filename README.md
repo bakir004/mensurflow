@@ -1,5 +1,9 @@
 # PRS: CPU/CUDA/Metal operations
 
+<!-- Project guide: build instructions, public API usage, source layout, and
+     performance methodology. For a code walkthrough, start at include/prs/ops.hpp,
+     follow src/ops.cpp, then src/backends/interface.hpp and the chosen backend. -->
+
 Float32 **AXPY**, `y[i] = alpha * x[i] + y[i]`, and rectangular **matrix multiplication**,
 `C[M,N] = A[M,K] * B[K,N]`, share one API for CPU, NVIDIA CUDA, and Apple Metal.
 This is a starting kernel library, not a graph engine. Autotuning is not implemented yet.

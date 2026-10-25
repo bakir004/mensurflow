@@ -1,20 +1,27 @@
+# Build description for the prs library, its correctness tests, and benchmarks.
+# Configure with cmake -S . -B build, then compile with cmake --build build.
 cmake_minimum_required(VERSION 3.18)
 project(prs_kernels LANGUAGES CXX)
 
+# Optional backends: CPU is always built; Metal defaults to enabled on Apple hosts.
 option(PRS_ENABLE_CUDA "Build the NVIDIA CUDA backend when available" ON)
 option(PRS_ENABLE_METAL "Build the Apple Metal backend" ${APPLE})
 
+# Start with the shared API implementation and the portable CPU backend.
 add_library(prs
     src/ops.cpp src/backend.cpp
     src/backends/cpu/backend.cpp src/backends/cpu/axpy.cpp src/backends/cpu/matmul.cpp)
+# PUBLIC requirements also reach executables that link against the prs target.
 target_include_directories(prs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(prs PUBLIC cxx_std_17)
 
+# OpenMP enables the large-vector CPU AXPY path; it is not required to build.
 find_package(OpenMP QUIET COMPONENTS CXX)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(prs PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# Metal sources use Objective-C++ and link to Apple's system frameworks.
 if(PRS_ENABLE_METAL)
     if(NOT APPLE)
         message(FATAL_ERROR "Metal requires macOS")
@@ -22,7 +29,9 @@ if(PRS_ENABLE_METAL)
     enable_language(OBJCXX)
     target_sources(prs PRIVATE
         src/backends/metal/backend.mm src/backends/metal/axpy.mm src/backends/metal/matmul.mm)
+    # Internal #ifdef checks use this flag; consumers do not need Metal details.
     target_compile_definitions(prs PRIVATE PRS_HAS_METAL=1)
+    # Apply automatic Objective-C object lifetime management only to .mm sources.
     target_compile_options(prs PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
     set_target_properties(prs PROPERTIES OBJCXX_STANDARD 17 OBJCXX_STANDARD_REQUIRED YES)
     find_library(PRS_METAL_FRAMEWORK Metal REQUIRED)
@@ -69,6 +78,7 @@ if(PRS_ENABLE_CUDA)
                 ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE TIMEOUT 10)
             if(PRS_SMI_RESULT EQUAL 0 AND PRS_GPU_CAPABILITIES MATCHES "^[0-9.\n\r ]+$")
                 string(REGEX MATCHALL "[0-9]+\\.[0-9]+" PRS_GPU_ARCHS "${PRS_GPU_CAPABILITIES}")
+                # CMake architecture names omit the decimal point: 8.6 becomes 86.
                 string(REPLACE "." "" PRS_GPU_ARCHS "${PRS_GPU_ARCHS}")
                 list(REMOVE_DUPLICATES PRS_GPU_ARCHS)
                 if(PRS_GPU_ARCHS)
@@ -80,12 +90,14 @@ if(PRS_ENABLE_CUDA)
         endif()
     endif()
 
+    # Probe first so missing CUDA support still permits a CPU-only build.
     include(CheckLanguage)
     check_language(CUDA)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
         target_sources(prs PRIVATE
             src/backends/cuda/backend.cu src/backends/cuda/axpy.cu src/backends/cuda/matmul.cu)
+        # Compile CUDA dispatch branches only when their implementations exist.
         target_compile_definitions(prs PRIVATE PRS_HAS_CUDA=1)
         set_target_properties(prs PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES
             CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
@@ -94,11 +106,13 @@ if(PRS_ENABLE_CUDA)
     endif()
 endif()
 
+# Each executable links the shared library; add_test registers it with CTest.
 enable_testing()
 add_executable(axpy_test tests/axpy_test.cpp)
 target_link_libraries(axpy_test PRIVATE prs)
 add_test(NAME axpy COMMAND axpy_test)
 
+# Benchmarks measure performance separately from the correctness test suite.
 add_executable(axpy_benchmark benchmarks/axpy_benchmark.cpp)
 target_link_libraries(axpy_benchmark PRIVATE prs)
 
@@ -109,6 +123,8 @@ add_test(NAME matmul COMMAND matmul_test)
 add_executable(matmul_benchmark benchmarks/matmul_benchmark.cpp)
 target_link_libraries(matmul_benchmark PRIVATE prs)
 
+# Convenience target used by build.sh/build.bat. Dependencies build both programs
+# before execution; TARGET_FILE resolves their paths for the chosen generator.
 add_custom_target(run_benchmarks
     COMMAND $<TARGET_FILE:axpy_benchmark>
     COMMAND $<TARGET_FILE:matmul_benchmark>

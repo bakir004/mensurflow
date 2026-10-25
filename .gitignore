@@ -1,3 +1,5 @@
+# Keep generated CMake build output out of version control.
 build/
 build-*/
+# Finder metadata is local to macOS and unrelated to the source code.
 .DS_Store

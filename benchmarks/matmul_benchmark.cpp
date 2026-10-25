@@ -1,3 +1,5 @@
+// Compare CPU and automatically selected backend performance through prs::matmul().
+// Measure complete API calls and check results separately from the timed sections.
 #include "prs/ops.hpp"
 
 #include <algorithm>
@@ -9,12 +11,14 @@
 #include <vector>
 
 namespace {
+// Use elapsed monotonic time for one synchronous operation, returned in milliseconds.
 using Clock = std::chrono::steady_clock;
 template <typename F> double time_ms(F operation) {
     const auto start = Clock::now();
     operation();
     return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
+// Compare against the CPU result with a tolerance for float accumulation differences.
 void validate(const std::vector<float>& cpu, const std::vector<float>& device) {
     for (std::size_t i = 0; i < cpu.size(); ++i) {
         if (!std::isfinite(device[i]) ||
@@ -23,6 +27,7 @@ void validate(const std::vector<float>& cpu, const std::vector<float>& device) {
         }
     }
 }
+// Use identical row-major inputs and separate outputs for both implementations.
 void benchmark(std::size_t m, std::size_t n, std::size_t k, prs::Backend backend) {
     std::vector<float> a(m*k), b(k*n), cpu(m*n), device(m*n);
     for (std::size_t i = 0; i < a.size(); ++i)
@@ -31,11 +36,13 @@ void benchmark(std::size_t m, std::size_t n, std::size_t k, prs::Backend backend
         b[i] = static_cast<float>(static_cast<int>(i % 17) - 8) / 8;
     auto run_cpu = [&] { prs::matmul(a, b, cpu, m, n, k, prs::Backend::CPU); };
     auto run_device = [&] { prs::matmul(a, b, device, m, n, k, backend); };
+    // Warm up both paths and verify correctness before collecting measurements.
     run_cpu();
     run_device(); // Exclude first-use context/pipeline creation.
     validate(cpu, device);
     std::vector<double> cpu_times, device_times;
     for (int trial = 0; trial < 5; ++trial) {
+        // Alternate which backend runs first to reduce systematic ordering bias.
         if (trial % 2 == 0) {
             cpu_times.push_back(time_ms(run_cpu));
             device_times.push_back(time_ms(run_device));
@@ -45,6 +52,7 @@ void benchmark(std::size_t m, std::size_t n, std::size_t k, prs::Backend backend
         }
         validate(cpu, device); // Outside timing after every trial.
     }
+    // Index 2 is the median of five samples; speedup is CPU time / backend time.
     std::sort(cpu_times.begin(), cpu_times.end());
     std::sort(device_times.begin(), device_times.end());
     std::cout << std::setw(8) << m << std::setw(8) << n << std::setw(8) << k
@@ -55,6 +63,7 @@ void benchmark(std::size_t m, std::size_t n, std::size_t k, prs::Backend backend
 
 int main() {
     try {
+        // Auto falls back to CPU if neither GPU backend is available.
         const auto backend = prs::resolve_backend();
         std::cout << "Custom float32 matrix multiplication, C[M,N] = A[M,K] * B[K,N]\n"
                   << "Selected backend: " << prs::backend_name(backend) << '\n'
@@ -66,6 +75,7 @@ int main() {
                   << std::setw(14) << "Speedup" << '\n' << std::fixed << std::setprecision(3);
         if (backend == prs::Backend::CPU)
             std::cout << "No GPU available; comparing two CPU runs.\n";
+        // Cover partial GPU tiles, a small square matrix, and a larger compute workload.
         benchmark(17, 23, 19, backend);
         benchmark(64, 64, 64, backend);
         benchmark(1024, 1024, 1024, backend);
