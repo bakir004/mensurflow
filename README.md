@@ -86,6 +86,22 @@ and Objective-C/Objective-C++ files using `.clang-format`, then stages only the
 formatting changes so they are included in the commit. Documentation-only commits
 need no formatter. Review the resulting commit diff as usual.
 
+Formatting on commit is enabled by default. Disable or re-enable it for this clone:
+
+```sh
+git config --local prs.formatOnCommit false  # disable
+git config --local prs.formatOnCommit true   # re-enable
+```
+
+Skip formatting for a single commit without disabling other hooks:
+
+```sh
+git -c prs.formatOnCommit=false commit -m "Your message"
+```
+
+This setting only controls the Git hook, not VS Code format-on-save. Running the
+build scripts again preserves this preference.
+
 Install `clang-format` on PATH, or set the `PRS_CLANG_FORMAT` environment variable
 to its executable path. Use the same version across the team. The CMake
 `-DPRS_CLANG_FORMAT=...` setting does not configure this hook.
