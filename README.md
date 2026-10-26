@@ -70,9 +70,35 @@ version across the team for identical results.
 If clang-format is not on PATH, configure with
 `-DPRS_CLANG_FORMAT=/path/to/clang-format`. It is only required for formatting.
 
-VS Code formats C++ and CUDA files automatically on save using the C/C++ extension
-(`ms-vscode.cpptools`) and the shared `.vscode/settings.json`. That extension
-includes clang-format. Files save automatically when you switch files or move
+### Pre-commit formatting
+
+`build.sh` and `build.bat` automatically enable the repository's tracked Git hook
+for Git clones before building. Existing custom `core.hooksPath` settings are
+preserved with a notice; source archives skip installation. Alternatively, enable
+the hook manually from the repository root:
+
+```sh
+git config --local core.hooksPath .githooks
+```
+
+On Linux/macOS or Git for Windows, the hook runs clang-format on staged C/C++, CUDA,
+and Objective-C/Objective-C++ files using `.clang-format`, then stages only the
+formatting changes so they are included in the commit. Documentation-only commits
+need no formatter. Review the resulting commit diff as usual.
+
+Install `clang-format` on PATH, or set the `PRS_CLANG_FORMAT` environment variable
+to its executable path. Use the same version across the team. The CMake
+`-DPRS_CLANG_FORMAT=...` setting does not configure this hook.
+
+If a file needs formatting but also has unstaged edits, the hook stops without
+changing files. Stage or stash those edits and retry; it never automatically
+stages unrelated working-tree changes. Unstaged `.clang-format` changes must also
+be staged or discarded before committing source files. Existing custom hooks must
+be integrated manually before changing `core.hooksPath`.
+
+VS Code formats C++ files with clangd and CUDA files with the C/C++ extension
+(`ms-vscode.cpptools`), following the shared `.vscode/settings.json`. Both use the
+shared clang-format rules. The C/C++ extension includes clang-format. Files save automatically when you switch files or move
 focus out of the editor; Ctrl+S (Cmd+S on macOS) also works. Objective-C++ `.mm`
 files use the clangd extension and require an
 installed clangd server; accept that extension's installation prompt if needed.

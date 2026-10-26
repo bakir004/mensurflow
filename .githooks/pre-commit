@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Format staged C++/CUDA/Objective-C++ files using the editor's .clang-format.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+files=()
+while IFS= read -r -d '' file; do
+    case "$file" in
+        *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx|*.cu|*.cuh|*.m|*.mm)
+            files+=("$file") ;;
+    esac
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+# Documentation-only commits do not require clang-format.
+if [ "${#files[@]}" -eq 0 ]; then
+    exit 0
+fi
+
+formatter="${PRS_CLANG_FORMAT:-clang-format}"
+if ! command -v "$formatter" >/dev/null 2>&1; then
+    echo "pre-commit: clang-format not found. Install it or set PRS_CLANG_FORMAT to its executable path." >&2
+    exit 1
+fi
+
+# Do not apply working-tree formatting rules that differ from this commit.
+if ! git diff --quiet -- .clang-format; then
+    echo "pre-commit: stage or discard unstaged .clang-format changes first." >&2
+    exit 1
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+changed=()
+
+# Preflight every file before changing anything; never stage unrelated edits.
+for i in "${!files[@]}"; do
+    file="${files[$i]}"
+    git show ":$file" > "$tmp/$i.original"
+    "$formatter" --style=file --assume-filename="$PWD/$file" \
+        < "$tmp/$i.original" > "$tmp/$i.formatted"
+    if ! cmp -s "$tmp/$i.original" "$tmp/$i.formatted"; then
+        if [ -L "$file" ] || ! cmp -s "$tmp/$i.original" "$file"; then
+            echo "pre-commit: '$file' needs formatting but has unstaged changes." >&2
+            echo "Stage or stash those changes, then commit again. No files were modified." >&2
+            exit 1
+        fi
+        changed+=("$i")
+    fi
+done
+
+for i in ${changed[@]+"${changed[@]}"}; do
+    file="${files[$i]}"
+    cp "$tmp/$i.formatted" "$file"
+    git add -- "$file"
+    printf 'pre-commit: formatted %s\n' "$file"
+done
