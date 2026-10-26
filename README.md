@@ -53,6 +53,12 @@ test does not verify that backend. Run on an NVIDIA machine and check for
 passed` and `OpenCL matmul tests passed`. On your Mac, the same test suite runs on
 Metal and prints `Metal tests passed`.
 
+## Standalone OpenMP example
+
+See [`openmp/README.md`](openmp/README.md) for a CPU dot-product benchmark comparing
+scalar, SIMD-only, threaded SIMD, an unrolled variant, and optional vendor BLAS.
+It builds independently of the GPU library and includes team setup instructions.
+
 ## Formatting
 
 Install `clang-format`, then configure and format the project:
