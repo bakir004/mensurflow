@@ -59,6 +59,12 @@ See [`openmp/README.md`](openmp/README.md) for a CPU dot-product benchmark compa
 scalar, SIMD-only, threaded SIMD, an unrolled variant, and optional vendor BLAS.
 It builds independently of the GPU library and includes team setup instructions.
 
+## Standalone Vulkan Compute example
+
+See [`vulkan/README.md`](vulkan/README.md) for tiled GPU matrix multiplication,
+Vulkan SDK installation, and running on macOS through MoltenVK's Metal translation.
+This example builds independently and is not yet integrated into the library API.
+
 ## Formatting
 
 Install `clang-format`, then configure and format the project:
