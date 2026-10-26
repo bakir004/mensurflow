@@ -20,7 +20,12 @@ if [[ -e "$project_dir/.git" ]]; then
 fi
 
 # Configuration detects available toolchains before the build target is executed.
-cmake -S "$project_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
+# Prefer Ninja for faster incremental builds, but keep an existing build directory's generator.
+generator=()
+if [[ ! -f "$build_dir/CMakeCache.txt" ]] && command -v ninja >/dev/null; then
+    generator=(-G Ninja)
+fi
+cmake -S "$project_dir" -B "$build_dir" ${generator[@]+"${generator[@]}"} -DCMAKE_BUILD_TYPE=Release
 cmake --build "$build_dir" --config Release --parallel
 ctest --test-dir "$build_dir" --output-on-failure
 cmake --build "$build_dir" --config Release --target run_benchmarks

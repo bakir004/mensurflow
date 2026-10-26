@@ -3,6 +3,13 @@ cmake_minimum_required(VERSION 3.18)
 project(prs_kernels LANGUAGES CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Reuse object files across clean rebuilds when ccache is installed.
+find_program(PRS_CCACHE ccache)
+if(PRS_CCACHE)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${PRS_CCACHE}")
+    set(CMAKE_CUDA_COMPILER_LAUNCHER "${PRS_CCACHE}")
+endif()
+
 # CPU is always present. Metal defaults to enabled only on Apple platforms.
 option(PRS_ENABLE_CUDA "Build the NVIDIA CUDA backend when available" ON)
 option(PRS_ENABLE_METAL "Build the Apple Metal backend" ${APPLE})
@@ -97,6 +104,8 @@ if(PRS_ENABLE_CUDA)
         target_sources(prs PRIVATE
             src/backends/cuda/backend.cu src/backends/cuda/axpy.cu src/backends/cuda/matmul.cu)
         target_compile_definitions(prs PRIVATE PRS_HAS_CUDA=1)
+        # Let nvcc compile for multiple architectures in parallel.
+        target_compile_options(prs PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--threads=0>)
         set_target_properties(prs PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED YES
             CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     else()
@@ -118,13 +127,15 @@ if(PRS_ENABLE_OPENCL)
         FetchContent_Declare(
             OpenCL-Headers
             GIT_REPOSITORY https://github.com/KhronosGroup/OpenCL-Headers.git
-            GIT_TAG main
+            GIT_TAG v2024.10.24
             GIT_SHALLOW TRUE)
         FetchContent_Declare(
             OpenCL-ICD-Loader
             GIT_REPOSITORY https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
-            GIT_TAG main
+            GIT_TAG v2024.10.24
             GIT_SHALLOW TRUE)
+        # A pinned tag never changes, so skip the network check on every configure.
+        set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
         FetchContent_MakeAvailable(OpenCL-Headers OpenCL-ICD-Loader)
         if(TARGET OpenCL::OpenCL)
             set(OpenCL_FOUND TRUE)
