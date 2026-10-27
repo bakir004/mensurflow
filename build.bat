@@ -15,7 +15,12 @@ if exist "%PROJECT_DIR%.git" (
 )
 
 rem Detect optional GPU toolchains and generate build instructions.
-cmake -S "%PROJECT_DIR%." -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release
+rem Prefer Ninja for faster incremental builds, but keep an existing build directory's generator.
+set "GENERATOR="
+if not exist "%BUILD_DIR%\CMakeCache.txt" (
+    where ninja >nul 2>nul && set "GENERATOR=-G Ninja"
+)
+cmake -S "%PROJECT_DIR%." -B "%BUILD_DIR%" %GENERATOR% -DCMAKE_BUILD_TYPE=Release
 if errorlevel 1 exit /b 1
 
 cmake --build "%BUILD_DIR%" --config Release --parallel
