@@ -40,7 +40,31 @@ class Tensor {
         return from_host(data.data(), std::move(shape), dtype_of<T>, device);
     }
 
-    // Writes numel() elements in row-major order to dst. Blocks until the data is ready.
+    // Views: new Tensors over the same storage with a different shape/strides/offset.
+    // No data is copied, so they cost O(dim) regardless of tensor size.
+
+    // Swap two dimensions (negative dims count from the end). Result is usually non-contiguous.
+    Tensor transpose(int d0, int d1) const;
+
+    // Elements [start, end) of one dimension, taking every step-th. Negative start/end count
+    // from the end; out-of-range bounds are clamped, like Python slicing. step must be >= 1.
+    Tensor slice(int d, std::int64_t start, std::int64_t end, std::int64_t step = 1) const;
+
+    // Broadcast to a larger shape (NumPy rules) using stride 0; the data is repeated, not copied.
+    Tensor expand(const Shape& shape) const;
+
+    // Insert a size-1 dimension at position d, e.g. [3] -> unsqueeze(1) -> [3, 1].
+    Tensor unsqueeze(int d) const;
+
+    // Same elements in a new shape; one dimension may be -1 (inferred). Requires a contiguous
+    // tensor, since otherwise the new shape cannot be expressed with strides alone.
+    Tensor view(Shape shape) const;
+
+    // True if both tensors use the same memory allocation (possibly different parts of it).
+    bool shares_storage(const Tensor& other) const;
+
+    // Writes numel() elements in row-major order to dst, following strides for views.
+    // Blocks until the data is ready.
     void copy_to_host(void* dst) const;
 
     template <typename T> std::vector<T> to_vector() const {
@@ -73,6 +97,7 @@ class Tensor {
            Strides strides, DType dtype);
 
     void require_defined() const;
+    Tensor make_view(std::int64_t offset, Shape shape, Strides strides) const;
 
     std::shared_ptr<detail::Storage> storage_;
     std::int64_t offset_ = 0;
