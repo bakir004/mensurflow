@@ -23,11 +23,11 @@ libraries do well and fall back per op (see "Per-op fallback" below).
  ┌──────────────────────────────────────────────────────────────┐
  │  User code: model, training loop                             │
  ├──────────────────────────────────────────────────────────────┤
- │  prs::nn  (Linear, Conv2d, LayerNorm, Attention, optimizers) │  backend-agnostic
- │  prs::autograd (tape, backward functions)                    │  backend-agnostic
+ │  mensurflow::nn (Linear, Conv2d, LayerNorm, Attention, ...)  │  backend-agnostic
+ │  mensurflow::autograd (tape, backward functions)             │  backend-agnostic
  ├──────────────────────────────────────────────────────────────┤
- │  prs::ops  (matmul, add, softmax, ... ) — validation, shape  │  backend-agnostic
- │            inference, broadcasting, dtype promotion          │
+ │  mensurflow::ops (matmul, add, softmax, ...) — validation,   │  backend-agnostic
+ │    shape inference, broadcasting, dtype promotion            │
  ├──────────────────────────────────────────────────────────────┤
  │  Dispatcher: (op, backend, dtype) → kernel function pointer  │
  ├──────────────────────────────────────────────────────────────┤
@@ -42,7 +42,7 @@ Rules:
 - Everything above the dispatcher **never includes a vendor header**.
   No `<cuda_runtime.h>`, `<vulkan/vulkan.h>`, or `Metal.h` in `include/`.
 - Each backend compiles to its own target (static, or a shared plugin — see §4).
-- Validation happens once, in `prs::ops`. Kernels may assume valid shapes,
+- Validation happens once, in `mensurflow::ops`. Kernels may assume valid shapes,
   contiguous-or-described strides, and non-overlapping outputs.
 
 ---
@@ -54,7 +54,7 @@ That is fine for single kernels but kills ML workloads (a training step does
 hundreds of ops). The library must move to **device-resident tensors**:
 
 ```cpp
-namespace prs {
+namespace mensurflow {
 
 enum class DeviceType { CPU, CUDA, ROCm, Metal, Vulkan };
 enum class DType { F32, F16, BF16, I32, I64, U8, Bool };
@@ -96,10 +96,10 @@ Tensor softmax(const Tensor& x, int dim);
 
 void synchronize(Device = default_device());
 
-} // namespace prs
+} // namespace mensurflow
 ```
 
-Keep the existing `prs::axpy(std::vector...)` / `prs::matmul(std::vector...)`
+Keep the existing `mensurflow::axpy(std::vector...)` / `mensurflow::matmul(std::vector...)`
 as a thin **convenience layer** on top of `Tensor` (upload → op → download), so
 current tests and benchmarks keep working.
 
@@ -108,7 +108,7 @@ current tests and benchmarks keep working.
 - **Eager + asynchronous.** Each op records work into the device's current
   `Stream` (CUDA stream / HIP stream / `MTLCommandBuffer` / Vulkan command buffer)
   and returns. Only `copy_to_host`, `synchronize`, or reading a scalar blocks.
-- Later (phase 3+), add an optional **graph mode** (`prs::Graph g; g.capture(...)`)
+- Later (phase 3+), add an optional **graph mode** (`mensurflow::Graph g; g.capture(...)`)
   that maps to CUDA Graphs / MPSGraph / pre-recorded Vulkan command buffers and
   enables fusion. Do not design for it now, but don't make ops depend on
   immediate execution either.
@@ -119,7 +119,7 @@ current tests and benchmarks keep working.
 
 Detection order inside `default_device()`:
 
-1. `PRS_DEVICE` environment variable overrides everything (`cuda:0`, `vulkan:1`, `cpu`).
+1. `MENSURFLOW_DEVICE` environment variable overrides everything (`cuda:0`, `vulkan:1`, `cpu`).
 2. CUDA plugin loaded and `cudaGetDeviceCount() > 0` → CUDA.
 3. ROCm plugin loaded and `hipGetDeviceCount() > 0` → ROCm.
 4. Apple platform and `MTLCreateSystemDefaultDevice() != nil` → Metal.
@@ -130,7 +130,7 @@ Detection order inside `default_device()`:
 
 Vulkan also gives us a free hardware inventory: `VkPhysicalDeviceProperties::vendorID`
 (`0x10DE` NVIDIA, `0x1002` AMD, `0x8086` Intel, `0x106B` Apple, `0x13B5` ARM,
-`0x5143` Qualcomm). Use it for `prs::list_devices()` diagnostics and to print
+`0x5143` Qualcomm). Use it for `mensurflow::list_devices()` diagnostics and to print
 "NVIDIA GPU found but CUDA runtime missing — using Vulkan" style hints.
 
 Explicit selection (`Device{DeviceType::CUDA}`) never silently falls back —
@@ -145,13 +145,13 @@ without CUDA. Two options:
 
 | Option | How | When |
 |---|---|---|
-| **A. Compile-time** (current) | `PRS_ENABLE_CUDA` etc., `#ifdef PRS_HAS_CUDA` | Now. Simple, good for the course. |
-| **B. Runtime plugins** | Each backend is `libprs_cuda.so` / `.dylib` / `.dll` exporting `prs_backend_register()`; core `dlopen`s whatever is next to it | When one binary must run on many machines. |
+| **A. Compile-time** (current) | `MENSURFLOW_ENABLE_CUDA` etc., `#ifdef MENSURFLOW_HAS_CUDA` | Now. Simple, good for the course. |
+| **B. Runtime plugins** | Each backend is `libmensurflow_cuda.so` / `.dylib` / `.dll` exporting `mensurflow_backend_register()`; core `dlopen`s whatever is next to it | When one binary must run on many machines. |
 
 Design the backend interface so B is a drop-in change: the core only talks to a
 `BackendRegistry` filled via `register_backend(std::unique_ptr<Backend>)`. With
 option A, each backend calls it from a static registration function; with B the
-plugin calls it from `prs_backend_register()`.
+plugin calls it from `mensurflow_backend_register()`.
 
 ---
 
@@ -161,7 +161,7 @@ Vendor libraries don't cover everything (cuBLAS has no softmax, MPS has no
 fused AdamW, ...). So dispatch is **per op, not per backend**:
 
 ```cpp
-namespace prs::detail {
+namespace mensurflow::detail {
 
 using KernelFn = void (*)(const OpArgs&, Stream&);
 
@@ -173,7 +173,7 @@ class Dispatcher {
     KernelFn lookup(KernelKey) const;   // throws NotImplemented if missing
 };
 
-} // namespace prs::detail
+} // namespace mensurflow::detail
 ```
 
 Each backend registers what it has. Lookup order for e.g. `softmax` on a
@@ -182,7 +182,7 @@ CUDA tensor:
 1. A vendor-library kernel (cuDNN softmax), if registered.
 2. Our own kernel for that backend (`backends/cuda/kernels/softmax.cu`).
 3. **CPU fallback**: copy inputs to host, run the CPU kernel, copy back, and
-   log a one-time warning. Off by default, on with `PRS_ENABLE_CPU_FALLBACK=1`
+   log a one-time warning. Off by default, on with `MENSURFLOW_ENABLE_CPU_FALLBACK=1`
    (same idea as PyTorch's `PYTORCH_ENABLE_MPS_FALLBACK`). Useful while a
    backend is still incomplete; never something to rely on for speed.
 4. Otherwise throw `NotImplemented("softmax", CUDA, F16)`.
@@ -205,14 +205,14 @@ fails CI if the Vulkan or CPU column has holes.
 ## 6. Folder structure
 
 ```
-PRS/
+mensurflow/
 ├── CMakeLists.txt                  # top-level: options, add_subdirectory(...)
 ├── cmake/
 │   ├── FindROCm.cmake
 │   ├── CompileShaders.cmake        # glslc/slangc → SPIR-V → embedded C++ arrays
 │   └── Sanitizers.cmake
-├── include/prs/                    # PUBLIC API — no vendor headers allowed
-│   ├── prs.hpp                     # umbrella include
+├── include/mensurflow/             # PUBLIC API — no vendor headers allowed
+│   ├── mensurflow.hpp              # umbrella include
 │   ├── device.hpp                  # Device, DeviceType, list_devices, synchronize
 │   ├── dtype.hpp
 │   ├── tensor.hpp                  # Tensor, Shape, Strides
@@ -330,7 +330,7 @@ Replaces today's `BackendInterface` (which has one virtual per op and doesn't
 scale to 100+ ops):
 
 ```cpp
-namespace prs::detail {
+namespace mensurflow::detail {
 
 class Buffer {                       // opaque, owned by an Allocator
   public:
@@ -358,7 +358,7 @@ class Backend {
     virtual void register_kernels(Dispatcher&) = 0;   // fills op table
 };
 
-} // namespace prs::detail
+} // namespace mensurflow::detail
 ```
 
 Kernels are plain functions registered into the `Dispatcher`, so adding an op

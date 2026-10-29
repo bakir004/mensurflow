@@ -31,7 +31,7 @@ the owner's destructor. One template covers all handle types:
 
 ```cpp
 // src/backends/vulkan/core/handle.hpp
-namespace prs::vk {
+namespace mensurflow::vk {
 
 // Owns one Vulkan handle whose destroy function takes (VkDevice, T, allocator).
 template <typename T, void (*Destroy)(VkDevice, T, const VkAllocationCallbacks*)>
@@ -79,7 +79,7 @@ using Semaphore           = DeviceHandle<VkSemaphore, vkDestroySemaphore>;
 using QueryPool           = DeviceHandle<VkQueryPool, vkDestroyQueryPool>;
 using PipelineCache       = DeviceHandle<VkPipelineCache, vkDestroyPipelineCache>;
 
-} // namespace prs::vk
+} // namespace mensurflow::vk
 ```
 
 `VkInstance`, `VkDevice`, `VkDebugUtilsMessengerEXT` and VMA allocations have
@@ -154,7 +154,7 @@ inline void check(VkResult r, const char* what) {
 - `VK_ERROR_DEVICE_LOST`: mark the `Device` as lost; every later call throws
   immediately. Don't try to recover.
 - `VK_ERROR_OUT_OF_DEVICE_MEMORY` during allocation: empty the buffer pool,
-  retry once, then throw `prs::OutOfMemory`.
+  retry once, then throw `mensurflow::OutOfMemory`.
 - Constructors that fail halfway are safe because each already-created member
   is a RAII object that cleans itself up — no `goto cleanup`.
 
@@ -170,7 +170,7 @@ inline void check(VkResult r, const char* what) {
 - macOS (MoltenVK): enable `VK_KHR_portability_enumeration` and set
   `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`; enable
   `VK_KHR_portability_subset` on the device if listed.
-- Debug builds / `PRS_VULKAN_VALIDATION=1`: enable `VK_LAYER_KHRONOS_validation`
+- Debug builds / `MENSURFLOW_VULKAN_VALIDATION=1`: enable `VK_LAYER_KHRONOS_validation`
   and `VK_EXT_debug_utils`; route messages to our logger; **treat validation
   errors as test failures** in CI.
 - Use **volk** (meta-loader) so the library doesn't hard-link `libvulkan`:
@@ -183,7 +183,7 @@ Score each device:
 
 1. Must have a queue family with `VK_QUEUE_COMPUTE_BIT`.
 2. Prefer discrete > integrated > virtual; reject `VK_PHYSICAL_DEVICE_TYPE_CPU`
-   (llvmpipe, SwiftShader) unless `PRS_VULKAN_ALLOW_CPU=1` (useful for CI).
+   (llvmpipe, SwiftShader) unless `MENSURFLOW_VULKAN_ALLOW_CPU=1` (useful for CI).
 3. Tie-break on device-local heap size.
 
 Prefer a **dedicated compute queue family** (compute without graphics — AMD
@@ -240,7 +240,7 @@ alignment. Writing this yourself is a lot of work with no payoff.
 `vkAllocateMemory` / `vmaCreateBuffer` are slow and ML allocates constantly.
 Keep freed buffers in size buckets (round up to powers of two below 1 MiB,
 to 2 MiB multiples above) and reuse them, gated by the timeline value (§1.3).
-Expose `prs::empty_cache()` and memory statistics for debugging.
+Expose `mensurflow::empty_cache()` and memory statistics for debugging.
 
 ### 3.3 Transfers
 
@@ -369,7 +369,7 @@ struct PipelineKey {
 - Create pipelines **lazily** on first use and keep them in an
   `unordered_map<PipelineKey, PipelineEntry>` (entry = pipeline + layout).
 - One `VkPipelineCache` per device, loaded from and saved to
-  `~/.cache/prs/vulkan/<vendor>-<device>-<driver>.bin`. Validate the header
+  `~/.cache/mensurflow/vulkan/<vendor>-<device>-<driver>.bin`. Validate the header
   (vendorID, deviceID, pipelineCacheUUID) before using it.
 - Thread safety: a mutex around the map; pipeline creation itself is thread-safe.
 
@@ -476,7 +476,7 @@ void unary(const OpArgs& args, detail::Stream& s) {
     stream.barrier();
 }
 
-PRS_REGISTER_KERNEL(Op::Unary, DeviceType::Vulkan, DType::F32, unary);
+MENSURFLOW_REGISTER_KERNEL(Op::Unary, DeviceType::Vulkan, DType::F32, unary);
 ```
 
 Each op file is short: pick a variant, fill push constants, compute the grid,
@@ -489,7 +489,7 @@ dispatch. All Vulkan boilerplate stays in `core/`.
 - `VK_EXT_debug_utils`: name every buffer and pipeline
   (`vkSetDebugUtilsObjectNameEXT`) so validation messages say
   `"tensor#42 (matmul out)"` instead of a raw hex handle.
-- **Timestamp queries** around each dispatch when `PRS_PROFILE=1`; print a
+- **Timestamp queries** around each dispatch when `MENSURFLOW_PROFILE=1`; print a
   per-op table at exit (name, count, total µs, GB/s or GFLOP/s).
 - Vendor tools: Nsight Graphics / Nsight Systems (NVIDIA), Radeon GPU Profiler
   (AMD), Intel GPA, Xcode Metal capture (works through MoltenVK).

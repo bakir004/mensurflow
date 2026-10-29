@@ -1,11 +1,11 @@
 @echo off
-rem Windows shortcut: configure a Release build, run correctness tests, and run benchmarks.
-rem OpenCL headers and the ICD loader are fetched automatically when not installed.
+rem Windows shortcut: configure a Debug build, compile, and run all tests.
+rem Extra arguments go to ctest, e.g. `test.bat -R device` runs only matching tests.
 setlocal
 
 rem Resolve paths relative to this script, not the caller's working directory.
 set "PROJECT_DIR=%~dp0"
-set "BUILD_DIR=%PROJECT_DIR%build-auto"
+set "BUILD_DIR=%PROJECT_DIR%build"
 
 rem Install tracked hooks for Git clones; preserve existing custom hook paths.
 rem Source archives without Git metadata do not need hook installation.
@@ -14,22 +14,18 @@ if exist "%PROJECT_DIR%.git" (
     if errorlevel 1 exit /b 1
 )
 
-rem Detect optional GPU toolchains and generate build instructions.
 rem Prefer Ninja for faster incremental builds, but keep an existing build directory's generator.
 set "GENERATOR="
 if not exist "%BUILD_DIR%\CMakeCache.txt" (
     where ninja >nul 2>nul && set "GENERATOR=-G Ninja"
 )
-cmake -S "%PROJECT_DIR%." -B "%BUILD_DIR%" %GENERATOR% -DCMAKE_BUILD_TYPE=Release
+cmake -S "%PROJECT_DIR%." -B "%BUILD_DIR%" %GENERATOR% -DCMAKE_BUILD_TYPE=Debug
 if errorlevel 1 exit /b 1
 
-cmake --build "%BUILD_DIR%" --config Release --parallel
+cmake --build "%BUILD_DIR%" --config Debug --parallel
 if errorlevel 1 exit /b 1
 
-ctest --test-dir "%BUILD_DIR%" -C Release --output-on-failure
-if errorlevel 1 exit /b 1
-
-cmake --build "%BUILD_DIR%" --config Release --target run_benchmarks
+ctest --test-dir "%BUILD_DIR%" -C Debug --output-on-failure %*
 if errorlevel 1 exit /b 1
 
 exit /b 0

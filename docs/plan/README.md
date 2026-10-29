@@ -1,4 +1,4 @@
-# PRS ML/BLAS Library — Design Plan
+# Mensurflow ML/BLAS Library — Design Plan
 
 A C++ library for tensors, BLAS and ML ops that detects the user's hardware
 and runs on the best backend: cuBLAS on NVIDIA, rocBLAS on AMD,

@@ -27,21 +27,21 @@ compatibility are not initial requirements.
 Illustrative target API, to be implemented in stages:
 
 ```cpp
-prs::Model model;
+mensurflow::Model model;
 
 // Declare named, float32 scalar inputs. Tensor shapes work the same way.
-auto i1 = model.input("i1", prs::Shape{});
-auto i2 = model.input("i2", prs::Shape{});
-auto i3 = model.input("i3", prs::Shape{});
+auto i1 = model.input("i1", mensurflow::Shape{});
+auto i2 = model.input("i2", mensurflow::Shape{});
+auto i3 = model.input("i3", mensurflow::Shape{});
 
 auto x1 = model.addNode("plus", i1, i2);
 auto x2 = model.addNode("mult", x1, i3);
 auto o1 = model.addNode("neg", x2);
 
 model.optimize(o1);  // Validate and compile the subgraph needed for this output.
-auto result = model.run({prs::Tensor::scalar(1.0f),
-                         prs::Tensor::scalar(2.0f),
-                         prs::Tensor::scalar(3.0f)});
+auto result = model.run({mensurflow::Tensor::scalar(1.0f),
+                         mensurflow::Tensor::scalar(2.0f),
+                         mensurflow::Tensor::scalar(3.0f)});
 // result[0].item() == -9.0f
 ```
 
@@ -302,7 +302,7 @@ Suggested components (names can change):
 - `Device`, `Buffer`, `Event`: backend-specific resource abstractions.
 - `Profiler`, `Autotuner`, `TuningCache`: measurements and reusable configurations.
 
-Keep public headers under `include/prs/`; organize implementations under `src/`
+Keep public headers under `include/mensurflow/`; organize implementations under `src/`
 into core, graph, runtime, and backend/kernel areas as the project grows. Keep
 correctness tests under `tests/`, performance programs under `benchmarks/`, and
 add small runnable graph demos under `examples/`.
