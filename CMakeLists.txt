@@ -12,7 +12,8 @@ endif()
 # Core library: public types, dispatcher, and (later) the CPU backend.
 add_library(mensurflow
     src/core/dtype.cpp
-    src/core/device.cpp)
+    src/core/device.cpp
+    src/core/shape.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -33,3 +34,4 @@ endfunction()
 
 mensurflow_add_test(dtype_test tests/core/dtype_test.cpp)
 mensurflow_add_test(device_test tests/core/device_test.cpp)
+mensurflow_add_test(shape_test tests/core/shape_test.cpp)
