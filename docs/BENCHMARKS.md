@@ -856,3 +856,143 @@ Caveats for this comparison:
 - Power: neither machine ran on a High performance plan (laptop on battery with Balanced, desktop on
   "Dedera" with a 95 % processor cap). The desktop's sequential numbers would probably be higher
   with boost enabled.
+
+## Matrix multiplication (laptop only so far)
+
+`C = A * B` for square float32 matrices, `benchmarks/blas/matmul_benchmark.cpp`. Same machine,
+compiler and conditions as Machine 1 above (on battery, Balanced plan, so expect noise).
+
+- sequential: the plain i-k-j loop (`sequential.cpp`), no blocking, no threads.
+- parallel: the cache-blocked kernel (`matmul.cpp`) with the rows of C split between threads. The
+  1-thread row shows what blocking alone buys.
+
+Run it like the other benchmarks: `matmul_benchmark > matmul_<machine>.txt`. GFLOP/s counts
+2 n^3 operations.
+
+### Results (one run, default build: baseline SSE2 instructions)
+
+| n | Sequential | Blocked, 1 thread | 4 threads | 8 threads |
+|---|---|---|---|---|
+| 64 | 10.3 GFLOP/s | 10.2 (0.99x) | 9.4 (0.92x) | 6.7 (0.65x) |
+| 128 | 10.7 | 10.5 (0.98x) | 30.8 (2.9x) | 26.8 (2.5x) |
+| 256 | 11.0 | 11.1 (1.0x) | 40.4 (3.7x) | 38.1 (3.5x) |
+| 512 | 11.1 | 12.5 (1.1x) | 44.4 (4.0x) | 41.9 (3.8x) |
+| 1024 | 8.7 | 10.3 (1.2x) | 30.9 (3.6x) | 37.3 (4.3x) |
+
+What it shows:
+
+- The threads give 3.5-4.3x on this 4-core CPU from n = 128 up. At n = 64 the matrices are too small
+  to share (the kernel stays serial below 262,144 multiply-adds, but 8 threads are still slower).
+- Cache blocking alone helps little (1.0-1.2x), because the plain i-k-j loop already streams
+  through B row by row and the compiler vectorizes it.
+- Absolute speed is low: 44 GFLOP/s at best. The inner loop does two loads and a store for every
+  multiply-add, so it is limited by cache bandwidth, not arithmetic. A kernel that keeps a small
+  tile of C in registers while it runs over the depth would be several times faster.
+- Each C entry sums its products in the same order as the sequential loop, whatever the thread
+  count, so results do not depend on it (and agree with the sequential ones to within rounding;
+  tested in `tests/ops/matmul_test.cpp`).
+
+### Same benchmark built with `-DMENSURFLOW_NATIVE=ON` (AVX2 and FMA)
+
+| n | Sequential | Blocked, 1 thread | 4 threads | 8 threads |
+|---|---|---|---|---|
+| 128 | 16.7 GFLOP/s | 15.4 (0.92x) | 20.5 (1.2x) | 17.7 (1.1x) |
+| 256 | 13.4 | 9.9 (0.74x) | 33.9 (2.5x) | 25.0 (1.9x) |
+| 512 | 14.2 | 18.4 (1.3x) | 45.0 (3.2x) | 58.3 (4.1x) |
+| 1024 | 16.0 | 12.8 (0.80x) | 33.2 (2.1x) | 43.7 (2.7x) |
+
+The wider instructions raise the sequential loop from about 11 to about 15 GFLOP/s and the best
+parallel result from 44 to 58 GFLOP/s, much less than the instructions could give. The same limit
+applies: the loop is bound by loads and stores. All 13 tests pass in this build too (fused
+multiply-adds change the last bits, so the matmul tests compare against the float64 reference
+within a tolerance, not bit for bit). These numbers vary a lot between runs on this laptop.
+
+<details>
+<summary>Full output: matmul_benchmark, default build</summary>
+
+```
+Matrix multiplication C = A * B, square float32 matrices
+compiler: gcc 16.1.0, OpenMP: yes, max threads: 8, hardware threads: 8
+sequential = plain i-k-j loop. parallel = blocked kernel with N threads.
+Speedup = sequential time / this time.
+
+       n        impl  threads          ms    GFLOP/s    speedup
+      64  sequential        -       0.051     10.292     1.000x
+      64    parallel        1       0.052     10.177     0.989x
+      64    parallel        2       0.057      9.176     0.892x
+      64    parallel        4       0.056      9.412     0.915x
+      64    parallel        8       0.078      6.715     0.653x
+
+     128  sequential        -       0.390     10.748     1.000x
+     128    parallel        1       0.398     10.528     0.979x
+     128    parallel        2       0.220     19.024     1.770x
+     128    parallel        4       0.136     30.787     2.864x
+     128    parallel        8       0.157     26.762     2.490x
+
+     256  sequential        -       3.052     10.995     1.000x
+     256    parallel        1       3.025     11.093     1.009x
+     256    parallel        2       1.529     21.949     1.996x
+     256    parallel        4       0.831     40.364     3.671x
+     256    parallel        8       0.881     38.072     3.463x
+
+     512  sequential        -      24.131     11.124     1.000x
+     512    parallel        1      21.448     12.515     1.125x
+     512    parallel        2      10.387     25.844     2.323x
+     512    parallel        4       6.052     44.356     3.987x
+     512    parallel        8       6.402     41.930     3.769x
+
+    1024  sequential        -     246.591      8.709     1.000x
+    1024    parallel        1     207.691     10.340     1.187x
+    1024    parallel        2     109.511     19.610     2.252x
+    1024    parallel        4      69.413     30.938     3.553x
+    1024    parallel        8      57.590     37.289     4.282x
+
+```
+
+</details>
+
+<details>
+<summary>Full output: matmul_benchmark, MENSURFLOW_NATIVE=ON build</summary>
+
+```
+Matrix multiplication C = A * B, square float32 matrices
+compiler: gcc 16.1.0, OpenMP: yes, max threads: 8, hardware threads: 8
+sequential = plain i-k-j loop. parallel = blocked kernel with N threads.
+Speedup = sequential time / this time.
+
+       n        impl  threads          ms    GFLOP/s    speedup
+      64  sequential        -       0.044     11.943     1.000x
+      64    parallel        1       0.037     14.263     1.194x
+      64    parallel        2       0.067      7.796     0.653x
+      64    parallel        4       0.083      6.349     0.532x
+      64    parallel        8       0.116      4.535     0.380x
+
+     128  sequential        -       0.251     16.733     1.000x
+     128    parallel        1       0.272     15.400     0.920x
+     128    parallel        2       0.217     19.337     1.156x
+     128    parallel        4       0.204     20.526     1.227x
+     128    parallel        8       0.237     17.717     1.059x
+
+     256  sequential        -       2.497     13.437     1.000x
+     256    parallel        1       3.397      9.878     0.735x
+     256    parallel        2       1.900     17.663     1.314x
+     256    parallel        4       0.990     33.908     2.523x
+     256    parallel        8       1.343     24.978     1.859x
+
+     512  sequential        -      18.847     14.243     1.000x
+     512    parallel        1      14.609     18.375     1.290x
+     512    parallel        2       6.430     41.750     2.931x
+     512    parallel        4       5.961     45.033     3.162x
+     512    parallel        8       4.603     58.319     4.095x
+
+    1024  sequential        -     134.006     16.025     1.000x
+    1024    parallel        1     168.099     12.775     0.797x
+    1024    parallel        2     110.223     19.483     1.216x
+    1024    parallel        4      64.616     33.235     2.074x
+    1024    parallel        8      49.178     43.668     2.725x
+
+```
+
+</details>
+
+Not measured yet: the Ryzen 9 5900X desktop (rerun `matmul_benchmark` there after pulling).
