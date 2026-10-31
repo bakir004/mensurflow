@@ -1,7 +1,8 @@
 # CPU benchmarks: sequential vs parallel
 
-Results from the CPU kernels (`add`, `mul`, `dot`, float32), measured on each machine we have, so
-the numbers can be compared. Keep the build and run conditions below the same on every machine,
+Results from the float32 CPU kernels (`add`, `sub`, `mul`, `div`, `neg`, `abs`,
+`square`, `relu`, `sqrt`, `exp`, `sigmoid`, `axpy`, `bias_add`, `dot`), measured on each machine we have
+so the numbers can be compared. Keep the build and run conditions below the same on every machine,
 otherwise the comparison is not fair.
 
 Code:
@@ -11,7 +12,9 @@ Code:
 
 Benchmarks: `benchmarks/cpu_parallel_benchmark.cpp` (sequential vs parallel, kernels called
 directly), `benchmarks/blas/dot_benchmark.cpp` (through the public `mensurflow::dot`).
-Tests that the two implementations agree: `tests/ops/sequential_test.cpp`.
+Tests cover CPU kernels, sequential agreement, and the public API in
+`tests/ops/elementwise_test.cpp`, `tests/ops/sequential_test.cpp`, and
+`tests/ops/elementwise_ops_test.cpp`.
 
 ## How to run
 
@@ -996,3 +999,163 @@ Speedup = sequential time / this time.
 </details>
 
 Not measured yet: the Ryzen 9 5900X desktop (rerun `matmul_benchmark` there after pulling).
+
+## Machine 3: laptop
+
+| | |
+|---|---|
+| Model | Acer Nitro AN515-46 (reported by system DMI) |
+| CPU | AMD Ryzen 5 6600H with Radeon Graphics |
+| Cores / threads | 6 / 12 |
+| Clock | Linux reports a maximum of 4.564 GHz; clocks during the measurements were not recorded |
+| Cache | L2 3 MiB (512 KiB per core), L3 16 MiB |
+| RAM | Approximately 14.8 GiB usable memory reported by Linux; memory speed was not recorded |
+| OS | Ubuntu 24.04.4 LTS, Linux 6.8.0-110-generic |
+| Compiler | GCC 13.3.0 (Ubuntu), Release, `-O3 -DNDEBUG -fopenmp`, `MENSURFLOW_NATIVE=OFF` |
+| OpenMP | 4.5 reported by CMake (libgomp) |
+| Code | branch `feat/cpu-elementwise-cutoff`, commit `84b3cbf` plus the local `sqrt`/`exp`/`sigmoid` implementation and benchmark changes (uncommitted when measured) |
+| Power state | AC power connected and Linux CPU governor `performance`, observed before and after the two runs; background activity was not controlled |
+| Thread limit | `OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE`; measured with 1, 2, 4, 6, 8, and 12 threads |
+| Measurement date | 2026-10-31; CUDA, ROCm, and Metal backends disabled |
+
+### Results (two runs, sequential implementation as the baseline)
+
+The baseline is the plain sequential kernel (`src/backends/cpu/sequential.cpp`, no OpenMP).
+Cells show run 1 / run 2. "Best" is the fastest measured count among 1, 2, 4, 6, 8, and 12,
+shown in brackets. Affinity was not fixed; six threads do not establish one worker per core.
+The table uses Machine 1's four summary sizes; the benchmark also checks smaller inputs.
+
+| Op | n | Sequential (ms) | Speedup, 12 threads | Speedup, best (threads) |
+|---|---|---|---|---|
+| add | 100,000 | 0.010 / 0.010 | 1.881x / 2.606x | 3.484x (6) / 2.908x (6) |
+| add | 1,000,000 | 0.184 / 0.232 | 3.777x / 1.512x | 4.236x (6) / 3.140x (8) |
+| add | 10,000,000 | 6.632 / 6.615 | 0.945x / 1.104x | 1.129x (4) / 1.104x (12) |
+| add | 33,554,432 | 23.453 / 22.727 | 0.940x / 0.904x | 1.115x (2) / 1.062x (6) |
+| sub | 100,000 | 0.009 / 0.010 | 2.438x / 2.512x | 2.438x (12) / 2.828x (6) |
+| sub | 1,000,000 | 0.192 / 0.201 | 3.877x / 4.223x | 3.877x (12) / 4.223x (12) |
+| sub | 10,000,000 | 6.892 / 6.218 | 1.066x / 0.577x | 1.123x (8) / 0.986x (1) |
+| sub | 33,554,432 | 23.392 / 22.708 | 1.042x / 1.088x | 1.122x (2) / 1.088x (12) |
+| mul | 100,000 | 0.009 / 0.010 | 2.367x / 2.704x | 2.827x (6) / 3.027x (6) |
+| mul | 1,000,000 | 0.210 / 0.173 | 4.308x / 4.461x | 4.497x (6) / 4.461x (12) |
+| mul | 10,000,000 | 6.467 / 6.198 | 0.999x / 0.927x | 1.094x (4) / 1.060x (2) |
+| mul | 33,554,432 | 23.673 / 23.421 | 0.925x / 1.040x | 1.066x (4) / 1.150x (4) |
+| div | 100,000 | 0.022 / 0.019 | 4.104x / 3.924x | 4.845x (6) / 4.398x (6) |
+| div | 1,000,000 | 0.278 / 0.233 | 0.087x / 0.039x | 4.340x (8) / 2.808x (4) |
+| div | 10,000,000 | 7.081 / 7.187 | 0.776x / 1.099x | 1.148x (2) / 1.208x (6) |
+| div | 33,554,432 | 23.523 / 23.433 | 1.078x / 1.118x | 1.126x (2) / 1.122x (2) |
+| neg | 100,000 | 0.007 / 0.006 | 2.474x / 2.267x | 2.474x (12) / 2.267x (12) |
+| neg | 1,000,000 | 0.088 / 0.100 | 1.411x / 3.533x | 2.308x (8) / 3.533x (12) |
+| neg | 10,000,000 | 4.955 / 4.929 | 1.059x / 0.907x | 1.129x (2) / 1.114x (2) |
+| neg | 33,554,432 | 17.835 / 17.749 | 0.906x / 1.106x | 1.077x (6) / 1.120x (2) |
+| abs | 100,000 | 0.011 / 0.011 | 4.551x / 4.593x | 5.530x (6) / 5.854x (6) |
+| abs | 1,000,000 | 0.124 / 0.128 | 4.252x / 0.030x | 5.568x (6) / 4.316x (8) |
+| abs | 10,000,000 | 5.076 / 5.023 | 0.776x / 1.078x | 1.143x (2) / 1.128x (6) |
+| abs | 33,554,432 | 18.028 / 17.397 | 1.106x / 1.001x | 1.106x (12) / 1.080x (8) |
+| square | 100,000 | 0.007 / 0.007 | 2.726x / 2.529x | 3.293x (6) / 2.986x (4) |
+| square | 1,000,000 | 0.095 / 0.096 | 3.646x / 3.776x | 4.013x (6) / 4.155x (6) |
+| square | 10,000,000 | 5.172 / 5.602 | 0.991x / 0.916x | 1.124x (8) / 1.219x (2) |
+| square | 33,554,432 | 18.154 / 17.932 | 1.126x / 1.088x | 1.218x (2) / 1.157x (4) |
+| relu | 100,000 | 0.008 / 0.008 | 2.106x / 2.165x | 2.716x (6) / 2.476x (6) |
+| relu | 1,000,000 | 0.105 / 0.109 | 2.684x / 3.232x | 3.394x (6) / 3.556x (6) |
+| relu | 10,000,000 | 4.875 / 5.182 | 0.801x / 0.513x | 1.096x (4) / 1.084x (2) |
+| relu | 33,554,432 | 17.168 / 18.009 | 1.071x / 1.092x | 1.146x (2) / 1.175x (2) |
+| sqrt | 100,000 | 0.111 / 0.111 | 4.892x / 5.088x | 5.663x (6) / 5.662x (6) |
+| sqrt | 1,000,000 | 1.109 / 1.109 | 5.430x / 5.299x | 5.513x (6) / 5.638x (6) |
+| sqrt | 10,000,000 | 11.480 / 11.587 | 2.128x / 1.722x | 2.563x (6) / 2.551x (4) |
+| sqrt | 33,554,432 | 38.478 / 38.631 | 1.870x / 2.160x | 2.285x (4) / 2.408x (6) |
+| exp | 100,000 | 0.249 / 0.245 | 5.449x / 5.340x | 5.449x (12) / 5.340x (12) |
+| exp | 1,000,000 | 2.498 / 2.453 | 4.934x / 5.489x | 5.012x (6) / 5.489x (12) |
+| exp | 10,000,000 | 25.377 / 24.927 | 4.082x / 4.198x | 4.293x (6) / 4.517x (6) |
+| exp | 33,554,432 | 85.207 / 84.234 | 4.358x / 4.730x | 4.358x (12) / 4.730x (12) |
+| sigmoid | 100,000 | 0.272 / 0.272 | 4.799x / 4.778x | 4.799x (12) / 4.778x (12) |
+| sigmoid | 1,000,000 | 2.803 / 2.752 | 3.831x / 4.153x | 4.318x (6) / 4.705x (6) |
+| sigmoid | 10,000,000 | 28.194 / 27.674 | 3.580x / 2.061x | 4.577x (6) / 3.299x (8) |
+| sigmoid | 33,554,432 | 91.236 / 93.958 | 4.330x / 3.460x | 4.330x (12) / 4.423x (6) |
+| dot | 100,000 | 0.068 / 0.069 | 5.656x / 5.989x | 5.656x (12) / 5.989x (12) |
+| dot | 1,000,000 | 0.682 / 0.667 | 5.185x / 5.713x | 5.185x (12) / 5.713x (12) |
+| dot | 10,000,000 | 7.066 / 7.029 | 1.079x / 2.128x | 2.533x (4) / 2.568x (4) |
+| dot | 33,554,432 | 25.146 / 25.429 | 2.375x / 2.104x | 2.779x (4) / 2.784x (8) |
+
+What it shows:
+
+- The fastest measured count depends on operation and size. Simple elementwise operations
+  are mainly limited by data movement on large arrays: twelve-thread gains at 33,554,432
+  elements range from about 0.90x to 1.13x.
+- At that size, `exp` reaches 4.36-4.73x and `sigmoid` 3.46-4.33x with twelve threads;
+  `sqrt` reaches 1.87-2.16x and `dot` 2.10-2.38x.
+- Keep 32,768 elements as an initial cutoff. Smaller inputs use the serial fallback, so
+  these measurements do not establish a lower optimum or a universal best thread count.
+- Both runs passed all checks: elementwise results matched bit for bit and `dot` passed
+  its tolerance check.
+
+Reliability: these results are provisional. With twelve threads, `div` at 1,000,000
+inputs takes 3.216 / 5.997 ms and `abs` 0.029 / 4.186 ms across runs. The cause was not
+identified; repeat these cases before choosing a thread policy. Background activity,
+compiler differences, and Machine 1's different thread count limit comparisons.
+
+Method: preallocated arrays staggered by 1 KB, warmup, and median of nine timed samples;
+fast calls are repeated. Tensor allocation, dispatch, packing, and input preparation
+are excluded. Binary operations count 12 logical bytes per element; unary and `dot`
+count 8. `sqrt` uses nonnegative inputs, other unary inputs lie in [-0.75, 0.75].
+Printed times have three decimals; speedups use unrounded times.
+
+Run with the Release CPU build and `MENSURFLOW_NATIVE=OFF`:
+
+```bash
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE ./build-cpu/cpu_parallel_benchmark
+```
+
+### AXPY and bias addition (2026-10-31)
+
+Same Machine 3, GCC 13.3.0 Release build, and timing method as above, with
+`MENSURFLOW_NATIVE=OFF` and 1, 2, 4, 6, 8, and 12 threads. AC power was connected
+and the CPU governor was `performance` before and after the runs; background activity
+was not controlled. Code: `2c8180e` plus the local `axpy`/`bias_add` additions.
+Cells show run 1 / run 2; best means the fastest measured thread count in each run.
+Both runs completed all 210 timing rows and passed every bit-exact result check.
+
+AXPY uses `alpha=1.25` with fused float32 multiply-add. Bias addition uses a compact
+bias whose feature count is the largest power-of-two divisor of n, capped at 256.
+For the sizes below the feature counts are 32, 64, 32, 64, 128, 64, and 256 respectively;
+the matrix shape is `[n / features, features]`. Logical traffic is 12*n bytes for AXPY
+and 8*n + 4*features bytes for bias addition. Tensor preparation is outside timing.
+
+| Op | n | Sequential (ms) | Speedup, 12 threads | Speedup, best (threads) |
+|---|---|---|---|---|
+| axpy | 100,000 | 0.202 / 0.205 | 7.006x / 0.034x | 7.006x (12) / 5.057x (8) |
+| axpy | 200,000 | 0.406 / 0.406 | 5.251x / 9.953x | 5.406x (8) / 9.953x (12) |
+| axpy | 500,000 | 1.015 / 1.014 | 7.314x / 0.169x | 7.314x (12) / 5.489x (8) |
+| axpy | 1,000,000 | 2.030 / 2.041 | 6.078x / 0.340x | 6.078x (12) / 5.336x (8) |
+| axpy | 2,000,000 | 4.102 / 4.247 | 3.358x / 0.782x | 4.677x (8) / 4.350x (8) |
+| axpy | 5,000,000 | 10.324 / 11.373 | 2.662x / 1.860x | 3.376x (6) / 3.223x (6) |
+| axpy | 33,554,432 | 70.014 / 71.716 | 2.872x / 2.497x | 3.419x (6) / 3.032x (6) |
+| bias_add | 100,000 | 0.009 / 0.010 | 2.336x / 0.002x | 2.795x (6) / 2.180x (8) |
+| bias_add | 200,000 | 0.016 / 0.021 | 2.883x / 0.003x | 2.883x (12) / 3.009x (8) |
+| bias_add | 500,000 | 0.045 / 0.083 | 2.709x / 4.451x | 2.872x (6) / 4.451x (12) |
+| bias_add | 1,000,000 | 0.096 / 0.165 | 3.579x / 2.859x | 3.657x (6) / 5.831x (6) |
+| bias_add | 2,000,000 | 0.558 / 0.699 | 2.660x / 2.492x | 2.953x (8) / 3.183x (8) |
+| bias_add | 5,000,000 | 2.428 / 2.470 | 1.167x / 0.814x | 1.233x (2) / 1.258x (6) |
+| bias_add | 33,554,432 | 18.125 / 18.969 | 1.086x / 1.074x | 1.205x (6) / 1.153x (2) |
+
+What it shows:
+
+- Bias addition has little arithmetic per element; data movement becomes the main cost
+  on large matrices. At the largest size, the best measured gains are about 1.15-1.20x.
+- AXPY has low arithmetic intensity, but this portable build also pays for `std::fma`.
+  Its observed scaling includes math-library execution costs as well as memory traffic.
+  At the largest size, six threads are fastest in both runs, at about 3.03-3.42x.
+- Retain 32,768 elements as the initial cutoff. Four threads improve both operations at
+  32,769 elements in both runs. The bias probe there has only one feature; it does not
+  calibrate the best cutoff for every matrix shape. Sizes at or below the cutoff use
+  the serial fallback, so no optimal threshold below it has been established.
+
+Reliability: the second run contains severe twelve-thread slowdowns, including AXPY
+at 100,000 elements (7.006x / 0.034x) and bias addition at the same size
+(2.336x / 0.002x). Both values are retained. Their cause was not identified, so these
+results are provisional and do not establish a fixed thread policy.
+
+Run just these operations with the existing Release CPU build:
+
+```bash
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE ./build-cpu/cpu_parallel_benchmark axpy bias_add
+```

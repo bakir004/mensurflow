@@ -14,7 +14,23 @@
 
 namespace mensurflow::detail {
 
-enum class OpId { Dot, Add, Sub, Mul, Div, Matmul };
+enum class OpId {
+    Dot,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Matmul,
+    Neg,
+    Abs,
+    Square,
+    Relu,
+    Sqrt,
+    Exp,
+    Sigmoid,
+    Axpy,
+    BiasAdd
+};
 
 const char* op_name(OpId op);
 
@@ -33,6 +49,7 @@ inline bool operator<(const KernelKey& a, const KernelKey& b) {
 struct OpArgs {
     std::vector<Tensor> inputs;
     std::vector<Tensor> outputs;
+    float alpha = 1.0f; // Scalar multiplier for axpy; unused by other operations.
 };
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);
