@@ -32,4 +32,13 @@ void square_f32(const float* x, float* out, std::int64_t n);
 // out[i] = x[i] < 0 ? 0 : x[i]; preserves NaNs and signed zeros.
 void relu_f32(const float* x, float* out, std::int64_t n);
 
+// sqrt(x[i]); negative values produce NaN, and signed zeros are preserved.
+void sqrt_f32(const float* x, float* out, std::int64_t n);
+
+// exp(x[i]); overflow produces +inf, underflow can produce +0.
+void exp_f32(const float* x, float* out, std::int64_t n);
+
+// Numerically stable logistic function; -inf -> 0, +inf -> 1, NaN -> NaN.
+void sigmoid_f32(const float* x, float* out, std::int64_t n);
+
 } // namespace mensurflow::cpu

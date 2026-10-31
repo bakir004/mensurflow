@@ -123,6 +123,10 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::Square, cpu_type, DType::F32},
                                    unary_kernel<cpu::square_f32>);
         dispatcher.register_kernel({OpId::Relu, cpu_type, DType::F32}, unary_kernel<cpu::relu_f32>);
+        dispatcher.register_kernel({OpId::Sqrt, cpu_type, DType::F32}, unary_kernel<cpu::sqrt_f32>);
+        dispatcher.register_kernel({OpId::Exp, cpu_type, DType::F32}, unary_kernel<cpu::exp_f32>);
+        dispatcher.register_kernel({OpId::Sigmoid, cpu_type, DType::F32},
+                                   unary_kernel<cpu::sigmoid_f32>);
     }
 
   private:

@@ -75,4 +75,10 @@ Tensor square(const Tensor& x) { return unary_op(detail::OpId::Square, x); }
 
 Tensor relu(const Tensor& x) { return unary_op(detail::OpId::Relu, x); }
 
+Tensor sqrt(const Tensor& x) { return unary_op(detail::OpId::Sqrt, x); }
+
+Tensor exp(const Tensor& x) { return unary_op(detail::OpId::Exp, x); }
+
+Tensor sigmoid(const Tensor& x) { return unary_op(detail::OpId::Sigmoid, x); }
+
 } // namespace mensurflow

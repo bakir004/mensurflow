@@ -43,12 +43,17 @@ struct UnaryOp {
     UnaryKernel sequential;
     UnaryKernel parallel;
     UnaryKernel reference;
+    float reference_tolerance = 0.0f;
 };
 
 const UnaryOp unary_ops[] = {{"neg", seq::neg_f32, cpu::neg_f32, reference::neg},
                              {"abs", seq::abs_f32, cpu::abs_f32, reference::abs},
                              {"square", seq::square_f32, cpu::square_f32, reference::square},
-                             {"relu", seq::relu_f32, cpu::relu_f32, reference::relu}};
+                             {"relu", seq::relu_f32, cpu::relu_f32, reference::relu},
+                             {"sqrt", seq::sqrt_f32, cpu::sqrt_f32, reference::sqrt, 4e-7f},
+                             {"exp", seq::exp_f32, cpu::exp_f32, reference::exp, 4e-7f},
+                             {"sigmoid", seq::sigmoid_f32, cpu::sigmoid_f32, reference::sigmoid,
+                              4e-7f}};
 
 // Multiples of 0.25 in [-4, 4], with zeros so division produces inf and NaN.
 std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {
@@ -95,11 +100,12 @@ void test_elementwise() {
             std::vector<float> want(a.size()), seq_out(a.size());
             op.reference(a.data(), want.data(), n);
             op.sequential(a.data(), seq_out.data(), n);
-            test::require(same_bits(want, seq_out), std::string("sequential ") + op.name +
-                                                        " vs float64 reference");
+            test::require(test::matches_f32(seq_out, want, op.reference_tolerance),
+                          std::string("sequential ") + op.name + " vs float64 reference");
             auto in_place = a;
             op.sequential(in_place.data(), in_place.data(), n);
-            test::require(same_bits(want, in_place), std::string(op.name) + " sequential in place");
+            test::require(same_bits(seq_out, in_place),
+                          std::string(op.name) + " sequential in place");
             for (int threads : {1, 2, 3, original_threads}) {
                 cpu::set_max_threads(threads);
                 std::vector<float> par_out(a.size());
@@ -109,7 +115,7 @@ void test_elementwise() {
                 test::require(same_bits(seq_out, par_out), where + ": parallel vs sequential");
                 in_place = a;
                 op.parallel(in_place.data(), in_place.data(), n);
-                test::require(same_bits(want, in_place), where + ": parallel in place");
+                test::require(same_bits(seq_out, in_place), where + ": parallel in place");
             }
         }
     }
@@ -173,7 +179,9 @@ void test_unary_special_values() {
     const float large = std::numeric_limits<float>::max();
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const std::vector<float> pattern{0.0f, -0.0f, inf, -inf, tiny, -tiny, large, -large,
-                                     1.1f, -1.1f, std::nextafter(1.0f, 2.0f), nan, -nan};
+                                     1.1f, -1.1f, std::nextafter(1.0f, 2.0f), nan, -nan,
+                                     -1000.0f, -104.0f, -100.0f, -90.0f, -20.0f, -2.0f,
+                                     2.0f, 20.0f, 88.0f, 88.7f, 89.0f, 100.0f, 1000.0f};
     std::vector<float> input(static_cast<std::size_t>(cpu::default_grain + 17));
     for (std::size_t i = 0; i < input.size(); ++i) {
         input[i] = pattern[i % pattern.size()];
@@ -189,7 +197,7 @@ void test_unary_special_values() {
             if (std::isnan(expected[i])) {
                 test::require(std::isnan(sequential[i]), name + " propagates NaN");
             } else {
-                test::require(bits(sequential[i]) == bits(expected[i]),
+                test::require(test::close_f32(sequential[i], expected[i], op.reference_tolerance),
                               name + " matches float64 reference for special and rounding cases");
             }
             if (name == "neg") {

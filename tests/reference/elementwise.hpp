@@ -1,5 +1,6 @@
-// Obviously-correct single-threaded versions of the elementwise ops. Optimized kernels must match
-// these bit for bit, since elementwise float arithmetic has no reordering to excuse differences.
+// Independent single-threaded references. Basic arithmetic is checked exactly; transcendental
+// kernels allow float32 rounding against float64 references, while sequential/parallel results
+// must still match bit for bit.
 #pragma once
 
 #include <algorithm>
@@ -57,6 +58,26 @@ inline void relu(const float* x, float* out, std::int64_t n) {
     for (std::int64_t i = 0; i < n; ++i) {
         const double value = static_cast<double>(x[i]);
         out[i] = static_cast<float>(value < 0.0 ? 0.0 : value);
+    }
+}
+
+inline void sqrt(const float* x, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = static_cast<float>(std::sqrt(static_cast<double>(x[i])));
+    }
+}
+
+inline void exp(const float* x, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = static_cast<float>(std::exp(static_cast<double>(x[i])));
+    }
+}
+
+inline void sigmoid(const float* x, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        const double value = static_cast<double>(x[i]);
+        const double z = std::exp(-std::fabs(value));
+        out[i] = static_cast<float>(value < 0.0 ? z / (1.0 + z) : 1.0 / (1.0 + z));
     }
 }
 

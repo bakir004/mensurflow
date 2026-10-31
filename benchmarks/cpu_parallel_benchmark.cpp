@@ -125,6 +125,10 @@ int main() {
                       {"abs", 8.0, unary_kernel<seq::abs_f32>, unary_kernel<cpu::abs_f32>},
                       {"square", 8.0, unary_kernel<seq::square_f32>, unary_kernel<cpu::square_f32>},
                       {"relu", 8.0, unary_kernel<seq::relu_f32>, unary_kernel<cpu::relu_f32>},
+                      {"sqrt", 8.0, unary_kernel<seq::sqrt_f32>, unary_kernel<cpu::sqrt_f32>},
+                      {"exp", 8.0, unary_kernel<seq::exp_f32>, unary_kernel<cpu::exp_f32>},
+                      {"sigmoid", 8.0, unary_kernel<seq::sigmoid_f32>,
+                       unary_kernel<cpu::sigmoid_f32>},
                       {"dot", 8.0, nullptr, nullptr}};
     const std::int64_t sizes[] = {1000,    10000,   32768,   32769,    40000,
                                 50000,   75000,   100000,  200000,   500000,
@@ -132,6 +136,7 @@ int main() {
 
     for (const Op& op : ops) {
         const bool is_dot = op.sequential == nullptr;
+        const bool nonnegative_input = std::string(op.name) == "sqrt";
         std::cout << "\n== " << op.name << " ==\n"
                   << std::setw(12) << "n" << std::setw(12) << "impl" << std::setw(9) << "threads"
                   << std::setw(12) << "ms" << std::setw(10) << "GB/s" << std::setw(11) << "speedup"
@@ -151,6 +156,9 @@ int main() {
             float* reference = pool_ref.data() + 3 * stagger;
             for (std::size_t i = 0; i < len; ++i) {
                 a[i] = static_cast<float>(i % 13) / 8 - 0.75f;
+                if (nonnegative_input) {
+                    a[i] = std::fabs(a[i]); // Time valid square roots, not domain-error handling.
+                }
                 b[i] = static_cast<float>(i % 17) / 8 - 1.0f;
             }
 

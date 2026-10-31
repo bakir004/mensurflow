@@ -30,5 +30,8 @@ Tensor neg(const Tensor& x);    // -x
 Tensor abs(const Tensor& x);    // |x|, including -0 -> +0 and clearing a NaN's sign
 Tensor square(const Tensor& x); // x * x with float32 rounding and overflow
 Tensor relu(const Tensor& x);   // x < 0 ? +0 : x; preserves NaNs and signed zeros
+Tensor sqrt(const Tensor& x);   // sqrt(x); negatives -> NaN, preserves signed zeros
+Tensor exp(const Tensor& x);    // exp(x); overflow -> +inf, underflow may produce +0
+Tensor sigmoid(const Tensor& x); // stable logistic function; -inf -> 0, +inf -> 1
 
 } // namespace mensurflow

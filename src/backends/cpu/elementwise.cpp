@@ -80,4 +80,22 @@ void relu_f32(const float* x, float* out, std::int64_t n) {
     unary(x, out, n, [](float value) { return value < 0.0f ? 0.0f : value; });
 }
 
+void sqrt_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::sqrt(value); });
+}
+
+void exp_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::exp(value); });
+}
+
+void sigmoid_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) {
+        if (value >= 0.0f) {
+            return 1.0f / (1.0f + std::exp(-value));
+        }
+        const float z = std::exp(value);
+        return z / (1.0f + z);
+    });
+}
+
 } // namespace mensurflow::cpu

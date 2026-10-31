@@ -27,6 +27,12 @@ const char* op_name(OpId op) {
         return "square";
     case OpId::Relu:
         return "relu";
+    case OpId::Sqrt:
+        return "sqrt";
+    case OpId::Exp:
+        return "exp";
+    case OpId::Sigmoid:
+        return "sigmoid";
     }
     throw std::invalid_argument("invalid OpId");
 }

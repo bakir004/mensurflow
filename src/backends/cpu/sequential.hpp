@@ -21,6 +21,9 @@ void neg_f32(const float* x, float* out, std::int64_t n);
 void abs_f32(const float* x, float* out, std::int64_t n);
 void square_f32(const float* x, float* out, std::int64_t n);
 void relu_f32(const float* x, float* out, std::int64_t n);
+void sqrt_f32(const float* x, float* out, std::int64_t n);
+void exp_f32(const float* x, float* out, std::int64_t n);
+void sigmoid_f32(const float* x, float* out, std::int64_t n);
 
 // sum(x[i] * y[i]) accumulated in double and rounded to float once at the end, exactly what the
 // parallel dot_f32 does with one thread. n <= 0 gives 0.

@@ -1,5 +1,6 @@
 // Tests CPU elementwise kernels against the reference loops, across sizes around the parallel
-// cutoff and several thread counts. Results must match bit for bit.
+// cutoff and several thread counts. Transcendental references allow float32 rounding;
+// exact sequential/parallel agreement is checked in sequential_test.cpp.
 #include "backends/cpu/elementwise.hpp"
 #include "backends/cpu/parallel.hpp"
 #include "reference/elementwise.hpp"
@@ -34,12 +35,16 @@ struct UnaryOp {
     const char* name;
     UnaryKernel kernel;
     UnaryKernel reference;
+    float reference_tolerance = 0.0f;
 };
 
 const UnaryOp unary_ops[] = {{"neg", neg_f32, reference::neg},
                              {"abs", abs_f32, reference::abs},
                              {"square", square_f32, reference::square},
-                             {"relu", relu_f32, reference::relu}};
+                             {"relu", relu_f32, reference::relu},
+                             {"sqrt", sqrt_f32, reference::sqrt, 4e-7f},
+                             {"exp", exp_f32, reference::exp, 4e-7f},
+                             {"sigmoid", sigmoid_f32, reference::sigmoid, 4e-7f}};
 
 // Deterministic values in roughly [-4, 4], with some exact zeros so div hits inf and NaN.
 std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {
@@ -81,7 +86,7 @@ void test_matches_reference() {
                 std::vector<float> expected(a.size()), actual(a.size());
                 op.reference(a.data(), expected.data(), n);
                 op.kernel(a.data(), actual.data(), n);
-                test::require(same_bits(expected, actual),
+                test::require(test::matches_f32(actual, expected, op.reference_tolerance),
                               std::string(op.name) + " n=" + std::to_string(n) +
                                   " threads=" + std::to_string(threads));
             }
@@ -112,7 +117,8 @@ void test_in_place() {
         op.reference(input.data(), expected.data(), n);
         auto actual = input;
         op.kernel(actual.data(), actual.data(), n);
-        test::require(same_bits(expected, actual), std::string(op.name) + " out aliases input");
+        test::require(test::matches_f32(actual, expected, op.reference_tolerance),
+                      std::string(op.name) + " out aliases input");
     }
 }
 

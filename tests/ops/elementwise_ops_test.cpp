@@ -40,12 +40,17 @@ struct UnaryOp {
     const char* name;
     Tensor (*apply)(const Tensor&);
     void (*reference)(const float*, float*, std::int64_t);
+    float reference_tolerance = 0.0f;
 };
 
 const UnaryOp unary_ops[] = {{detail::OpId::Neg, "neg", neg, reference::neg},
                              {detail::OpId::Abs, "abs", mensurflow::abs, reference::abs},
                              {detail::OpId::Square, "square", square, reference::square},
-                             {detail::OpId::Relu, "relu", relu, reference::relu}};
+                             {detail::OpId::Relu, "relu", relu, reference::relu},
+                             {detail::OpId::Sqrt, "sqrt", mensurflow::sqrt, reference::sqrt, 4e-7f},
+                             {detail::OpId::Exp, "exp", mensurflow::exp, reference::exp, 4e-7f},
+                             {detail::OpId::Sigmoid, "sigmoid", sigmoid, reference::sigmoid,
+                              4e-7f}};
 
 // Some vendor backends cannot express every op (cuBLAS and rocBLAS have no elementwise divide).
 // Those ops must fail with NotImplemented rather than crash or return garbage; they are not
@@ -201,7 +206,8 @@ void check_unary_case(const UnaryOp& op, const Tensor& input, const std::string&
     test::require(out.dtype() == input.dtype() && out.device() == input.device(),
                   where + ": dtype/device");
     test::require(out.is_contiguous() && !out.shares_storage(input), where + ": new packed output");
-    test::require(same_bits(out.to_vector<float>(), want), where + ": values");
+    test::require(test::matches_f32(out.to_vector<float>(), want, op.reference_tolerance),
+                  where + ": values");
     test::require(same_bits(input.to_vector<float>(), before), where + ": input unchanged");
 }
 
@@ -247,6 +253,43 @@ void test_unary_known_values() {
                   "known square values and positive zeros");
     test::require(same_bits(relu(x).to_vector<float>(), {0.0f, -0.0f, 0.0f, 3.0f}),
                   "known relu values and preserved negative zero");
+}
+
+void test_transcendental_known_values() {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float tiny = std::numeric_limits<float>::denorm_min();
+    const auto roots = mensurflow::sqrt(Tensor::from_vector(
+        std::vector<float>{-inf, -4, -0.0f, 0.0f, 4, inf, nan}, {7})).to_vector<float>();
+    test::require(std::isnan(roots[0]) && std::isnan(roots[1]) && std::isnan(roots[6]),
+                  "sqrt domain errors and NaN propagation");
+    test::require(roots[2] == 0 && std::signbit(roots[2]) && roots[3] == 0 &&
+                      !std::signbit(roots[3]) && roots[4] == 2 && roots[5] == inf,
+                  "sqrt preserves signed zeros and handles perfect squares and infinity");
+
+    const auto powers = mensurflow::exp(Tensor::from_vector(
+        std::vector<float>{-inf, -1000, -100, -0.0f, 0.0f, 88, 89, 1000, inf, nan},
+        {10})).to_vector<float>();
+    test::require(powers[0] == 0 && !std::signbit(powers[0]) && powers[1] == 0 && powers[2] > 0,
+                  "exp underflow and representable subnormal results");
+    test::require(powers[3] == 1 && powers[4] == 1 && std::isfinite(powers[5]) &&
+                      powers[6] == inf && powers[7] == inf && powers[8] == inf &&
+                      std::isnan(powers[9]),
+                  "exp zero, float32 overflow, infinities, and NaN");
+
+    const auto probabilities = sigmoid(Tensor::from_vector(
+        std::vector<float>{-inf, -1000, -100, -2, -0.0f, 0.0f, 2, 1000, inf, nan},
+        {10})).to_vector<float>();
+    const std::vector<float> expected{0, 0, 27 * tiny, 0.119202922f, 0.5f,
+                                      0.5f, 0.880797078f, 1, 1, nan};
+    test::require(test::matches_f32(probabilities, expected, 4e-7f),
+                  "known stable sigmoid values, including the negative tail");
+    test::require(probabilities[2] > 0, "sigmoid(-100) must retain a representable subnormal");
+    for (std::size_t i = 0; i + 1 < probabilities.size(); ++i) {
+        test::require(std::isfinite(probabilities[i]) && probabilities[i] >= 0 &&
+                          probabilities[i] <= 1,
+                      "sigmoid finite outputs stay in [0, 1], including extreme inputs");
+    }
 }
 
 void test_ieee_division() {
@@ -324,6 +367,7 @@ int main() {
         test_ieee_division();
         test_unary_special_values();
         test_unary_known_values();
+        test_transcendental_known_values();
         test_mixed_devices();
     });
 }
