@@ -4,10 +4,14 @@ Results from the CPU kernels (`add`, `mul`, `dot`, float32), measured on each ma
 the numbers can be compared. Keep the build and run conditions below the same on every machine,
 otherwise the comparison is not fair.
 
-Code: `src/backends/cpu/parallel.hpp` (`parallel_for`, `parallel_sum`),
-`src/backends/cpu/elementwise.cpp`, `src/backends/cpu/blas.cpp`.
+Code:
+- parallel: `src/backends/cpu/parallel.hpp` (`parallel_for`, `parallel_sum`),
+  `src/backends/cpu/elementwise.cpp`, `src/backends/cpu/blas.cpp`.
+- sequential: `src/backends/cpu/sequential.cpp`, plain loops with no OpenMP. This is the baseline.
+
 Benchmarks: `benchmarks/cpu_parallel_benchmark.cpp` (sequential vs parallel, kernels called
 directly), `benchmarks/blas/dot_benchmark.cpp` (through the public `mensurflow::dot`).
+Tests that the two implementations agree: `tests/ops/sequential_test.cpp`.
 
 ## How to run
 
@@ -29,8 +33,10 @@ cpu_parallel_benchmark > cpu_parallel_<machine>.txt
 dot_benchmark > dot_<machine>.txt
 ```
 
-`threads = 1` in the output is the sequential run. The thread counts tested are 1, 2, 4, 8, 16,
-half the hardware threads (the physical core count on SMT CPUs) and all hardware threads.
+Each size prints a `sequential` row (the plain loop) and `parallel` rows for 1, 2, 4, 8, 16, half
+the hardware threads (the physical core count on SMT CPUs) and all hardware threads. The speedup
+column is always sequential time / that row's time. The `parallel` row with 1 thread shows what the
+parallel machinery costs when there is nothing to gain.
 
 Conditions to keep equal and to write down for every run:
 
@@ -53,145 +59,314 @@ Conditions to keep equal and to write down for every run:
 | OS | Windows 11 Pro, build 26200 |
 | Compiler | GCC 16.1.0 (MSYS2 MinGW-w64), `-O3 -DNDEBUG -fopenmp`, no `-march=native` |
 | OpenMP | 5.2 (libgomp) |
-| Code | branch `feat/dispatcher-dot-elementwise`, commit `bdaef21`, plus `cpu_parallel_benchmark.cpp` (not yet committed) |
-| Power state | **On battery, "Balanced" plan** when the specs were collected. The runs were probably in the same state, so the CPU may have been running below its full speed |
+| Code | branch `feat/dispatcher-dot-elementwise`, commit `61187fc` plus the sequential implementation and the updated benchmark (uncommitted when measured) |
+| Power state | **On battery, "Balanced" plan**, with Chrome running in the background (checked: battery 65 %, CPU idling at 801 MHz). The CPU may have been running below its full speed, and the runs vary a lot (see Results) |
 
-### Results (single run)
+### Results (two runs, sequential implementation as the baseline)
 
-Best parallel time at each size, compared with the sequential (1 thread) run.
+The baseline is the plain sequential kernel (`src/backends/cpu/sequential.cpp`: one loop, no OpenMP).
+Cells show run 3 / run 4 (the two runs with the final benchmark). "8 threads" is the parallel
+kernel with all 8 hardware threads; "best" is the fastest thread count, in brackets.
 
-| Op | n | Sequential | Best parallel | Speedup |
+| Op | n | Sequential (ms) | Speedup, 8 threads | Speedup, best (threads) |
 |---|---|---|---|---|
-| add | 100,000 | 0.024 ms | 0.048 ms (2 threads) | 0.5x (slower) |
-| add | 1,000,000 | 0.498 ms | 0.372 ms (2 threads) | 1.34x |
-| add | 10,000,000 | 6.50 ms | 6.17 ms (4 threads) | 1.05x |
-| add | 33,554,432 | 22.8 ms | 21.3 ms (8 threads) | 1.07x |
-| mul | 100,000 | 0.021 ms | 0.040 ms (2 threads) | 0.5x (slower) |
-| mul | 1,000,000 | 0.436 ms | 0.333 ms (2 threads) | 1.31x |
-| mul | 10,000,000 | 6.65 ms | 6.12 ms (2 threads) | 1.09x |
-| mul | 33,554,432 | 22.3 ms | 20.5 ms (4 threads) | 1.09x |
-| dot | 100,000 | 0.144 ms | 0.077 ms (4 threads) | 1.86x |
-| dot | 1,000,000 | 1.27 ms | 0.292 ms (8 threads) | 4.3x |
-| dot | 10,000,000 | 12.7 ms | 2.65 ms (8 threads) | 4.8x |
-| dot | 33,554,432 | 42.7 ms | 9.24 ms (8 threads) | 4.6x |
+| add | 100,000 | 0.032 / 0.020 | 0.30x / 0.34x | 1.14x (1) / 0.87x (1) |
+| add | 1,000,000 | 0.573 / 0.465 | 1.07x / 1.22x | 1.07x (8) / 1.32x (2) |
+| add | 10,000,000 | 7.81 / 6.36 | 1.37x / 1.09x | 1.37x (8) / 1.10x (4) |
+| add | 33,554,432 | 23.4 / 21.0 | 1.10x / 1.05x | 1.10x (8) / 1.09x (4) |
+| mul | 100,000 | 0.024 / 0.022 | 0.27x / 0.33x | 0.96x (1) / 1.05x (1) |
+| mul | 1,000,000 | 0.561 / 0.433 | 1.01x / 0.79x | 1.26x (4) / 1.01x (2) |
+| mul | 10,000,000 | 7.69 / 6.87 | 1.21x / 1.08x | 1.21x (8) / 1.09x (4) |
+| mul | 33,554,432 | 28.6 / 25.9 | 1.12x / 1.05x | 1.38x (4) / 1.16x (4) |
+| dot | 100,000 | 0.187 / 0.149 | 1.87x / 0.97x | 2.15x (4) / 1.01x (4) |
+| dot | 1,000,000 | 1.41 / 1.90 | 3.96x / 2.48x | 3.96x (8) / 4.27x (4) |
+| dot | 10,000,000 | 16.5 / 16.1 | 4.57x / 3.52x | 4.57x (8) / 3.52x (8) |
+| dot | 33,554,432 | 51.2 / 54.6 | 3.91x / 5.37x | 3.91x (8) / 5.37x (8) |
 
 What it shows:
 
-- `dot` is limited by computation (products are accumulated in double precision, about 6 GB/s with
-  one thread), so it scales: 4.6-4.8x with 8 threads and about 3.6x with 4.
-- `add` and `mul` are limited by memory bandwidth. One thread already reaches about 18 GB/s at
-  large sizes, so extra threads barely help (at most about 1.1x at 10 million elements or more).
-- At 100,000 elements the threaded `add` and `mul` are 2-3x slower than sequential. The data fits
-  in cache, so starting the threads costs more than it saves. The current cutoff (32,768 elements)
-  is too low for the elementwise ops.
-- An earlier run showed 1.2-1.6x for `add`/`mul` at 10 million elements, so treat those small gains
-  as noise.
+- `dot` scales with threads: 3.5-5.4x with 8 threads at 10 million elements and above. The sequential
+  `dot` is slow (about 5 GB/s) because every product is accumulated in double precision, so it is
+  limited by computation, not memory.
+- `add` and `mul` gain little: about 1.0-1.4x at best. The sequential loop already reaches about
+  19 GB/s at 10 million elements, which is this laptop's memory bandwidth, so extra threads have
+  nothing left to speed up.
+- At 100,000 elements the parallel `add` and `mul` with 8 threads are 3-4x slower than the sequential
+  loop (0.27-0.34x). The data fits in cache, so starting threads costs more than it saves. The
+  cutoff (32,768 elements) is too low for the elementwise ops.
+- The parallel kernel with 1 thread stays within about +-20 % of the sequential loop (0.76-1.21x
+  across both runs), which is the noise level here, so the parallel machinery shows no consistent
+  cost when it has nothing to gain.
+- Elementwise results are bit-identical between the two implementations (checked after every timing,
+  and in `tests/ops/sequential_test.cpp`). `dot` agrees within float rounding, and exactly with 1 thread.
+
+Reliability of these numbers: the laptop was on battery (Balanced plan, CPU idling at 800 MHz) with
+Chrome running, and the same row can differ by 30-40 % between the two runs (for example `dot` at
+1 million elements, 2.5x vs 4.0x). Read the conclusions above (dot scales, add/mul do not, cutoff too
+low), not the individual ratios. For comparable numbers, plug in, use High performance and close
+other programs.
+
+Benchmark method note: an earlier version of the benchmark allocated its four arrays at the same
+offset within a page, and the sequential `mul` came out about 2x slower than `add`
+(0.85 ms vs 0.44 ms at 1 million elements). That is the usual signature of "4K aliasing" (loads and
+stores whose addresses agree in the low 12 bits falsely depend on each other). The benchmark now
+starts the arrays 1 KB apart, and `mul` matches `add`. Results taken before this change are not
+comparable.
 
 <details>
-<summary>Full output: cpu_parallel_benchmark</summary>
+<summary>Full output: cpu_parallel_benchmark, run 3</summary>
 
 ```
 Sequential vs parallel on the CPU (float32)
 compiler: gcc 16.1.0, OpenMP: yes, max threads: 8, hardware threads: 8, parallel cutoff: 32768 elements
-threads = 1 is the sequential run. Median of 9 samples.
+sequential = plain loop, no OpenMP. parallel = parallel kernel with N threads.
+Speedup = sequential time / this time. Median of 9 samples.
 
 == add ==
-           n  threads          ms      GB/s    speedup
-        1000        1       0.000    65.766     1.000x
-        1000        2       0.000    65.042     0.989x
-        1000        4       0.000    59.493     0.905x
-        1000        8       0.000    55.644     0.846x
+           n        impl  threads          ms      GB/s    speedup
+        1000  sequential        -       0.000    68.151     1.000x
+        1000    parallel        1       0.000    71.460     1.049x
+        1000    parallel        2       0.000    77.729     1.141x
+        1000    parallel        4       0.000    80.610     1.183x
+        1000    parallel        8       0.000    81.621     1.198x
 
-       10000        1       0.003    41.381     1.000x
-       10000        2       0.003    40.698     0.984x
-       10000        4       0.003    42.147     1.019x
-       10000        8       0.003    42.738     1.033x
+       10000  sequential        -       0.003    47.650     1.000x
+       10000    parallel        1       0.002    50.589     1.062x
+       10000    parallel        2       0.002    51.421     1.079x
+       10000    parallel        4       0.002    50.012     1.050x
+       10000    parallel        8       0.002    52.463     1.101x
 
-      100000        1       0.024    50.083     1.000x
-      100000        2       0.048    25.242     0.504x
-      100000        4       0.050    23.834     0.476x
-      100000        8       0.069    17.319     0.346x
+      100000  sequential        -       0.032    37.836     1.000x
+      100000    parallel        1       0.028    43.408     1.147x
+      100000    parallel        2       0.069    17.485     0.462x
+      100000    parallel        4       0.077    15.604     0.412x
+      100000    parallel        8       0.106    11.352     0.300x
 
-     1000000        1       0.498    24.104     1.000x
-     1000000        2       0.372    32.230     1.337x
-     1000000        4       0.429    27.984     1.161x
-     1000000        8       0.486    24.681     1.024x
+     1000000  sequential        -       0.573    20.947     1.000x
+     1000000    parallel        1       0.755    15.897     0.759x
+     1000000    parallel        2       0.734    16.345     0.780x
+     1000000    parallel        4       0.662    18.138     0.866x
+     1000000    parallel        8       0.537    22.329     1.066x
 
-    10000000        1       6.504    18.450     1.000x
-    10000000        2       6.273    19.129     1.037x
-    10000000        4       6.168    19.455     1.054x
-    10000000        8       6.557    18.300     0.992x
+    10000000  sequential        -       7.806    15.373     1.000x
+    10000000    parallel        1       6.650    18.046     1.174x
+    10000000    parallel        2       6.591    18.207     1.184x
+    10000000    parallel        4       6.178    19.422     1.263x
+    10000000    parallel        8       5.680    21.128     1.374x
 
-    33554432        1      22.811    17.652     1.000x
-    33554432        2      24.255    16.601     0.940x
-    33554432        4      22.687    17.748     1.005x
-    33554432        8      21.329    18.879     1.069x
+    33554432  sequential        -      23.403    17.205     1.000x
+    33554432    parallel        1      22.763    17.689     1.028x
+    33554432    parallel        2      21.565    18.672     1.085x
+    33554432    parallel        4      23.588    17.070     0.992x
+    33554432    parallel        8      21.339    18.869     1.097x
 
 
 == mul ==
-           n  threads          ms      GB/s    speedup
-        1000        1       0.000    95.963     1.000x
-        1000        2       0.000    92.840     0.967x
-        1000        4       0.000    86.899     0.906x
-        1000        8       0.000    90.875     0.947x
+           n        impl  threads          ms      GB/s    speedup
+        1000  sequential        -       0.000    80.072     1.000x
+        1000    parallel        1       0.000   105.149     1.313x
+        1000    parallel        2       0.000    95.855     1.197x
+        1000    parallel        4       0.000    96.141     1.201x
+        1000    parallel        8       0.000    96.362     1.203x
 
-       10000        1       0.002    70.534     1.000x
-       10000        2       0.002    71.887     1.019x
-       10000        4       0.002    76.525     1.085x
-       10000        8       0.001    91.452     1.297x
+       10000  sequential        -       0.002    57.338     1.000x
+       10000    parallel        1       0.002    55.713     0.972x
+       10000    parallel        2       0.002    57.260     0.999x
+       10000    parallel        4       0.002    55.210     0.963x
+       10000    parallel        8       0.002    55.959     0.976x
 
-      100000        1       0.021    57.446     1.000x
-      100000        2       0.040    29.942     0.521x
-      100000        4       0.044    27.062     0.471x
-      100000        8       0.065    18.506     0.322x
+      100000  sequential        -       0.024    49.580     1.000x
+      100000    parallel        1       0.025    47.779     0.964x
+      100000    parallel        2       0.064    18.852     0.380x
+      100000    parallel        4       0.076    15.704     0.317x
+      100000    parallel        8       0.088    13.561     0.274x
 
-     1000000        1       0.436    27.547     1.000x
-     1000000        2       0.333    36.025     1.308x
-     1000000        4       0.398    30.167     1.095x
-     1000000        8       0.504    23.826     0.865x
+     1000000  sequential        -       0.561    21.406     1.000x
+     1000000    parallel        1       0.599    20.040     0.936x
+     1000000    parallel        2       0.560    21.414     1.000x
+     1000000    parallel        4       0.445    26.960     1.259x
+     1000000    parallel        8       0.555    21.618     1.010x
 
-    10000000        1       6.648    18.051     1.000x
-    10000000        2       6.122    19.602     1.086x
-    10000000        4       6.260    19.169     1.062x
-    10000000        8       6.133    19.565     1.084x
+    10000000  sequential        -       7.686    15.612     1.000x
+    10000000    parallel        1       7.699    15.585     0.998x
+    10000000    parallel        2       7.327    16.378     1.049x
+    10000000    parallel        4       6.712    17.877     1.145x
+    10000000    parallel        8       6.333    18.947     1.214x
 
-    33554432        1      22.325    18.036     1.000x
-    33554432        2      23.248    17.320     0.960x
-    33554432        4      20.474    19.666     1.090x
-    33554432        8      20.908    19.259     1.068x
+    33554432  sequential        -      28.640    14.059     1.000x
+    33554432    parallel        1      29.267    13.758     0.979x
+    33554432    parallel        2      23.930    16.826     1.197x
+    33554432    parallel        4      20.793    19.365     1.377x
+    33554432    parallel        8      25.614    15.720     1.118x
 
 
 == dot ==
-           n  threads          ms      GB/s    speedup
-        1000        1       0.001     6.636     1.000x
-        1000        2       0.001     6.784     1.022x
-        1000        4       0.001     5.612     0.846x
-        1000        8       0.001     5.400     0.814x
+           n        impl  threads          ms      GB/s    speedup
+        1000  sequential        -       0.001     5.966     1.000x
+        1000    parallel        1       0.002     5.226     0.876x
+        1000    parallel        2       0.002     5.021     0.842x
+        1000    parallel        4       0.002     5.136     0.861x
+        1000    parallel        8       0.002     4.536     0.760x
 
-       10000        1       0.013     6.182     1.000x
-       10000        2       0.013     6.299     1.019x
-       10000        4       0.013     6.365     1.030x
-       10000        8       0.012     6.747     1.091x
+       10000  sequential        -       0.013     5.977     1.000x
+       10000    parallel        1       0.014     5.919     0.990x
+       10000    parallel        2       0.013     6.171     1.032x
+       10000    parallel        4       0.013     6.087     1.018x
+       10000    parallel        8       0.015     5.371     0.899x
 
-      100000        1       0.144     5.561     1.000x
-      100000        2       0.139     5.757     1.035x
-      100000        4       0.077    10.328     1.857x
-      100000        8       0.090     8.860     1.593x
+      100000  sequential        -       0.187     4.269     1.000x
+      100000    parallel        1       0.214     3.733     0.874x
+      100000    parallel        2       0.143     5.610     1.314x
+      100000    parallel        4       0.087     9.154     2.144x
+      100000    parallel        8       0.100     7.980     1.869x
 
-     1000000        1       1.267     6.315     1.000x
-     1000000        2       0.701    11.408     1.807x
-     1000000        4       0.410    19.534     3.093x
-     1000000        8       0.292    27.363     4.333x
+     1000000  sequential        -       1.407     5.684     1.000x
+     1000000    parallel        1       1.477     5.418     0.953x
+     1000000    parallel        2       0.796    10.050     1.768x
+     1000000    parallel        4       0.475    16.853     2.965x
+     1000000    parallel        8       0.355    22.541     3.966x
 
-    10000000        1      12.708     6.295     1.000x
-    10000000        2       6.748    11.856     1.883x
-    10000000        4       3.540    22.602     3.590x
-    10000000        8       2.648    30.207     4.799x
+    10000000  sequential        -      16.508     4.846     1.000x
+    10000000    parallel        1      15.534     5.150     1.063x
+    10000000    parallel        2       7.914    10.109     2.086x
+    10000000    parallel        4       4.495    17.797     3.672x
+    10000000    parallel        8       3.616    22.125     4.565x
 
-    33554432        1      42.681     6.289     1.000x
-    33554432        2      21.366    12.564     1.998x
-    33554432        4      11.803    22.742     3.616x
-    33554432        8       9.236    29.062     4.621x
+    33554432  sequential        -      51.190     5.244     1.000x
+    33554432    parallel        1      51.167     5.246     1.000x
+    33554432    parallel        2      27.212     9.865     1.881x
+    33554432    parallel        4      14.184    18.925     3.609x
+    33554432    parallel        8      13.107    20.480     3.906x
+
+```
+
+</details>
+
+<details>
+<summary>Full output: cpu_parallel_benchmark, run 4</summary>
+
+```
+Sequential vs parallel on the CPU (float32)
+compiler: gcc 16.1.0, OpenMP: yes, max threads: 8, hardware threads: 8, parallel cutoff: 32768 elements
+sequential = plain loop, no OpenMP. parallel = parallel kernel with N threads.
+Speedup = sequential time / this time. Median of 9 samples.
+
+== add ==
+           n        impl  threads          ms      GB/s    speedup
+        1000  sequential        -       0.000   117.112     1.000x
+        1000    parallel        1       0.000   116.391     0.994x
+        1000    parallel        2       0.000   112.251     0.958x
+        1000    parallel        4       0.000   111.871     0.955x
+        1000    parallel        8       0.000   111.598     0.953x
+
+       10000  sequential        -       0.002    68.964     1.000x
+       10000    parallel        1       0.002    66.316     0.962x
+       10000    parallel        2       0.002    65.456     0.949x
+       10000    parallel        4       0.002    61.143     0.887x
+       10000    parallel        8       0.002    66.692     0.967x
+
+      100000  sequential        -       0.020    60.073     1.000x
+      100000    parallel        1       0.023    51.632     0.859x
+      100000    parallel        2       0.035    34.290     0.571x
+      100000    parallel        4       0.039    30.841     0.513x
+      100000    parallel        8       0.058    20.539     0.342x
+
+     1000000  sequential        -       0.465    25.820     1.000x
+     1000000    parallel        1       0.435    27.572     1.068x
+     1000000    parallel        2       0.352    34.103     1.321x
+     1000000    parallel        4       0.385    31.175     1.207x
+     1000000    parallel        8       0.380    31.571     1.223x
+
+    10000000  sequential        -       6.363    18.858     1.000x
+    10000000    parallel        1       6.549    18.325     0.972x
+    10000000    parallel        2       5.908    20.312     1.077x
+    10000000    parallel        4       5.801    20.686     1.097x
+    10000000    parallel        8       5.826    20.597     1.092x
+
+    33554432  sequential        -      21.049    19.129     1.000x
+    33554432    parallel        1      21.247    18.951     0.991x
+    33554432    parallel        2      20.577    19.568     1.023x
+    33554432    parallel        4      19.343    20.816     1.088x
+    33554432    parallel        8      20.117    20.016     1.046x
+
+
+== mul ==
+           n        impl  threads          ms      GB/s    speedup
+        1000  sequential        -       0.000   101.089     1.000x
+        1000    parallel        1       0.000    90.469     0.895x
+        1000    parallel        2       0.000    90.453     0.895x
+        1000    parallel        4       0.000    88.630     0.877x
+        1000    parallel        8       0.000    87.049     0.861x
+
+       10000  sequential        -       0.002    63.910     1.000x
+       10000    parallel        1       0.002    62.114     0.972x
+       10000    parallel        2       0.002    63.514     0.994x
+       10000    parallel        4       0.002    63.177     0.989x
+       10000    parallel        8       0.002    61.563     0.963x
+
+      100000  sequential        -       0.022    54.576     1.000x
+      100000    parallel        1       0.021    57.703     1.057x
+      100000    parallel        2       0.034    35.068     0.643x
+      100000    parallel        4       0.042    28.817     0.528x
+      100000    parallel        8       0.066    18.262     0.335x
+
+     1000000  sequential        -       0.433    27.696     1.000x
+     1000000    parallel        1       0.488    24.599     0.888x
+     1000000    parallel        2       0.427    28.077     1.014x
+     1000000    parallel        4       0.638    18.824     0.680x
+     1000000    parallel        8       0.549    21.873     0.790x
+
+    10000000  sequential        -       6.874    17.456     1.000x
+    10000000    parallel        1       8.069    14.871     0.852x
+    10000000    parallel        2       6.785    17.685     1.013x
+    10000000    parallel        4       6.289    19.081     1.093x
+    10000000    parallel        8       6.376    18.820     1.078x
+
+    33554432  sequential        -      25.918    15.536     1.000x
+    33554432    parallel        1      26.429    15.235     0.981x
+    33554432    parallel        2      24.552    16.400     1.056x
+    33554432    parallel        4      22.318    18.041     1.161x
+    33554432    parallel        8      24.663    16.326     1.051x
+
+
+== dot ==
+           n        impl  threads          ms      GB/s    speedup
+        1000  sequential        -       0.001     6.428     1.000x
+        1000    parallel        1       0.001     7.290     1.134x
+        1000    parallel        2       0.001     6.092     0.948x
+        1000    parallel        4       0.001     6.072     0.945x
+        1000    parallel        8       0.001     6.561     1.021x
+
+       10000  sequential        -       0.012     6.788     1.000x
+       10000    parallel        1       0.014     5.676     0.836x
+       10000    parallel        2       0.016     5.114     0.753x
+       10000    parallel        4       0.014     5.683     0.837x
+       10000    parallel        8       0.015     5.412     0.797x
+
+      100000  sequential        -       0.149     5.383     1.000x
+      100000    parallel        1       0.174     4.609     0.856x
+      100000    parallel        2       0.150     5.324     0.989x
+      100000    parallel        4       0.148     5.421     1.007x
+      100000    parallel        8       0.154     5.204     0.967x
+
+     1000000  sequential        -       1.896     4.220     1.000x
+     1000000    parallel        1       1.568     5.103     1.209x
+     1000000    parallel        2       0.824     9.707     2.300x
+     1000000    parallel        4       0.444    18.016     4.270x
+     1000000    parallel        8       0.763    10.492     2.486x
+
+    10000000  sequential        -      16.058     4.982     1.000x
+    10000000    parallel        1      19.638     4.074     0.818x
+    10000000    parallel        2       8.764     9.128     1.832x
+    10000000    parallel        4       6.163    12.980     2.605x
+    10000000    parallel        8       4.566    17.520     3.517x
+
+    33554432  sequential        -      54.628     4.914     1.000x
+    33554432    parallel        1      50.326     5.334     1.085x
+    33554432    parallel        2      25.308    10.607     2.159x
+    33554432    parallel        4      13.486    19.905     4.051x
+    33554432    parallel        8      10.170    26.394     5.371x
+
 ```
 
 </details>
@@ -246,7 +421,13 @@ GB/s counts 8 bytes per element (two float reads); GFLOP/s counts 2.
 | Code | branch `feat/dispatcher-dot-elementwise`, commit `62d734b` (clean working tree) |
 | Power state | Desktop on mains power, custom power plan **"Dedera", not High performance**: minimum processor state 80 %, maximum 95 %. A maximum below 100 % usually disables boost on Ryzen, so the CPU probably ran near its 3.7 GHz base clock |
 
-### Results (two runs)
+> **Needs a rerun.** These desktop results were measured with the earlier benchmark, whose
+> "sequential" baseline was the parallel kernel limited to 1 thread, not the separate sequential
+> implementation, and whose arrays were not staggered (see the method note under Machine 1). Rerun
+> `cpu_parallel_benchmark` from the current branch and replace this section. The comparison table
+> at the end is not valid until then.
+
+### Results (two runs, earlier benchmark)
 
 Best parallel time at each size, compared with the sequential (1 thread) run. Values are from
 run 1. Where run 2 differed by more than 10 %, its value is given in brackets.
@@ -653,14 +834,19 @@ GB/s counts 8 bytes per element (two float reads); GFLOP/s counts 2.
 
 ### Comparison
 
-Best speedup over sequential at 10,000,000 elements, and sequential throughput. Desktop values are
-from run 1 (run 2 in brackets where it differed by more than 10 %).
+Best speedup over sequential at 10,000,000 elements, and sequential throughput.
 
-| Op | Laptop speedup | Desktop speedup | Laptop sequential GB/s | Desktop sequential GB/s |
+**The desktop columns are not comparable with the laptop's yet.** The laptop values are from the
+current benchmark (separate sequential baseline, staggered arrays; range over its two runs, best
+thread count). The desktop values are from the earlier benchmark (baseline = parallel kernel on 1
+thread, no staggering; run 1, run 2 in brackets where it differed by more than 10 %). Replace the
+desktop columns after rerunning.
+
+| Op | Laptop speedup | Desktop speedup (old) | Laptop sequential GB/s | Desktop sequential GB/s (old) |
 |---|---|---|---|---|
-| add | 1.05x | 1.29x [1.38x] | 18.5 | 29.6 |
-| mul | 1.09x | 1.49x [1.19x] | 18.1 | 30.2 |
-| dot | 4.8x | 8.6x [7.1x] | 6.3 | 8.9 |
+| add | 1.10-1.37x | 1.29x [1.38x] | 15-19 | 29.6 |
+| mul | 1.09-1.21x | 1.49x [1.19x] | 16-17 | 30.2 |
+| dot | 3.5-4.6x | 8.6x [7.1x] | about 5 | 8.9 |
 
 Caveats for this comparison:
 

@@ -43,7 +43,8 @@ add_library(mensurflow
     src/ops/elementwise.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/blas.cpp
-    src/backends/cpu/elementwise.cpp)
+    src/backends/cpu/elementwise.cpp
+    src/backends/cpu/sequential.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -139,6 +140,7 @@ mensurflow_add_test(transfer_test tests/core/transfer_test.cpp)
 mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
+mensurflow_add_test(sequential_test tests/ops/sequential_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 function(mensurflow_add_benchmark name source)

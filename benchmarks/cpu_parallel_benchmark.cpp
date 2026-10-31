@@ -1,10 +1,15 @@
-// Sequential vs parallel on the CPU. The same kernels run with 1 thread (sequential: parallel_for
-// takes its serial path) and with more threads, so the only difference is the parallelism.
-// Kernels are called directly into preallocated buffers: no dispatcher, no allocation.
-// GB/s counts the bytes each op must touch (add/mul: 12 per element, dot: 8 per element).
+// Sequential vs parallel on the CPU.
+//   sequential: the plain single-loop kernels in sequential.cpp (no OpenMP, no parallel_for).
+//   parallel:   the kernels in elementwise.cpp / blas.cpp (parallel_for / parallel_sum) run with
+//               1, 2, 4, ... threads. The 1-thread row shows what the parallel machinery costs
+//               when there is nothing to gain.
+// Speedup is always sequential time / this time. Kernels are called directly into preallocated
+// buffers: no dispatcher, no allocation. GB/s counts the bytes each op must touch (add/mul: 12
+// per element, dot: 8 per element).
 #include "backends/cpu/blas.hpp"
 #include "backends/cpu/elementwise.hpp"
 #include "backends/cpu/parallel.hpp"
+#include "backends/cpu/sequential.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -14,10 +19,12 @@
 #include <iomanip>
 #include <iostream>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
-using namespace mensurflow::cpu;
+namespace cpu = mensurflow::cpu;
+namespace seq = mensurflow::cpu::sequential;
 
 namespace {
 
@@ -64,12 +71,29 @@ template <typename F> double median_seconds(F&& call) {
 
 volatile float sink = 0; // keeps dot's result from being optimized away
 
+using Kernel = void (*)(const float*, const float*, float*, std::int64_t);
+
+struct Op {
+    const char* name;
+    double bytes_per_element;
+    Kernel sequential; // nullptr for dot, which returns a value instead of filling a buffer
+    Kernel parallel;
+};
+
+void row(const char* impl, std::int64_t n, const std::string& threads, double seconds,
+         double bytes_per_element, double sequential_seconds) {
+    std::cout << std::setw(12) << n << std::setw(12) << impl << std::setw(9) << threads
+              << std::setw(12) << seconds * 1e3 << std::setw(10)
+              << bytes_per_element * static_cast<double>(n) / seconds / 1e9 << std::setw(10)
+              << sequential_seconds / seconds << "x\n";
+}
+
 } // namespace
 
 int main() {
-    const int max = max_threads();
-    // 1 (sequential), a few powers of two, max / 2 (the physical core count when the CPU has
-    // two hardware threads per core), and max.
+    const int max = cpu::max_threads();
+    // 1, a few powers of two, max / 2 (the physical core count when the CPU has two hardware
+    // threads per core), and max.
     std::set<int> wanted{1, 2, 4, 8, 16, max / 2, max};
     std::vector<int> counts;
     for (int t : wanted) {
@@ -79,75 +103,88 @@ int main() {
     }
 
     std::cout << "Sequential vs parallel on the CPU (float32)\n"
-              << "compiler: " << compiler() << ", OpenMP: " << (has_openmp() ? "yes" : "no")
+              << "compiler: " << compiler() << ", OpenMP: " << (cpu::has_openmp() ? "yes" : "no")
               << ", max threads: " << max
               << ", hardware threads: " << std::thread::hardware_concurrency()
-              << ", parallel cutoff: " << default_grain << " elements\n"
-              << "threads = 1 is the sequential run. Median of 9 samples.\n"
+              << ", parallel cutoff: " << cpu::default_grain << " elements\n"
+              << "sequential = plain loop, no OpenMP. parallel = parallel kernel with N threads.\n"
+              << "Speedup = sequential time / this time. Median of 9 samples.\n"
               << std::fixed << std::setprecision(3);
 
-    struct Op {
-        const char* name;
-        double bytes_per_element;
-    };
-
-    const Op ops[] = {{"add", 12.0}, {"mul", 12.0}, {"dot", 8.0}};
+    const Op ops[] = {{"add", 12.0, seq::add_f32, cpu::add_f32},
+                      {"mul", 12.0, seq::mul_f32, cpu::mul_f32},
+                      {"dot", 8.0, nullptr, nullptr}};
     const std::int64_t sizes[] = {1000, 10000, 100000, 1000000, 10000000, 33554432};
 
     for (const Op& op : ops) {
+        const bool is_dot = op.sequential == nullptr;
         std::cout << "\n== " << op.name << " ==\n"
-                  << std::setw(12) << "n" << std::setw(9) << "threads" << std::setw(12) << "ms"
-                  << std::setw(10) << "GB/s" << std::setw(11) << "speedup" << '\n';
+                  << std::setw(12) << "n" << std::setw(12) << "impl" << std::setw(9) << "threads"
+                  << std::setw(12) << "ms" << std::setw(10) << "GB/s" << std::setw(11) << "speedup"
+                  << '\n';
         for (std::int64_t n : sizes) {
-            std::vector<float> a(static_cast<std::size_t>(n)), b(a.size()), out(a.size());
-            for (std::size_t i = 0; i < a.size(); ++i) {
+            // The four arrays start 1 KB apart modulo 4 KB. Equally sized arrays tend to start at
+            // the same offset within a page, and addresses that agree in their low 12 bits make
+            // loads and stores falsely depend on each other ("4K aliasing"). That can slow one op
+            // by 2x and distort the comparison.
+            constexpr std::size_t stagger = 256; // floats, 1 KB
+            const auto len = static_cast<std::size_t>(n);
+            std::vector<float> pool_a(len + 4 * stagger), pool_b(len + 4 * stagger),
+                pool_out(len + 4 * stagger), pool_ref(len + 4 * stagger);
+            float* a = pool_a.data();
+            float* b = pool_b.data() + stagger;
+            float* out = pool_out.data() + 2 * stagger;
+            float* reference = pool_ref.data() + 3 * stagger;
+            for (std::size_t i = 0; i < len; ++i) {
                 a[i] = static_cast<float>(i % 13) / 8 - 0.75f;
                 b[i] = static_cast<float>(i % 17) / 8 - 1.0f;
             }
-            auto run = [&] {
-                if (op.name[0] == 'a') {
-                    add_f32(a.data(), b.data(), out.data(), n);
-                } else if (op.name[0] == 'm') {
-                    mul_f32(a.data(), b.data(), out.data(), n);
+
+            // Sequential baseline.
+            auto run_sequential = [&] {
+                if (is_dot) {
+                    sink = seq::dot_f32(a, b, n);
                 } else {
-                    sink = dot_f32(a.data(), b.data(), n);
+                    op.sequential(a, b, reference, n);
                 }
             };
-
-            // The sequential result is the reference for the parallel ones.
-            set_max_threads(1);
-            run();
-            const std::vector<float> reference = out;
+            run_sequential();
             const float dot_reference = sink;
+            const double sequential = median_seconds(run_sequential);
+            row("sequential", n, "-", sequential, op.bytes_per_element, sequential);
 
-            double sequential = 0;
+            // Parallel kernel at each thread count.
             for (int threads : counts) {
-                set_max_threads(threads);
-                const double seconds = median_seconds(run);
-                if (threads == 1) {
-                    sequential = seconds;
-                }
-                // Checked after timing. Elementwise ops must match bit for bit; dot may differ
-                // slightly because partial sums are added in a different order.
-                bool ok = true;
-                if (op.name[0] == 'd') {
+                cpu::set_max_threads(threads);
+                auto run_parallel = [&] {
+                    if (is_dot) {
+                        sink = cpu::dot_f32(a, b, n);
+                    } else {
+                        op.parallel(a, b, out, n);
+                    }
+                };
+                const double seconds = median_seconds(run_parallel);
+
+                // Checked after timing. Elementwise results must match the sequential ones bit
+                // for bit; dot may differ slightly because partial sums are added in a
+                // different order.
+                bool ok;
+                if (is_dot) {
                     ok = std::abs(sink - dot_reference) <= 1e-4f * std::abs(dot_reference) + 1e-3f;
                 } else {
-                    ok = std::memcmp(out.data(), reference.data(), out.size() * sizeof(float)) == 0;
+                    ok = std::memcmp(out, reference, len * sizeof(float)) == 0;
                 }
                 if (!ok) {
                     std::cerr << op.name << " n=" << n << " threads=" << threads
-                              << ": result differs from the sequential run\n";
+                              << ": parallel result differs from the sequential one\n";
                     return 1;
                 }
-                std::cout << std::setw(12) << n << std::setw(9) << threads << std::setw(12)
-                          << seconds * 1e3 << std::setw(10)
-                          << op.bytes_per_element * static_cast<double>(n) / seconds / 1e9
-                          << std::setw(10) << sequential / seconds << "x\n";
+                row("parallel", n, std::to_string(threads), seconds, op.bytes_per_element,
+                    sequential);
             }
             std::cout << '\n';
         }
     }
-    set_max_threads(max);
+    cpu::set_max_threads(max);
     return 0;
 }
