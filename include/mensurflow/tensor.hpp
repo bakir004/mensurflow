@@ -17,14 +17,17 @@ namespace mensurflow {
 
 namespace detail {
 struct Storage;
-}
+struct TensorAccess;
+} // namespace detail
 
 class Tensor {
   public:
     // Undefined tensor with no storage; everything except defined() throws.
     Tensor() = default;
 
-    // Uninitialized memory of the given shape. Only the CPU device exists for now.
+    // Uninitialized memory of the given shape on `device` (CPU unless told otherwise; use
+    // default_device() to pick the best available). Throws runtime_error if the device is
+    // unavailable.
     static Tensor empty(Shape shape, DType dtype = DType::F32, Device device = {});
 
     // Copies numel(shape) * dtype_size(dtype) bytes from contiguous host memory.
@@ -63,9 +66,26 @@ class Tensor {
     // True if both tensors use the same memory allocation (possibly different parts of it).
     bool shares_storage(const Tensor& other) const;
 
+    // The same data on another device, copied through host memory into a contiguous tensor.
+    // If the tensor is already on `device` it is returned as is (shared, not copied, and still
+    // a strided view if it was one).
+    Tensor to(Device device) const;
+
+    // *this if already contiguous, otherwise a packed row-major copy on the same device.
+    Tensor contiguous() const;
+
     // Writes numel() elements in row-major order to dst, following strides for views.
     // Blocks until the data is ready.
     void copy_to_host(void* dst) const;
+
+    // The value of a one-element tensor, e.g. the result of dot(). Blocks like copy_to_host.
+    template <typename T> T item() const {
+        if (numel() != 1) {
+            throw std::invalid_argument("item: tensor has " + std::to_string(numel()) +
+                                        " elements, expected 1");
+        }
+        return to_vector<T>()[0];
+    }
 
     template <typename T> std::vector<T> to_vector() const {
         if (dtype() != dtype_of<T>) {
@@ -93,6 +113,8 @@ class Tensor {
     bool is_contiguous() const;
 
   private:
+    friend struct detail::TensorAccess;
+
     Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Shape shape,
            Strides strides, DType dtype);
 

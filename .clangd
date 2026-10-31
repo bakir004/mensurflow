@@ -1,0 +1,3 @@
+# Take include paths and flags from the CMake build (cmake -S . -B build).
+CompileFlags:
+  CompilationDatabase: build
