@@ -4,8 +4,8 @@
 //               1, 2, 4, ... threads. The 1-thread row shows what the parallel machinery costs
 //               when there is nothing to gain.
 // Speedup is always sequential time / this time. Kernels are called directly into preallocated
-// buffers: no dispatcher, no allocation. GB/s counts the bytes each op must touch (add/mul: 12
-// per element, dot: 8 per element).
+// buffers: no dispatcher, no allocation. GB/s counts the bytes each op must touch (binary:
+// 12 per element, neg and dot: 8 per element).
 #include "backends/cpu/blas.hpp"
 #include "backends/cpu/elementwise.hpp"
 #include "backends/cpu/parallel.hpp"
@@ -73,6 +73,12 @@ volatile float sink = 0; // keeps dot's result from being optimized away
 
 using Kernel = void (*)(const float*, const float*, float*, std::int64_t);
 
+// Unary operations use the same timing loop, with the unused second input ignored.
+template <void (*Unary)(const float*, float*, std::int64_t)>
+void unary_kernel(const float* x, const float*, float* out, std::int64_t n) {
+    Unary(x, out, n);
+}
+
 struct Op {
     const char* name;
     double bytes_per_element;
@@ -112,9 +118,14 @@ int main() {
               << std::fixed << std::setprecision(3);
 
     const Op ops[] = {{"add", 12.0, seq::add_f32, cpu::add_f32},
+                      {"sub", 12.0, seq::sub_f32, cpu::sub_f32},
                       {"mul", 12.0, seq::mul_f32, cpu::mul_f32},
+                      {"div", 12.0, seq::div_f32, cpu::div_f32},
+                      {"neg", 8.0, unary_kernel<seq::neg_f32>, unary_kernel<cpu::neg_f32>},
                       {"dot", 8.0, nullptr, nullptr}};
-    const std::int64_t sizes[] = {1000, 10000, 100000, 1000000, 10000000, 33554432};
+    const std::int64_t sizes[] = {1000,    10000,   32768,   32769,    40000,
+                                50000,   75000,   100000,  200000,   500000,
+                                1000000, 2000000, 5000000, 10000000, 33554432};
 
     for (const Op& op : ops) {
         const bool is_dot = op.sequential == nullptr;

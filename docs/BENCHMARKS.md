@@ -1,6 +1,6 @@
 # CPU benchmarks: sequential vs parallel
 
-Results from the CPU kernels (`add`, `mul`, `dot`, float32), measured on each machine we have, so
+Results from the CPU kernels (`add`, `sub`, `mul`, `div`, `neg`, `dot`, float32), measured on each machine we have, so
 the numbers can be compared. Keep the build and run conditions below the same on every machine,
 otherwise the comparison is not fair.
 
@@ -11,7 +11,9 @@ Code:
 
 Benchmarks: `benchmarks/cpu_parallel_benchmark.cpp` (sequential vs parallel, kernels called
 directly), `benchmarks/blas/dot_benchmark.cpp` (through the public `mensurflow::dot`).
-Tests that the two implementations agree: `tests/ops/sequential_test.cpp`.
+Tests cover CPU kernels, sequential agreement, and the public API in
+`tests/ops/elementwise_test.cpp`, `tests/ops/sequential_test.cpp`, and
+`tests/ops/elementwise_ops_test.cpp`.
 
 ## How to run
 
@@ -45,6 +47,155 @@ Conditions to keep equal and to write down for every run:
   was busy and the numbers are noise.
 - Compiler and version (GCC, MSVC and Clang can produce different speeds for the same code).
 - Commit hash of the code.
+
+## Ryzen 5 6600H: elementwise cutoff checks (2026-10-31)
+
+| Setting | Value |
+|---|---|
+| CPU | AMD Ryzen 5 6600H, 6 cores / 12 hardware threads |
+| RAM | Approximately 14.8 GiB reported usable memory |
+| OS | Linux 6.8.0-110-generic |
+| Compiler | GCC 13.3.0 |
+| Build | Release, `-O3 -DNDEBUG -fopenmp`, `MENSURFLOW_NATIVE=OFF`, GPU backends off |
+| Code | `08fe3ae` plus the local benchmark changes adding sub/div and cutoff probes |
+| Thread limit | `OMP_NUM_THREADS=4 OMP_DYNAMIC=FALSE`; rows measured with 1, 2, and 4 threads |
+| Method | Preallocated staggered arrays, warmup, median of 9 samples, two complete runs |
+| Power/background conditions | Not recorded |
+
+The table preserves the two cutoff runs before deleting the temporary `.txt` files.
+Values separated by `/` are run 1 / run 2. Times are milliseconds at the benchmark's
+printed precision. Speedups use the unrounded internal timings. Every measured result
+passed the benchmark's comparison against its sequential implementation.
+
+| Op | n | Sequential (ms) | Parallel, 4 threads (ms) | Speedup, 2 threads | Speedup, 4 threads |
+|---|---:|---|---|---|---|
+| add | 32,769 | 0.004 / 0.004 | 0.001 / 0.002 | 1.712x / 1.883x | 2.620x / 2.473x |
+| add | 40,000 | 0.005 / 0.005 | 0.002 / 0.002 | 1.843x / 1.885x | 2.652x / 2.802x |
+| add | 50,000 | 0.009 / 0.006 | 0.002 / 0.002 | 2.437x / 2.069x | 3.604x / 3.216x |
+| add | 75,000 | 0.011 / 0.010 | 0.003 / 0.003 | 1.856x / 2.339x | 3.597x / 3.520x |
+| add | 100,000 | 0.015 / 0.013 | 0.004 / 0.004 | 2.348x / 1.957x | 3.827x / 3.489x |
+| add | 200,000 | 0.035 / 0.035 | 0.008 / 0.008 | 2.516x / 2.550x | 4.220x / 4.482x |
+| add | 500,000 | 0.082 / 0.079 | 0.031 / 0.024 | 2.359x / 2.147x | 2.662x / 3.262x |
+| add | 1,000,000 | 0.622 / 0.378 | 0.216 / 0.182 | 1.713x / 1.461x | 2.883x / 2.078x |
+| add | 2,000,000 | 1.721 / 1.687 | 1.013 / 1.315 | 1.240x / 1.254x | 1.700x / 1.283x |
+| add | 5,000,000 | 5.457 / 4.427 | 4.046 / 4.057 | 1.219x / 1.106x | 1.349x / 1.091x |
+| add | 10,000,000 | 7.728 / 10.208 | 6.930 / 7.967 | 1.147x / 1.205x | 1.115x / 1.281x |
+| add | 33,554,432 | 27.383 / 25.411 | 23.583 / 31.126 | 1.155x / 1.057x | 1.161x / 0.816x |
+| sub | 32,769 | 0.004 / 0.005 | 0.002 / 0.002 | 1.907x / 1.889x | 2.579x / 2.480x |
+| sub | 40,000 | 0.005 / 0.008 | 0.002 / 0.002 | 1.747x / 1.782x | 2.503x / 3.432x |
+| sub | 50,000 | 0.007 / 0.013 | 0.002 / 0.003 | 2.241x / 2.555x | 3.407x / 3.661x |
+| sub | 75,000 | 0.011 / 0.014 | 0.003 / 0.005 | 2.019x / 2.198x | 3.881x / 2.794x |
+| sub | 100,000 | 0.012 / 0.017 | 0.003 / 0.004 | 1.836x / 2.214x | 3.564x / 4.566x |
+| sub | 200,000 | 0.024 / 0.042 | 0.008 / 0.009 | 1.894x / 2.275x | 2.990x / 4.556x |
+| sub | 500,000 | 0.066 / 0.133 | 0.020 / 0.025 | 1.779x / 2.550x | 3.255x / 5.283x |
+| sub | 1,000,000 | 0.271 / 0.470 | 0.090 / 0.107 | 2.191x / 2.159x | 3.015x / 4.389x |
+| sub | 2,000,000 | 1.275 / 1.399 | 0.926 / 1.277 | 1.410x / 1.215x | 1.377x / 1.096x |
+| sub | 5,000,000 | 3.363 / 3.797 | 3.172 / 3.389 | 1.128x / 1.150x | 1.060x / 1.120x |
+| sub | 10,000,000 | 7.819 / 7.759 | 6.757 / 7.251 | 1.203x / 1.155x | 1.157x / 1.070x |
+| sub | 33,554,432 | 25.363 / 27.859 | 22.131 / 23.441 | 1.158x / 1.187x | 1.146x / 1.188x |
+| mul | 32,769 | 0.003 / 0.003 | 0.001 / 0.002 | 1.431x / 1.427x | 2.042x / 1.674x |
+| mul | 40,000 | 0.004 / 0.004 | 0.002 / 0.002 | 1.520x / 1.545x | 2.165x / 2.249x |
+| mul | 50,000 | 0.005 / 0.005 | 0.002 / 0.002 | 1.532x / 1.613x | 2.429x / 2.308x |
+| mul | 75,000 | 0.008 / 0.008 | 0.003 / 0.003 | 1.653x / 1.697x | 2.952x / 2.772x |
+| mul | 100,000 | 0.010 / 0.010 | 0.003 / 0.003 | 1.600x / 1.593x | 2.773x / 2.916x |
+| mul | 200,000 | 0.021 / 0.024 | 0.008 / 0.008 | 1.636x / 1.952x | 2.674x / 3.215x |
+| mul | 500,000 | 0.061 / 0.060 | 0.023 / 0.021 | 1.428x / 1.770x | 2.598x / 2.856x |
+| mul | 1,000,000 | 0.311 / 0.205 | 0.059 / 0.085 | 2.042x / 1.930x | 5.275x / 2.412x |
+| mul | 2,000,000 | 1.111 / 1.331 | 1.049 / 1.043 | 1.106x / 1.263x | 1.059x / 1.276x |
+| mul | 5,000,000 | 3.199 / 4.302 | 3.579 / 4.021 | 0.935x / 1.049x | 0.894x / 1.070x |
+| mul | 10,000,000 | 7.679 / 7.743 | 6.570 / 6.476 | 1.166x / 1.266x | 1.169x / 1.196x |
+| mul | 33,554,432 | 24.352 / 24.310 | 22.999 / 22.575 | 1.091x / 1.148x | 1.059x / 1.077x |
+| div | 32,769 | 0.006 / 0.006 | 0.002 / 0.002 | 1.648x / 1.700x | 2.731x / 2.815x |
+| div | 40,000 | 0.008 / 0.008 | 0.003 / 0.003 | 1.698x / 1.728x | 2.871x / 2.988x |
+| div | 50,000 | 0.010 / 0.010 | 0.003 / 0.003 | 1.724x / 1.759x | 2.964x / 3.040x |
+| div | 75,000 | 0.014 / 0.015 | 0.004 / 0.004 | 1.810x / 1.896x | 3.310x / 3.417x |
+| div | 100,000 | 0.019 / 0.020 | 0.006 / 0.006 | 1.861x / 1.903x | 3.293x / 3.359x |
+| div | 200,000 | 0.039 / 0.040 | 0.012 / 0.012 | 1.930x / 1.927x | 3.285x / 3.288x |
+| div | 500,000 | 0.101 / 0.102 | 0.030 / 0.030 | 2.007x / 2.040x | 3.370x / 3.468x |
+| div | 1,000,000 | 0.250 / 0.220 | 0.064 / 0.120 | 2.072x / 1.222x | 3.897x / 1.837x |
+| div | 2,000,000 | 1.168 / 1.603 | 0.853 / 1.025 | 1.405x / 1.540x | 1.369x / 1.564x |
+| div | 5,000,000 | 3.186 / 3.753 | 3.124 / 3.703 | 0.936x / 1.070x | 1.020x / 1.014x |
+| div | 10,000,000 | 7.270 / 8.190 | 9.358 / 7.242 | 0.985x / 1.087x | 0.777x / 1.131x |
+| div | 33,554,432 | 28.137 / 23.885 | 22.222 / 22.177 | 1.264x / 1.054x | 1.266x / 1.077x |
+
+Observations and cutoff recommendation:
+
+- All four operations benefit from 2 and 4 threads at 32,769 elements in both runs.
+  Keep the existing 32,768-element cutoff as a conservative initial setting for this
+  machine with a four-thread limit. It is not a measured optimum: parallel execution
+  below that threshold was not tested.
+- Rows at or below 32,768 elements use the serial fallback, even when labelled
+  `parallel`. They cannot establish the cost of actual multithreaded execution.
+- Benefits often shrink for large arrays; add/sub/mul are primarily limited by data
+  movement. Division does more work per element but also approaches the memory limit
+  on large inputs. A single lower cutoff does not guarantee a gain at every larger size.
+- Some timings differ by more than 10% across runs. The consistent wins near the cutoff
+  support the recommendation, while individual large-input speedups remain provisional.
+- These results do not justify applying a four-thread policy or this cutoff to every
+  machine, or changing the shared threshold for unrelated operations such as dot.
+
+Reproduce with the current benchmark in a Release CPU build:
+
+```bash
+OMP_NUM_THREADS=4 OMP_DYNAMIC=FALSE ./build-cpu/cpu_parallel_benchmark
+```
+
+### Negation (`neg`): shared elementwise implementation
+
+Negation is implemented in `src/backends/cpu/elementwise.cpp` and declared in
+`elementwise.hpp`, alongside add/sub/mul/div. It uses the shared unary loop and
+`parallel_for`; its plain sequential baseline is in `sequential.cpp`.
+
+The following two runs use `cpu_parallel_benchmark`, which now measures negation
+alongside the other operations. The machine, Release build, and four-thread limit
+are the same as above. These values describe the grouped implementation.
+Negation reads one float and writes one float per element (8 logical bytes).
+Tensor allocation and packing strided inputs are outside the measured kernel calls.
+
+As with the binary kernels, `parallel_for` uses its serial fallback at or below
+32,768 elements or with one thread. Every size and thread count passed the
+benchmark's exact comparison against the sequential baseline.
+
+| n | Sequential (ms) | Parallel, 4 threads (ms) | Speedup, 2 threads | Speedup, 4 threads |
+|---:|---|---|---|---|
+| 1,000 | 0.000 / 0.000 | 0.000 / 0.000 | 0.530x / 0.540x | 0.531x / 0.538x |
+| 10,000 | 0.001 / 0.001 | 0.001 / 0.001 | 0.535x / 0.584x | 0.534x / 0.567x |
+| 32,768 | 0.002 / 0.002 | 0.004 / 0.004 | 0.519x / 0.224x | 0.516x / 0.501x |
+| 32,769 | 0.002 / 0.002 | 0.001 / 0.001 | 1.181x / 1.105x | 1.474x / 1.627x |
+| 40,000 | 0.002 / 0.002 | 0.001 / 0.002 | 1.352x / 1.194x | 1.846x / 1.454x |
+| 50,000 | 0.003 / 0.003 | 0.002 / 0.002 | 1.548x / 1.473x | 2.023x / 2.023x |
+| 75,000 | 0.005 / 0.006 | 0.004 / 0.002 | 1.556x / 1.534x | 1.527x / 2.406x |
+| 100,000 | 0.008 / 0.008 | 0.002 / 0.003 | 1.717x / 1.452x | 3.233x / 3.020x |
+| 200,000 | 0.013 / 0.020 | 0.005 / 0.009 | 1.525x / 1.733x | 2.714x / 2.363x |
+| 500,000 | 0.034 / 0.063 | 0.014 / 0.015 | 1.499x / 1.802x | 2.452x / 4.120x |
+| 1,000,000 | 0.103 / 0.163 | 0.042 / 0.057 | 2.116x / 1.621x | 2.432x / 2.884x |
+| 2,000,000 | 0.553 / 0.778 | 0.308 / 0.415 | 1.621x / 1.356x | 1.794x / 1.876x |
+| 5,000,000 | 2.223 / 3.260 | 1.921 / 2.681 | 1.017x / 0.958x | 1.157x / 1.216x |
+| 10,000,000 | 4.985 / 8.239 | 4.441 / 4.609 | 1.139x / 1.678x | 1.122x / 1.787x |
+| 33,554,432 | 17.769 / 17.715 | 15.720 / 15.566 | 1.114x / 1.167x | 1.130x / 1.138x |
+
+Classification: little arithmetic per element, so large negation workloads are
+primarily memory-bound. Small workloads also depend on thread and call overhead.
+
+Recommended initial cutoff: retain 32,768 elements for this machine with up to
+four threads, since the first tested parallel size (32,769) improves in both runs.
+This does not establish the optimal threshold below 32,768 or the best thread
+count for every size. Large-input gains vary and should not be generalized.
+
+Some timings vary by more than 10% between runs. Keep both results rather than
+selecting the faster run. A displayed time of 0.000 ms is below print precision,
+not a zero-duration operation. Exact ratios are provisional.
+
+Run the common benchmark without creating output files in the repository:
+
+```bash
+OMP_NUM_THREADS=4 OMP_DYNAMIC=FALSE ./build-cpu/cpu_parallel_benchmark
+```
+
+Negation uses the existing test groups: `elementwise_test.cpp` for CPU kernels,
+`sequential_test.cpp` for sequential/parallel agreement and special floating-point
+values, and `elementwise_ops_test.cpp` for the public API, views, and errors.
+Its float64 reference is in `tests/reference/elementwise.hpp`.
 
 ## Machine 1: laptop
 

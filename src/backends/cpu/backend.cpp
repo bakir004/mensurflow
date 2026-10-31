@@ -85,6 +85,15 @@ void binary_kernel(const OpArgs& args, Stream&) {
            TensorAccess::data<float>(out), out.numel());
 }
 
+template <void (*Kernel)(const float*, float*, std::int64_t)>
+void unary_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    if (out.numel() == 0) {
+        return; // Empty buffers have no data pointer; dispatch still checks kernel support.
+    }
+    Kernel(TensorAccess::data<float>(args.inputs[0]), TensorAccess::data<float>(out), out.numel());
+}
+
 class CpuBackend final : public Backend {
   public:
     DeviceType type() const override { return DeviceType::CPU; }
@@ -109,6 +118,7 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::Sub, cpu_type, DType::F32}, binary_kernel<cpu::sub_f32>);
         dispatcher.register_kernel({OpId::Mul, cpu_type, DType::F32}, binary_kernel<cpu::mul_f32>);
         dispatcher.register_kernel({OpId::Div, cpu_type, DType::F32}, binary_kernel<cpu::div_f32>);
+        dispatcher.register_kernel({OpId::Neg, cpu_type, DType::F32}, unary_kernel<cpu::neg_f32>);
     }
 
   private:

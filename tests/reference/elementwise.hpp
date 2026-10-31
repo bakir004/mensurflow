@@ -32,6 +32,13 @@ inline void div(const float* a, const float* b, float* out, std::int64_t n) {
     binary(a, b, out, n, [](float x, float y) { return x / y; });
 }
 
+// Compute in float64, then round back to the float32 kernel's output type.
+inline void neg(const float* x, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = static_cast<float>(-static_cast<double>(x[i]));
+    }
+}
+
 } // namespace reference
 
 // Broadcasting binary op written from scratch, so tests do not rely on the library's own

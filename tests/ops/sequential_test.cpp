@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -35,6 +36,17 @@ const Op ops[] = {{"add", seq::add_f32, cpu::add_f32, reference::add},
                   {"mul", seq::mul_f32, cpu::mul_f32, reference::mul},
                   {"div", seq::div_f32, cpu::div_f32, reference::div}};
 
+using UnaryKernel = void (*)(const float*, float*, std::int64_t);
+
+struct UnaryOp {
+    const char* name;
+    UnaryKernel sequential;
+    UnaryKernel parallel;
+    UnaryKernel reference;
+};
+
+const UnaryOp unary_ops[] = {{"neg", seq::neg_f32, cpu::neg_f32, reference::neg}};
+
 // Multiples of 0.25 in [-4, 4], with zeros so division produces inf and NaN.
 std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {
     std::vector<float> v(static_cast<std::size_t>(n));
@@ -53,7 +65,8 @@ bool same_bits(const std::vector<float>& x, const std::vector<float>& y) {
 
 // Sizes around the parallel cutoff and the 16-float block edge.
 const std::int64_t sizes[] = {
-    0, 1, 15, 16, 17, 1000, cpu::default_grain, cpu::default_grain + 1, 100003, 1 << 20};
+    0, 1, 15, 16, 17, 1000, cpu::default_grain - 1, cpu::default_grain,
+    cpu::default_grain + 1, 75000, 100003, (1 << 20) + 7};
 
 void test_elementwise() {
     const int original_threads = cpu::max_threads();
@@ -73,6 +86,27 @@ void test_elementwise() {
                 test::require(same_bits(seq_out, par_out),
                               std::string("parallel ") + op.name + " vs sequential, n=" +
                                   std::to_string(n) + ", threads=" + std::to_string(threads));
+            }
+        }
+        for (const UnaryOp& op : unary_ops) {
+            std::vector<float> want(a.size()), seq_out(a.size());
+            op.reference(a.data(), want.data(), n);
+            op.sequential(a.data(), seq_out.data(), n);
+            test::require(same_bits(want, seq_out), std::string("sequential ") + op.name +
+                                                        " vs float64 reference");
+            auto in_place = a;
+            op.sequential(in_place.data(), in_place.data(), n);
+            test::require(same_bits(want, in_place), std::string(op.name) + " sequential in place");
+            for (int threads : {1, 2, 3, original_threads}) {
+                cpu::set_max_threads(threads);
+                std::vector<float> par_out(a.size());
+                op.parallel(a.data(), par_out.data(), n);
+                const std::string where = std::string(op.name) + " n=" + std::to_string(n) +
+                                          " threads=" + std::to_string(threads);
+                test::require(same_bits(seq_out, par_out), where + ": parallel vs sequential");
+                in_place = a;
+                op.parallel(in_place.data(), in_place.data(), n);
+                test::require(same_bits(want, in_place), where + ": parallel in place");
             }
         }
     }
@@ -123,6 +157,38 @@ void test_dot() {
     cpu::set_max_threads(original_threads);
 }
 
+std::uint32_t bits(float value) {
+    std::uint32_t result;
+    static_assert(sizeof(result) == sizeof(value));
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+void test_neg_special_values() {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float tiny = std::numeric_limits<float>::denorm_min();
+    const float large = std::numeric_limits<float>::max();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::vector<float> pattern{0.0f, -0.0f, inf, -inf, tiny, -tiny, large, -large, nan};
+    std::vector<float> input(static_cast<std::size_t>(cpu::default_grain + 17));
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        input[i] = pattern[i % pattern.size()];
+    }
+    const int original_threads = cpu::max_threads();
+    for (int threads : {1, 2, 3, original_threads}) {
+        cpu::set_max_threads(threads);
+        for (UnaryKernel kernel : {seq::neg_f32, cpu::neg_f32}) {
+            std::vector<float> out(input.size());
+            kernel(input.data(), out.data(), static_cast<std::int64_t>(input.size()));
+            for (std::size_t i = 0; i < input.size(); ++i) {
+                test::require(bits(out[i]) == (bits(input[i]) ^ 0x80000000u),
+                              "neg flips only the sign bit, including zero, infinity, and NaN");
+            }
+        }
+    }
+    cpu::set_max_threads(original_threads);
+}
+
 void test_errors() {
     float x = 1.0f;
     test::require_throws<std::invalid_argument>([&] { seq::add_f32(&x, &x, &x, -1); },
@@ -133,6 +199,15 @@ void test_errors() {
                                                 "null output");
     seq::add_f32(nullptr, nullptr, nullptr, 0); // n == 0 never touches memory
     test::require(seq::dot_f32(nullptr, nullptr, 0) == 0.0f, "empty dot is 0");
+    for (const UnaryOp& op : unary_ops) {
+        op.sequential(nullptr, nullptr, 0);
+        test::require_throws<std::invalid_argument>([&] { op.sequential(&x, &x, -1); },
+                                                    "negative unary length");
+        test::require_throws<std::invalid_argument>([&] { op.sequential(nullptr, &x, 1); },
+                                                    "null unary input");
+        test::require_throws<std::invalid_argument>([&] { op.sequential(&x, nullptr, 1); },
+                                                    "null unary output");
+    }
 }
 
 } // namespace
@@ -142,6 +217,7 @@ int main() {
         test_elementwise();
         test_in_place();
         test_dot();
+        test_neg_special_values();
         test_errors();
     });
 }

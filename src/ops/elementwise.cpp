@@ -1,5 +1,5 @@
-// Validation, broadcasting, and dispatch for elementwise ops. Kernels receive two contiguous
-// tensors that already have the output's shape.
+// Validation, broadcasting, and dispatch for elementwise ops. Kernels receive contiguous
+// inputs that already have the output's shape.
 #include "mensurflow/ops/elementwise.hpp"
 
 #include "core/dispatcher.hpp"
@@ -10,6 +10,16 @@
 namespace mensurflow {
 
 namespace {
+
+Tensor unary_op(detail::OpId op, const Tensor& x) {
+    if (!x.defined()) {
+        throw std::invalid_argument(std::string(detail::op_name(op)) + ": undefined tensor");
+    }
+    const Tensor input = x.contiguous();
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    detail::dispatch(op, {{input}, {out}});
+    return out;
+}
 
 Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b) {
     const std::string name = detail::op_name(op);
@@ -56,5 +66,7 @@ Tensor sub(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Su
 Tensor mul(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Mul, a, b); }
 
 Tensor div(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Div, a, b); }
+
+Tensor neg(const Tensor& x) { return unary_op(detail::OpId::Neg, x); }
 
 } // namespace mensurflow

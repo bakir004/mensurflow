@@ -1,5 +1,5 @@
 // Plain sequential versions of the CPU kernels: one loop each, no OpenMP and no parallel_for.
-// They are the baseline the parallel kernels in elementwise.hpp and blas.hpp are compared with,
+// They are the baseline the parallel CPU kernels are compared with,
 // and they follow the same contract (argument checks, in-place use, double accumulation in dot),
 // so a result from either implementation can be compared with the other.
 #pragma once
@@ -15,6 +15,9 @@ void add_f32(const float* a, const float* b, float* out, std::int64_t n);
 void sub_f32(const float* a, const float* b, float* out, std::int64_t n);
 void mul_f32(const float* a, const float* b, float* out, std::int64_t n);
 void div_f32(const float* a, const float* b, float* out, std::int64_t n);
+
+// out[i] = -x[i]. Same length, null-pointer, and in-place rules as the binary kernels above.
+void neg_f32(const float* x, float* out, std::int64_t n);
 
 // sum(x[i] * y[i]) accumulated in double and rounded to float once at the end, exactly what the
 // parallel dot_f32 does with one thread. n <= 0 gives 0.

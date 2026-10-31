@@ -8,6 +8,22 @@ namespace mensurflow::cpu::sequential {
 namespace {
 
 template <typename Op>
+void unary(const float* x, float* out, std::int64_t n, Op op) {
+    if (n < 0) {
+        throw std::invalid_argument("elementwise: negative length");
+    }
+    if (n == 0) {
+        return;
+    }
+    if (x == nullptr || out == nullptr) {
+        throw std::invalid_argument("elementwise: null pointer");
+    }
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = op(x[i]);
+    }
+}
+
+template <typename Op>
 void binary(const float* a, const float* b, float* out, std::int64_t n, Op op) {
     if (n < 0) {
         throw std::invalid_argument("elementwise: negative length");
@@ -39,6 +55,10 @@ void mul_f32(const float* a, const float* b, float* out, std::int64_t n) {
 
 void div_f32(const float* a, const float* b, float* out, std::int64_t n) {
     binary(a, b, out, n, [](float x, float y) { return x / y; });
+}
+
+void neg_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return -value; });
 }
 
 float dot_f32(const float* x, const float* y, std::int64_t n) {

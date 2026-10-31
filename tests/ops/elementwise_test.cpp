@@ -28,6 +28,16 @@ const Op ops[] = {{"add", add_f32, reference::add},
                   {"mul", mul_f32, reference::mul},
                   {"div", div_f32, reference::div}};
 
+using UnaryKernel = void (*)(const float*, float*, std::int64_t);
+
+struct UnaryOp {
+    const char* name;
+    UnaryKernel kernel;
+    UnaryKernel reference;
+};
+
+const UnaryOp unary_ops[] = {{"neg", neg_f32, reference::neg}};
+
 // Deterministic values in roughly [-4, 4], with some exact zeros so div hits inf and NaN.
 std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {
     std::vector<float> v(static_cast<std::size_t>(n));
@@ -49,7 +59,8 @@ void test_matches_reference() {
     const int original_threads = max_threads();
     // Sizes straddle the cutoff and the 16-float block edge so uneven chunks are exercised.
     const std::int64_t sizes[] = {
-        0, 1, 15, 16, 17, 1000, default_grain, default_grain + 1, 100003, (1 << 20) + 7};
+        0, 1, 15, 16, 17, 1000, default_grain - 1, default_grain, default_grain + 1,
+        75000, 100003, (1 << 20) + 7};
     for (int threads : {1, 2, 3, original_threads}) {
         set_max_threads(threads);
         for (std::int64_t n : sizes) {
@@ -59,6 +70,14 @@ void test_matches_reference() {
                 std::vector<float> expected(a.size()), actual(a.size());
                 op.reference(a.data(), b.data(), expected.data(), n);
                 op.kernel(a.data(), b.data(), actual.data(), n);
+                test::require(same_bits(expected, actual),
+                              std::string(op.name) + " n=" + std::to_string(n) +
+                                  " threads=" + std::to_string(threads));
+            }
+            for (const UnaryOp& op : unary_ops) {
+                std::vector<float> expected(a.size()), actual(a.size());
+                op.reference(a.data(), expected.data(), n);
+                op.kernel(a.data(), actual.data(), n);
                 test::require(same_bits(expected, actual),
                               std::string(op.name) + " n=" + std::to_string(n) +
                                   " threads=" + std::to_string(threads));
@@ -84,6 +103,14 @@ void test_in_place() {
         op.kernel(a.data(), into_b.data(), into_b.data(), n);
         test::require(same_bits(expected, into_b), std::string(op.name) + " out aliases b");
     }
+    for (const UnaryOp& op : unary_ops) {
+        const auto input = make_input(n, 3);
+        std::vector<float> expected(input.size());
+        op.reference(input.data(), expected.data(), n);
+        auto actual = input;
+        op.kernel(actual.data(), actual.data(), n);
+        test::require(same_bits(expected, actual), std::string(op.name) + " out aliases input");
+    }
 }
 
 void test_errors() {
@@ -93,6 +120,15 @@ void test_errors() {
     test::require_throws<std::invalid_argument>([&] { mul_f32(&x, &x, nullptr, 1); },
                                                 "null output");
     add_f32(nullptr, nullptr, nullptr, 0); // n == 0 never touches memory
+    for (const UnaryOp& op : unary_ops) {
+        op.kernel(nullptr, nullptr, 0);
+        test::require_throws<std::invalid_argument>([&] { op.kernel(&x, &x, -1); },
+                                                    "negative unary length");
+        test::require_throws<std::invalid_argument>([&] { op.kernel(nullptr, &x, 1); },
+                                                    "null unary input");
+        test::require_throws<std::invalid_argument>([&] { op.kernel(&x, nullptr, 1); },
+                                                    "null unary output");
+    }
 }
 
 } // namespace

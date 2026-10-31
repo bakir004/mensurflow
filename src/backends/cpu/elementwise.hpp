@@ -19,4 +19,7 @@ void mul_f32(const float* a, const float* b, float* out, std::int64_t n);
 // out[i] = a[i] / b[i]
 void div_f32(const float* a, const float* b, float* out, std::int64_t n);
 
+// out[i] = -x[i]. out may be the same buffer as x; the same length and pointer rules apply.
+void neg_f32(const float* x, float* out, std::int64_t n);
+
 } // namespace mensurflow::cpu

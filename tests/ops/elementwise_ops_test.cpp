@@ -1,4 +1,4 @@
-// Tests mensurflow::add/sub/mul/div on every device this build can use: values against an
+// Tests binary and unary elementwise ops on every device this build can use: values against an
 // independent broadcasting reference, views, empty shapes, and error handling. Complements
 // elementwise_test.cpp, which tests the CPU kernels directly.
 #include "core/registry.hpp"
@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -34,10 +35,19 @@ const Op ops[] = {{detail::OpId::Add, "add", add, [](float x, float y) { return 
                   {detail::OpId::Mul, "mul", mul, [](float x, float y) { return x * y; }},
                   {detail::OpId::Div, "div", div, [](float x, float y) { return x / y; }}};
 
+struct UnaryOp {
+    detail::OpId id;
+    const char* name;
+    Tensor (*apply)(const Tensor&);
+    void (*reference)(const float*, float*, std::int64_t);
+};
+
+const UnaryOp unary_ops[] = {{detail::OpId::Neg, "neg", neg, reference::neg}};
+
 // Some vendor backends cannot express every op (cuBLAS and rocBLAS have no elementwise divide).
 // Those ops must fail with NotImplemented rather than crash or return garbage; they are not
 // checked for values.
-bool supported(const Op& op, Device device) {
+template <typename Operation> bool supported(const Operation& op, Device device) {
     return detail::Registry::instance().dispatcher().find({op.id, device.type, DType::F32}) !=
            nullptr;
 }
@@ -46,6 +56,14 @@ void check_unsupported(const Op& op, Device device) {
     const Tensor x = Tensor::from_vector(std::vector<float>{1, 2}, {2}, device);
     test::require_throws<detail::NotImplemented>([&] { op.apply(x, x); },
                                                  std::string(op.name) + " without a kernel");
+}
+
+void check_unsupported(const UnaryOp& op, Device device) {
+    for (const Shape& shape : {Shape{2}, Shape{0}}) {
+        const Tensor x = Tensor::empty(shape, DType::F32, device);
+        test::require_throws<detail::NotImplemented>([&] { op.apply(x); },
+                                                     std::string(op.name) + " without a kernel");
+    }
 }
 
 // Multiples of 0.25 in [-4, 4], including zeros so division produces inf and NaN.
@@ -165,6 +183,56 @@ void test_views(Device device) {
     }
 }
 
+bool same_bits(const std::vector<float>& a, const std::vector<float>& b) {
+    return a.size() == b.size() &&
+           (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0);
+}
+
+void check_unary_case(const UnaryOp& op, const Tensor& input, const std::string& what) {
+    const std::string where = std::string(op.name) + " " + what;
+    const auto before = input.to_vector<float>();
+    std::vector<float> want(before.size());
+    op.reference(before.data(), want.data(), input.numel());
+    const Tensor out = op.apply(input);
+    test::require(out.shape() == input.shape(), where + ": shape");
+    test::require(out.dtype() == input.dtype() && out.device() == input.device(),
+                  where + ": dtype/device");
+    test::require(out.is_contiguous() && !out.shares_storage(input), where + ": new packed output");
+    test::require(same_bits(out.to_vector<float>(), want), where + ": values");
+    test::require(same_bits(input.to_vector<float>(), before), where + ": input unchanged");
+}
+
+void test_unary_shapes_and_views(Device device) {
+    for (const UnaryOp& op : unary_ops) {
+        if (!supported(op, device)) {
+            continue;
+        }
+        for (const Shape& shape : {Shape{}, Shape{6}, Shape{2, 3}, Shape{100003}, Shape{0},
+                                  Shape{2, 0}}) {
+            check_unary_case(op, Tensor::from_vector(make_input(count(shape), 9), shape, device),
+                             "shape " + to_string(shape));
+        }
+        const Tensor matrix = Tensor::from_vector(make_input(12, 10), {3, 4}, device);
+        check_unary_case(op, matrix.transpose(0, 1), "transpose");
+        check_unary_case(op, matrix.slice(0, 1, 3), "contiguous offset view");
+        check_unary_case(op, matrix.slice(1, 1, 4, 2), "strided offset view");
+        const Tensor row = Tensor::from_vector(std::vector<float>{1, -2, 3}, {1, 3}, device);
+        check_unary_case(op, row.expand({4, 3}), "broadcast view");
+    }
+}
+
+void test_neg_special_values() {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float tiny = std::numeric_limits<float>::denorm_min();
+    const float large = std::numeric_limits<float>::max();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::vector<float> values{0.0f, -0.0f, inf, -inf, tiny, -tiny, large, -large, nan};
+    const Tensor x = Tensor::from_vector(values, {static_cast<std::int64_t>(values.size())});
+    check_unary_case(unary_ops[0], x, "special values");
+    test::require(same_bits(neg(neg(x)).to_vector<float>(), values),
+                  "double negation preserves every input bit");
+}
+
 void test_ieee_division() {
     // x / 0 is inf or NaN, as in IEEE 754. Checked on the CPU, where rounding is exact.
     const Device cpu{DeviceType::CPU, 0};
@@ -190,6 +258,15 @@ void test_errors(Device device) {
         // No int32 kernel exists on any backend yet; the failure must be a clear error.
         test::require_throws<std::runtime_error>([&] { op.apply(ints, ints); },
                                                  name + " unsupported dtype");
+    }
+    for (const UnaryOp& op : unary_ops) {
+        test::require_throws<std::invalid_argument>([&] { op.apply(Tensor{}); },
+                                                    std::string(op.name) + " undefined input");
+        test::require_throws<detail::NotImplemented>([&] { op.apply(ints); },
+                                                     std::string(op.name) + " unsupported dtype");
+        const Tensor empty_ints = Tensor::empty({0}, DType::I32, device);
+        test::require_throws<detail::NotImplemented>(
+            [&] { op.apply(empty_ints); }, std::string(op.name) + " empty unsupported dtype");
     }
 }
 
@@ -217,11 +294,19 @@ int main() {
                     check_unsupported(op, device);
                 }
             }
+            for (const UnaryOp& op : unary_ops) {
+                if (!supported(op, device)) {
+                    std::cout << "    no " << op.name << " kernel on " << to_string(device) << '\n';
+                    check_unsupported(op, device);
+                }
+            }
             test_shapes(device);
             test_views(device);
+            test_unary_shapes_and_views(device);
             test_errors(device);
         }
         test_ieee_division();
+        test_neg_special_values();
         test_mixed_devices();
     });
 }

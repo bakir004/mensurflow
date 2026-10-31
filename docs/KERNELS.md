@@ -39,6 +39,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |-|-|-|-|-|
 |`add`, `sub`, `mul`|OpenMP, with broadcasting|cuBLAS (copy + axpy, `sdgmm`)|same, untested|MPSGraph, untested|
 |`div`|OpenMP, with broadcasting|—|—|MPSGraph, untested|
+|`neg`|OpenMP, float32; tensor views supported|—|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
@@ -57,7 +58,7 @@ and small fully connected networks with externally supplied weights.
 * \[x] `sub(a, b)` — subtraction.
 * \[x] `mul(a, b)` — elementwise multiplication, not matrix multiplication.
 * \[x] `div(a, b)` — elementwise division.
-* \[ ] `neg(x)` — negation.
+* \[x] `neg(x)` — negation (CPU, float32).
 * \[ ] `axpy(alpha, x, y)` — `alpha\*x + y`; adapt the existing implementation.
 * \[ ] `bias\_add(x, b)` — add `\[features]` bias to `\[batch, features]`.
 
