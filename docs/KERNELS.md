@@ -30,14 +30,21 @@ bit-identical CPU/GPU reductions.
 
 ## Current implementation status
 
-What exists today. Library operations take host `std::vector<float>` arguments
-and are synchronous; there is no tensor type yet.
+What exists today. Operations take `Tensor`s (float32 only, `mensurflow::` namespace) and run on
+the device the tensors live on, through the dispatcher. Every CPU kernel also has a plain
+sequential version, used as the benchmark baseline (`src/backends/cpu/sequential.cpp`).
+Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
-|Operation|CPU|CUDA|Metal|OpenCL|Vulkan|
-|-|-|-|-|-|-|
-|`axpy`|OpenMP loop (≥16384 elements)|grid-stride kernel|kernel|kernel|—|
-|`matmul`|serial i-k-j loop|16×16 tiled|16×16 tiled|16×16 tiled|standalone prototype|
-|`dot` (float64)|`openmp/` prototype only|—|—|—|—|
+|Operation|CPU|CUDA|ROCm|Metal|
+|-|-|-|-|-|
+|`add`, `sub`, `mul`|OpenMP, with broadcasting|cuBLAS (copy + axpy, `sdgmm`)|same, untested|MPSGraph, untested|
+|`div`|OpenMP, with broadcasting|—|—|MPSGraph, untested|
+|`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
+|`matmul`|blocked, rows split across threads|—|—|—|
+
+CUDA was tested on an RTX 3060; ROCm and Metal have never been built on real hardware. The
+older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
+exists only in git history.
 
 ## P0 — Minimum useful dense inference library
 
@@ -46,19 +53,20 @@ and small fully connected networks with externally supplied weights.
 
 ### Elementwise arithmetic
 
-* \[ ] `add(a, b)` — addition, including scalar broadcasting.
-* \[ ] `sub(a, b)` — subtraction.
-* \[ ] `mul(a, b)` — elementwise multiplication, not matrix multiplication.
-* \[ ] `div(a, b)` — elementwise division.
+* \[x] `add(a, b)` — addition, including scalar broadcasting.
+* \[x] `sub(a, b)` — subtraction.
+* \[x] `mul(a, b)` — elementwise multiplication, not matrix multiplication.
+* \[x] `div(a, b)` — elementwise division.
 * \[ ] `neg(x)` — negation.
 * \[ ] `axpy(alpha, x, y)` — `alpha\*x + y`; adapt the existing implementation.
 * \[ ] `bias\_add(x, b)` — add `\[features]` bias to `\[batch, features]`.
 
 ### Linear algebra
 
-* \[ ] `dot(x, y)` — vector dot product.
+* \[x] `dot(x, y)` — vector dot product.
 * \[ ] `matvec(A, x)` — matrix–vector multiplication; may initially use GEMM.
-* \[ ] `matmul(A, B)` / GEMM — `\[M,K] × \[K,N] → \[M,N]`.
+* \[x] `matmul(A, B)` / GEMM — `\[M,K] × \[K,N] → \[M,N]`. Basic form done (CPU, float32); the
+optional `alpha`, `beta`, and transpose flags are not.
 * \[ ] Optional GEMM parameters: `alpha`, `beta`, and transpose flags, introduced
 after basic multiplication works.
 
