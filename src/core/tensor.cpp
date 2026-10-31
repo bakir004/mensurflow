@@ -1,5 +1,6 @@
-// Tensor creation, metadata, and host transfers. Until the backend registry exists,
-// only CPU memory is supported and transfers are plain memcpy.
+// Tensor creation, metadata, and host transfers. Memory comes from the device's backend through
+// Storage; host-addressable memory (CPU, unified-memory GPUs) is read directly, anything else is
+// staged through a host copy.
 #include "mensurflow/tensor.hpp"
 
 #include "core/storage.hpp"
@@ -9,17 +10,6 @@
 
 namespace mensurflow {
 
-namespace {
-
-// Temporary: replaced by a backend lookup once the registry exists.
-void require_cpu(Device device) {
-    if (device != Device{DeviceType::CPU, 0}) {
-        throw std::runtime_error("device " + to_string(device) + " is not available (only cpu:0)");
-    }
-}
-
-} // namespace
-
 Tensor::Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Shape shape,
                Strides strides, DType dtype)
     : storage_(std::move(storage)), offset_(offset), shape_(std::move(shape)),
@@ -27,7 +17,6 @@ Tensor::Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Sh
 
 Tensor Tensor::empty(Shape shape, DType dtype, Device device) {
     validate_shape(shape);
-    require_cpu(device);
     const auto bytes = static_cast<std::size_t>(mensurflow::numel(shape)) * dtype_size(dtype);
     auto storage = std::make_shared<detail::Storage>(device, bytes);
     Strides strides = contiguous_strides(shape);
@@ -40,8 +29,36 @@ Tensor Tensor::from_host(const void* data, Shape shape, DType dtype, Device devi
         if (data == nullptr) {
             throw std::invalid_argument("from_host: data is null");
         }
-        std::memcpy(out.storage_->data, data, out.nbytes());
+        out.storage_->copy_from_host(0, data, out.nbytes());
     }
+    return out;
+}
+
+Tensor Tensor::to(Device target) const {
+    require_defined();
+    if (target == device()) {
+        return *this;
+    }
+    Tensor out = empty(shape_, dtype_, target);
+    if (out.nbytes() > 0) {
+        std::vector<std::byte> host(out.nbytes());
+        copy_to_host(host.data());
+        out.storage_->copy_from_host(0, host.data(), host.size());
+    }
+    return out;
+}
+
+Tensor Tensor::contiguous() const {
+    require_defined();
+    if (is_contiguous()) {
+        return *this;
+    }
+    // Gather on the host, then upload. Correct on every device, but a GPU tensor makes a round
+    // trip until a device-side strided copy kernel exists.
+    Tensor out = empty(shape_, dtype_, device());
+    std::vector<std::byte> host(out.nbytes());
+    copy_to_host(host.data());
+    out.storage_->copy_from_host(0, host.data(), host.size());
     return out;
 }
 
@@ -54,11 +71,23 @@ void Tensor::copy_to_host(void* dst) const {
         throw std::invalid_argument("copy_to_host: dst is null");
     }
     const std::size_t item = itemsize();
-    const std::byte* base = storage_->data + static_cast<std::size_t>(offset_) * item;
+    const std::size_t byte_offset = static_cast<std::size_t>(offset_) * item;
     auto* out = static_cast<std::byte*>(dst);
     if (is_contiguous()) {
-        std::memcpy(out, base, nbytes());
+        storage_->copy_to_host(out, byte_offset, nbytes());
         return;
+    }
+
+    // A strided view can touch any part of the allocation after its offset, so a device-only
+    // buffer is first copied to the host from that offset onward.
+    std::vector<std::byte> staged;
+    const std::byte* base = nullptr;
+    if (const std::byte* host = storage_->host_data()) {
+        base = host + byte_offset;
+    } else {
+        staged.resize(storage_->nbytes - byte_offset);
+        storage_->copy_to_host(staged.data(), byte_offset, staged.size());
+        base = staged.data();
     }
 
     // Strided gather: visit every index in row-major order like an odometer, and copy each
