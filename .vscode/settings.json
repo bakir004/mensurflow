@@ -1,6 +1,18 @@
 {
     // Save when leaving an editor, allowing format-on-save to run as well.
     "files.autoSave": "onFocusChange",
+    // IntelliSense include folders. Not taken from compile_commands.json on purpose: the
+    // C/C++ extension cannot read the response files CMake's MinGW generator writes, and it
+    // then ignores these folders for every file listed in the database.
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/tests"
+    ],
+    "C_Cpp.default.cppStandard": "c++17",
+    // Lets clangd ask g++/c++ for its standard-library paths (MinGW, GCC) instead of failing
+    // to find <vector> and friends.
+    "clangd.arguments": ["--query-driver=**/*g++*,**/*c++*,**/*clang*"],
     // Format saved source files with the repository's .clang-format settings.
     "C_Cpp.formatting": "clangFormat",
     "C_Cpp.clang_format_style": "file",
