@@ -17,6 +17,8 @@ const char* op_name(OpId op) {
         return "mul";
     case OpId::Div:
         return "div";
+    case OpId::Matmul:
+        return "matmul";
     }
     throw std::invalid_argument("invalid OpId");
 }

@@ -42,20 +42,23 @@ inline void set_max_threads(int threads) {
 #endif
 }
 
-// Block [begin, end) of [0, n) for thread `id` of `threads`. Edges are multiples of 16 floats
-// (one 64-byte cache line) so two threads never write the same line.
+// Block [begin, end) of [0, n) for thread `id` of `threads`. Edges are multiples of `align`; the
+// default of 16 floats is one 64-byte cache line, so two threads never write the same line. Use
+// align = 1 when each index is a large unit of work (a matrix row) and a fine split matters more.
 inline void block_range(std::int64_t n, std::int64_t threads, std::int64_t id, std::int64_t& begin,
-                        std::int64_t& end) {
-    const std::int64_t chunk = ((n + threads - 1) / threads + 15) / 16 * 16;
+                        std::int64_t& end, std::int64_t align = 16) {
+    const std::int64_t chunk = ((n + threads - 1) / threads + align - 1) / align * align;
     begin = std::min(id * chunk, n);
     end = std::min(begin + chunk, n);
 }
 
 // Calls body(begin, end) on disjoint ranges that together cover [0, n). Each thread gets one
-// contiguous block, so inner loops stay vectorizable.
+// contiguous block, so inner loops stay vectorizable. Runs serially when n <= grain or only one
+// thread is available.
 // body must not throw: exceptions cannot cross an OpenMP region.
 template <typename Body>
-void parallel_for(std::int64_t n, Body&& body, std::int64_t grain = default_grain) {
+void parallel_for(std::int64_t n, Body&& body, std::int64_t grain = default_grain,
+                  std::int64_t align = 16) {
     if (n <= 0) {
         return;
     }
@@ -64,7 +67,7 @@ void parallel_for(std::int64_t n, Body&& body, std::int64_t grain = default_grai
 #pragma omp parallel
         {
             std::int64_t begin = 0, end = 0;
-            block_range(n, omp_get_num_threads(), omp_get_thread_num(), begin, end);
+            block_range(n, omp_get_num_threads(), omp_get_thread_num(), begin, end, align);
             if (begin < end) {
                 body(begin, end);
             }
@@ -73,6 +76,7 @@ void parallel_for(std::int64_t n, Body&& body, std::int64_t grain = default_grai
     }
 #endif
     (void)grain;
+    (void)align; // only used by the OpenMP path
     body(std::int64_t{0}, n);
 }
 

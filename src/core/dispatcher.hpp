@@ -14,7 +14,7 @@
 
 namespace mensurflow::detail {
 
-enum class OpId { Dot, Add, Sub, Mul, Div };
+enum class OpId { Dot, Add, Sub, Mul, Div, Matmul };
 
 const char* op_name(OpId op);
 

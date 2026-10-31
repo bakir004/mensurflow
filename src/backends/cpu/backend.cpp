@@ -4,6 +4,7 @@
 
 #include "backends/cpu/blas.hpp"
 #include "backends/cpu/elementwise.hpp"
+#include "backends/cpu/matmul.hpp"
 #include "backends/cpu/parallel.hpp"
 #include "core/dispatcher.hpp"
 #include "core/registry.hpp"
@@ -61,6 +62,14 @@ class CpuStream final : public Stream {
     void synchronize() override {}
 };
 
+// Ops hand matmul contiguous [m,k] and [k,n] inputs and a [m,n] output.
+void matmul_kernel(const OpArgs& args, Stream&) {
+    const Tensor& a = args.inputs[0];
+    const Tensor& b = args.inputs[1];
+    cpu::matmul_f32(TensorAccess::data<float>(a), TensorAccess::data<float>(b),
+                    TensorAccess::data<float>(args.outputs[0]), a.size(0), b.size(1), a.size(1));
+}
+
 void dot_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
     const Tensor& y = args.inputs[1];
@@ -95,6 +104,7 @@ class CpuBackend final : public Backend {
     void register_kernels(Dispatcher& dispatcher) override {
         constexpr DeviceType cpu_type = DeviceType::CPU;
         dispatcher.register_kernel({OpId::Dot, cpu_type, DType::F32}, dot_kernel);
+        dispatcher.register_kernel({OpId::Matmul, cpu_type, DType::F32}, matmul_kernel);
         dispatcher.register_kernel({OpId::Add, cpu_type, DType::F32}, binary_kernel<cpu::add_f32>);
         dispatcher.register_kernel({OpId::Sub, cpu_type, DType::F32}, binary_kernel<cpu::sub_f32>);
         dispatcher.register_kernel({OpId::Mul, cpu_type, DType::F32}, binary_kernel<cpu::mul_f32>);

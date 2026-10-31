@@ -44,6 +44,7 @@ add_library(mensurflow
     src/backends/cpu/backend.cpp
     src/backends/cpu/blas.cpp
     src/backends/cpu/elementwise.cpp
+    src/backends/cpu/matmul.cpp
     src/backends/cpu/sequential.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
@@ -141,6 +142,7 @@ mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
 mensurflow_add_test(sequential_test tests/ops/sequential_test.cpp)
+mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 function(mensurflow_add_benchmark name source)
@@ -152,4 +154,5 @@ endfunction()
 
 mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.cpp)
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
+mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
