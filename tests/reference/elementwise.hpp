@@ -3,6 +3,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -36,6 +37,26 @@ inline void div(const float* a, const float* b, float* out, std::int64_t n) {
 inline void neg(const float* x, float* out, std::int64_t n) {
     for (std::int64_t i = 0; i < n; ++i) {
         out[i] = static_cast<float>(-static_cast<double>(x[i]));
+    }
+}
+
+inline void abs(const float* x, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = static_cast<float>(std::fabs(static_cast<double>(x[i])));
+    }
+}
+
+inline void square(const float* x, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        const double value = static_cast<double>(x[i]);
+        out[i] = static_cast<float>(value * value);
+    }
+}
+
+inline void relu(const float* x, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        const double value = static_cast<double>(x[i]);
+        out[i] = static_cast<float>(value < 0.0 ? 0.0 : value);
     }
 }
 

@@ -23,9 +23,12 @@ Tensor sub(const Tensor& a, const Tensor& b); // a - b
 Tensor mul(const Tensor& a, const Tensor& b); // a * b, elementwise (not matrix multiplication)
 Tensor div(const Tensor& a, const Tensor& b); // a / b
 
-// Elementwise -x. Returns a new contiguous tensor with the same shape, dtype, and device;
+// Unary operations return a new contiguous tensor with the same shape, dtype, and device;
 // strided and broadcast views are supported. Currently CPU float32 only. Undefined input throws
 // invalid_argument; unsupported devices or dtypes throw NotImplemented, including empty inputs.
-Tensor neg(const Tensor& x);
+Tensor neg(const Tensor& x);    // -x
+Tensor abs(const Tensor& x);    // |x|, including -0 -> +0 and clearing a NaN's sign
+Tensor square(const Tensor& x); // x * x with float32 rounding and overflow
+Tensor relu(const Tensor& x);   // x < 0 ? +0 : x; preserves NaNs and signed zeros
 
 } // namespace mensurflow

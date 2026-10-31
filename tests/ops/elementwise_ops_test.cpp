@@ -42,7 +42,10 @@ struct UnaryOp {
     void (*reference)(const float*, float*, std::int64_t);
 };
 
-const UnaryOp unary_ops[] = {{detail::OpId::Neg, "neg", neg, reference::neg}};
+const UnaryOp unary_ops[] = {{detail::OpId::Neg, "neg", neg, reference::neg},
+                             {detail::OpId::Abs, "abs", mensurflow::abs, reference::abs},
+                             {detail::OpId::Square, "square", square, reference::square},
+                             {detail::OpId::Relu, "relu", relu, reference::relu}};
 
 // Some vendor backends cannot express every op (cuBLAS and rocBLAS have no elementwise divide).
 // Those ops must fail with NotImplemented rather than crash or return garbage; they are not
@@ -221,16 +224,29 @@ void test_unary_shapes_and_views(Device device) {
     }
 }
 
-void test_neg_special_values() {
+void test_unary_special_values() {
     const float inf = std::numeric_limits<float>::infinity();
     const float tiny = std::numeric_limits<float>::denorm_min();
     const float large = std::numeric_limits<float>::max();
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    const std::vector<float> values{0.0f, -0.0f, inf, -inf, tiny, -tiny, large, -large, nan};
+    const std::vector<float> values{0.0f, -0.0f, inf, -inf, tiny, -tiny, large, -large,
+                                    1.1f, -1.1f, nan, -nan};
     const Tensor x = Tensor::from_vector(values, {static_cast<std::int64_t>(values.size())});
-    check_unary_case(unary_ops[0], x, "special values");
+    for (const UnaryOp& op : unary_ops) {
+        check_unary_case(op, x, "special values");
+    }
     test::require(same_bits(neg(neg(x)).to_vector<float>(), values),
                   "double negation preserves every input bit");
+}
+
+void test_unary_known_values() {
+    const Tensor x = Tensor::from_vector(std::vector<float>{-2.0f, -0.0f, 0.0f, 3.0f}, {4});
+    test::require(same_bits(mensurflow::abs(x).to_vector<float>(), {2.0f, 0.0f, 0.0f, 3.0f}),
+                  "known abs values and positive zeros");
+    test::require(same_bits(square(x).to_vector<float>(), {4.0f, 0.0f, 0.0f, 9.0f}),
+                  "known square values and positive zeros");
+    test::require(same_bits(relu(x).to_vector<float>(), {0.0f, -0.0f, 0.0f, 3.0f}),
+                  "known relu values and preserved negative zero");
 }
 
 void test_ieee_division() {
@@ -306,7 +322,8 @@ int main() {
             test_errors(device);
         }
         test_ieee_division();
-        test_neg_special_values();
+        test_unary_special_values();
+        test_unary_known_values();
         test_mixed_devices();
     });
 }

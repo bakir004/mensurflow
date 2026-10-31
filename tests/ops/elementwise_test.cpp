@@ -36,7 +36,10 @@ struct UnaryOp {
     UnaryKernel reference;
 };
 
-const UnaryOp unary_ops[] = {{"neg", neg_f32, reference::neg}};
+const UnaryOp unary_ops[] = {{"neg", neg_f32, reference::neg},
+                             {"abs", abs_f32, reference::abs},
+                             {"square", square_f32, reference::square},
+                             {"relu", relu_f32, reference::relu}};
 
 // Deterministic values in roughly [-4, 4], with some exact zeros so div hits inf and NaN.
 std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {

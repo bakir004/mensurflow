@@ -16,8 +16,11 @@ void sub_f32(const float* a, const float* b, float* out, std::int64_t n);
 void mul_f32(const float* a, const float* b, float* out, std::int64_t n);
 void div_f32(const float* a, const float* b, float* out, std::int64_t n);
 
-// out[i] = -x[i]. Same length, null-pointer, and in-place rules as the binary kernels above.
+// Unary operations follow the same length, null-pointer, and in-place rules as above.
 void neg_f32(const float* x, float* out, std::int64_t n);
+void abs_f32(const float* x, float* out, std::int64_t n);
+void square_f32(const float* x, float* out, std::int64_t n);
+void relu_f32(const float* x, float* out, std::int64_t n);
 
 // sum(x[i] * y[i]) accumulated in double and rounded to float once at the end, exactly what the
 // parallel dot_f32 does with one thread. n <= 0 gives 0.

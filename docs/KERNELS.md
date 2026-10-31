@@ -39,7 +39,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |-|-|-|-|-|
 |`add`, `sub`, `mul`|OpenMP, with broadcasting|cuBLAS (copy + axpy, `sdgmm`)|same, untested|MPSGraph, untested|
 |`div`|OpenMP, with broadcasting|—|—|MPSGraph, untested|
-|`neg`|OpenMP, float32; tensor views supported|—|—|—|
+|`neg`, `abs`, `square`, `relu`|OpenMP, float32; tensor views supported|—|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
@@ -80,7 +80,7 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[ ] `sum(x, axis, keepdim)` — summation.
 * \[ ] `mean(x, axis, keepdim)` — average.
 * \[ ] `max(x, axis, keepdim)` — maximum values.
-* \[ ] `relu(x)` — `max(x, 0)`.
+* \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[ ] `sigmoid(x)` — logistic function, using a stable implementation.
 * \[ ] `softmax(x, axis)` — normalized exponentials; subtract the axis maximum
 before exponentiation. Implement last-axis softmax first.
@@ -110,7 +110,8 @@ Implement these after P0 works end to end.
 
 ### Elementwise math and comparisons
 
-* \[ ] `exp`, `log`, `sqrt`, `rsqrt`, `abs`, and `square`.
+* \[x] `abs` and `square` — absolute value and squaring (CPU, float32).
+* \[ ] `exp`, `log`, `sqrt`, and `rsqrt`.
 * \[ ] `minimum`, `maximum`, and `clamp`.
 * \[ ] `equal`, `less`, `greater`, and related comparisons producing boolean masks.
 * \[ ] `where(mask, a, b)` — conditional element selection.

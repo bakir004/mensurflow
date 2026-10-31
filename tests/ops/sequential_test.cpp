@@ -45,7 +45,10 @@ struct UnaryOp {
     UnaryKernel reference;
 };
 
-const UnaryOp unary_ops[] = {{"neg", seq::neg_f32, cpu::neg_f32, reference::neg}};
+const UnaryOp unary_ops[] = {{"neg", seq::neg_f32, cpu::neg_f32, reference::neg},
+                             {"abs", seq::abs_f32, cpu::abs_f32, reference::abs},
+                             {"square", seq::square_f32, cpu::square_f32, reference::square},
+                             {"relu", seq::relu_f32, cpu::relu_f32, reference::relu}};
 
 // Multiples of 0.25 in [-4, 4], with zeros so division produces inf and NaN.
 std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {
@@ -164,26 +167,50 @@ std::uint32_t bits(float value) {
     return result;
 }
 
-void test_neg_special_values() {
+void test_unary_special_values() {
     const float inf = std::numeric_limits<float>::infinity();
     const float tiny = std::numeric_limits<float>::denorm_min();
     const float large = std::numeric_limits<float>::max();
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    const std::vector<float> pattern{0.0f, -0.0f, inf, -inf, tiny, -tiny, large, -large, nan};
+    const std::vector<float> pattern{0.0f, -0.0f, inf, -inf, tiny, -tiny, large, -large,
+                                     1.1f, -1.1f, std::nextafter(1.0f, 2.0f), nan, -nan};
     std::vector<float> input(static_cast<std::size_t>(cpu::default_grain + 17));
     for (std::size_t i = 0; i < input.size(); ++i) {
         input[i] = pattern[i % pattern.size()];
     }
     const int original_threads = cpu::max_threads();
-    for (int threads : {1, 2, 3, original_threads}) {
-        cpu::set_max_threads(threads);
-        for (UnaryKernel kernel : {seq::neg_f32, cpu::neg_f32}) {
-            std::vector<float> out(input.size());
-            kernel(input.data(), out.data(), static_cast<std::int64_t>(input.size()));
-            for (std::size_t i = 0; i < input.size(); ++i) {
-                test::require(bits(out[i]) == (bits(input[i]) ^ 0x80000000u),
-                              "neg flips only the sign bit, including zero, infinity, and NaN");
+    const auto n = static_cast<std::int64_t>(input.size());
+    for (const UnaryOp& op : unary_ops) {
+        const std::string name = op.name;
+        std::vector<float> expected(input.size()), sequential(input.size());
+        op.reference(input.data(), expected.data(), n);
+        op.sequential(input.data(), sequential.data(), n);
+        for (std::size_t i = 0; i < input.size(); ++i) {
+            if (std::isnan(expected[i])) {
+                test::require(std::isnan(sequential[i]), name + " propagates NaN");
+            } else {
+                test::require(bits(sequential[i]) == bits(expected[i]),
+                              name + " matches float64 reference for special and rounding cases");
             }
+            if (name == "neg") {
+                test::require(bits(sequential[i]) == (bits(input[i]) ^ 0x80000000u),
+                              "neg flips only the sign bit");
+            } else if (name == "abs") {
+                test::require(bits(sequential[i]) == (bits(input[i]) & 0x7fffffffu),
+                              "abs clears only the sign bit, including zeros and NaNs");
+            } else if (name == "relu" && (std::isnan(input[i]) || input[i] == 0.0f)) {
+                test::require(bits(sequential[i]) == bits(input[i]),
+                              "relu preserves NaNs and signed zeros");
+            }
+        }
+        for (int threads : {1, 2, 3, original_threads}) {
+            cpu::set_max_threads(threads);
+            std::vector<float> parallel(input.size());
+            op.parallel(input.data(), parallel.data(), n);
+            test::require(same_bits(sequential, parallel), name + " exact special-value results");
+            auto in_place = input;
+            op.parallel(in_place.data(), in_place.data(), n);
+            test::require(same_bits(sequential, in_place), name + " special values in place");
         }
     }
     cpu::set_max_threads(original_threads);
@@ -217,7 +244,7 @@ int main() {
         test_elementwise();
         test_in_place();
         test_dot();
-        test_neg_special_values();
+        test_unary_special_values();
         test_errors();
     });
 }

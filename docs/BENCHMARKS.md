@@ -1,7 +1,7 @@
 # CPU benchmarks: sequential vs parallel
 
-Results from the CPU kernels (`add`, `sub`, `mul`, `div`, `neg`, `dot`, float32), measured on each machine we have, so
-the numbers can be compared. Keep the build and run conditions below the same on every machine,
+Results from the float32 CPU kernels (`add`, `sub`, `mul`, `div`, `neg`, `abs`,
+`square`, `relu`, `dot`), measured on each machine we have so the numbers can be compared. Keep the build and run conditions below the same on every machine,
 otherwise the comparison is not fair.
 
 Code:
@@ -196,6 +196,96 @@ Negation uses the existing test groups: `elementwise_test.cpp` for CPU kernels,
 `sequential_test.cpp` for sequential/parallel agreement and special floating-point
 values, and `elementwise_ops_test.cpp` for the public API, views, and errors.
 Its float64 reference is in `tests/reference/elementwise.hpp`.
+
+### Absolute value, square, and ReLU: shared unary operations
+
+These CPU float32 operations use the same elementwise files, unary loop, dispatcher,
+reference file, test groups, and benchmark as negation. Sequential versions are in
+`src/backends/cpu/sequential.cpp`; parallel versions use `parallel_for` in
+`src/backends/cpu/elementwise.cpp`.
+
+- `abs(x)` clears the sign bit, including for negative zero and NaNs.
+- `square(x)` computes `x * x` with float32 rounding, overflow, and underflow.
+- `relu(x)` returns +0 for negative values and otherwise preserves the input,
+  including signed zeros and NaNs.
+
+Two runs were measured on the Ryzen 5 6600H with the Release configuration above,
+GCC 13.3.0, no `-march=native`, and `OMP_NUM_THREADS=4 OMP_DYNAMIC=FALSE`.
+Code: `d016986` plus the local abs/square/relu changes. Power/background conditions
+were not recorded. Each operation reads and writes one float per element (8 logical
+bytes). Values separated by `/` are run 1 / run 2; timings are kernel-only milliseconds.
+Every measured output matched its sequential baseline bit for bit.
+
+| Op | n | Sequential (ms) | Parallel, 4 threads (ms) | Speedup, 2 threads | Speedup, 4 threads |
+|---|---:|---|---|---|---|
+| abs | 1,000 | 0.000 / 0.000 | 0.000 / 0.000 | 0.527x / 0.516x | 0.526x / 0.513x |
+| abs | 10,000 | 0.001 / 0.001 | 0.001 / 0.001 | 0.513x / 0.520x | 0.524x / 0.520x |
+| abs | 32,768 | 0.002 / 0.002 | 0.004 / 0.004 | 0.522x / 0.520x | 0.499x / 0.500x |
+| abs | 32,769 | 0.002 / 0.002 | 0.001 / 0.001 | 1.215x / 1.255x | 1.606x / 1.680x |
+| abs | 40,000 | 0.002 / 0.002 | 0.001 / 0.001 | 1.256x / 1.366x | 1.715x / 1.851x |
+| abs | 50,000 | 0.003 / 0.003 | 0.002 / 0.001 | 1.467x / 1.521x | 2.039x / 2.097x |
+| abs | 75,000 | 0.006 / 0.005 | 0.002 / 0.002 | 1.925x / 1.671x | 2.903x / 2.461x |
+| abs | 100,000 | 0.008 / 0.007 | 0.002 / 0.002 | 1.960x / 1.862x | 3.404x / 3.210x |
+| abs | 200,000 | 0.013 / 0.015 | 0.004 / 0.005 | 1.645x / 1.730x | 2.964x / 3.042x |
+| abs | 500,000 | 0.047 / 0.037 | 0.014 / 0.017 | 2.116x / 1.520x | 3.373x / 2.239x |
+| abs | 1,000,000 | 0.242 / 0.118 | 0.030 / 0.028 | 5.028x / 2.108x | 8.154x / 4.284x |
+| abs | 2,000,000 | 0.806 / 0.651 | 0.363 / 0.256 | 1.690x / 1.342x | 2.222x / 2.542x |
+| abs | 5,000,000 | 3.043 / 2.225 | 2.460 / 2.079 | 1.335x / 1.134x | 1.237x / 1.070x |
+| abs | 10,000,000 | 6.302 / 5.114 | 4.557 / 4.882 | 1.352x / 1.145x | 1.383x / 1.047x |
+| abs | 33,554,432 | 16.823 / 18.359 | 16.073 / 16.149 | 1.078x / 1.224x | 1.047x / 1.137x |
+| square | 1,000 | 0.000 / 0.000 | 0.000 / 0.000 | 0.526x / 0.525x | 0.528x / 0.522x |
+| square | 10,000 | 0.001 / 0.001 | 0.001 / 0.001 | 0.523x / 0.540x | 0.548x / 0.543x |
+| square | 32,768 | 0.002 / 0.002 | 0.004 / 0.004 | 0.515x / 0.552x | 0.490x / 0.527x |
+| square | 32,769 | 0.002 / 0.002 | 0.001 / 0.001 | 1.138x / 1.380x | 1.572x / 1.640x |
+| square | 40,000 | 0.002 / 0.003 | 0.002 / 0.001 | 1.280x / 1.532x | 1.651x / 1.973x |
+| square | 50,000 | 0.003 / 0.003 | 0.002 / 0.002 | 1.559x / 1.250x | 2.132x / 2.146x |
+| square | 75,000 | 0.006 / 0.005 | 0.002 / 0.002 | 1.919x / 1.608x | 2.866x / 2.441x |
+| square | 100,000 | 0.007 / 0.008 | 0.002 / 0.003 | 1.742x / 1.853x | 2.900x / 2.976x |
+| square | 200,000 | 0.014 / 0.013 | 0.005 / 0.005 | 1.533x / 1.345x | 2.496x / 2.587x |
+| square | 500,000 | 0.039 / 0.036 | 0.014 / 0.015 | 1.801x / 1.666x | 2.758x / 2.506x |
+| square | 1,000,000 | 0.111 / 0.089 | 0.026 / 0.030 | 2.765x / 1.695x | 4.242x / 3.020x |
+| square | 2,000,000 | 0.561 / 0.624 | 0.239 / 0.341 | 1.575x / 1.384x | 2.343x / 1.832x |
+| square | 5,000,000 | 2.443 / 2.425 | 2.117 / 2.185 | 1.162x / 1.171x | 1.154x / 1.110x |
+| square | 10,000,000 | 4.813 / 5.486 | 4.974 / 4.611 | 0.950x / 1.180x | 0.968x / 1.190x |
+| square | 33,554,432 | 18.664 / 16.933 | 15.630 / 14.878 | 0.903x / 1.052x | 1.194x / 1.138x |
+| relu | 1,000 | 0.000 / 0.000 | 0.000 / 0.000 | 1.620x / 1.632x | 1.625x / 1.633x |
+| relu | 10,000 | 0.001 / 0.001 | 0.001 / 0.001 | 1.466x / 1.299x | 1.447x / 1.298x |
+| relu | 32,768 | 0.004 / 0.004 | 0.003 / 0.002 | 1.453x / 1.510x | 1.466x / 1.510x |
+| relu | 32,769 | 0.004 / 0.004 | 0.002 / 0.002 | 1.508x / 1.516x | 2.255x / 2.174x |
+| relu | 40,000 | 0.005 / 0.004 | 0.002 / 0.002 | 1.640x / 1.553x | 2.365x / 2.268x |
+| relu | 50,000 | 0.006 / 0.006 | 0.003 / 0.002 | 1.551x / 1.704x | 2.218x / 2.668x |
+| relu | 75,000 | 0.010 / 0.009 | 0.004 / 0.004 | 1.800x / 1.730x | 2.674x / 2.494x |
+| relu | 100,000 | 0.011 / 0.011 | 0.004 / 0.004 | 1.606x / 1.744x | 2.736x / 2.873x |
+| relu | 200,000 | 0.048 / 0.023 | 0.007 / 0.008 | 3.430x / 1.772x | 6.465x / 2.887x |
+| relu | 500,000 | 0.059 / 0.058 | 0.021 / 0.019 | 1.555x / 1.777x | 2.784x / 3.082x |
+| relu | 1,000,000 | 0.146 / 0.124 | 0.052 / 0.047 | 2.275x / 1.414x | 2.822x / 2.629x |
+| relu | 2,000,000 | 0.976 / 0.520 | 0.418 / 0.230 | 2.014x / 1.605x | 2.337x / 2.256x |
+| relu | 5,000,000 | 2.570 / 2.340 | 2.334 / 2.015 | 1.183x / 1.087x | 1.101x / 1.161x |
+| relu | 10,000,000 | 5.182 / 5.081 | 4.518 / 4.868 | 1.003x / 1.017x | 1.147x / 1.044x |
+| relu | 33,554,432 | 17.433 / 18.829 | 16.332 / 15.299 | 0.995x / 1.180x | 1.067x / 1.231x |
+
+Cutoff recommendation: retain the existing 32,768-element cutoff as an initial
+setting for these operations on this machine with a four-thread limit. All three
+benefit from four threads at 32,769 elements in both runs. Four threads also beat
+two at that size. This does not identify an optimum below the cutoff or a universal
+thread policy. Rows at or below 32,768 elements use the serial fallback.
+
+All three do little computation per element, so large workloads are primarily
+memory-bound; small workloads also depend on thread and call overhead. Gains shrink
+or vary for larger arrays. Several timings vary by more than 10% across runs, so the
+exact ratios remain provisional. Both runs are retained, including outliers; displayed
+0.000 ms values are below print precision, not zero-duration calls.
+
+The existing shared tests cover float64 references, exact sequential/parallel
+agreement with 1/2/3/maximum threads, sizes around the cutoff, in-place use, tensor
+views, empty and unsupported inputs, signed zeros, NaNs, infinities, and square
+rounding/overflow/underflow. Public API examples are also checked against known values.
+
+Reproduce through the common benchmark:
+
+```bash
+OMP_NUM_THREADS=4 OMP_DYNAMIC=FALSE ./build-cpu/cpu_parallel_benchmark
+```
 
 ## Machine 1: laptop
 

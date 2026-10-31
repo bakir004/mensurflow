@@ -3,6 +3,7 @@
 
 #include "backends/cpu/parallel.hpp"
 
+#include <cmath>
 #include <stdexcept>
 
 namespace mensurflow::cpu {
@@ -65,6 +66,18 @@ void div_f32(const float* a, const float* b, float* out, std::int64_t n) {
 
 void neg_f32(const float* x, float* out, std::int64_t n) {
     unary(x, out, n, [](float value) { return -value; });
+}
+
+void abs_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::fabs(value); });
+}
+
+void square_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return value * value; });
+}
+
+void relu_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return value < 0.0f ? 0.0f : value; });
 }
 
 } // namespace mensurflow::cpu

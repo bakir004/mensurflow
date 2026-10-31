@@ -5,7 +5,7 @@
 //               when there is nothing to gain.
 // Speedup is always sequential time / this time. Kernels are called directly into preallocated
 // buffers: no dispatcher, no allocation. GB/s counts the bytes each op must touch (binary:
-// 12 per element, neg and dot: 8 per element).
+// 12 per element, unary and dot: 8 per element).
 #include "backends/cpu/blas.hpp"
 #include "backends/cpu/elementwise.hpp"
 #include "backends/cpu/parallel.hpp"
@@ -122,6 +122,9 @@ int main() {
                       {"mul", 12.0, seq::mul_f32, cpu::mul_f32},
                       {"div", 12.0, seq::div_f32, cpu::div_f32},
                       {"neg", 8.0, unary_kernel<seq::neg_f32>, unary_kernel<cpu::neg_f32>},
+                      {"abs", 8.0, unary_kernel<seq::abs_f32>, unary_kernel<cpu::abs_f32>},
+                      {"square", 8.0, unary_kernel<seq::square_f32>, unary_kernel<cpu::square_f32>},
+                      {"relu", 8.0, unary_kernel<seq::relu_f32>, unary_kernel<cpu::relu_f32>},
                       {"dot", 8.0, nullptr, nullptr}};
     const std::int64_t sizes[] = {1000,    10000,   32768,   32769,    40000,
                                 50000,   75000,   100000,  200000,   500000,

@@ -119,6 +119,10 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::Mul, cpu_type, DType::F32}, binary_kernel<cpu::mul_f32>);
         dispatcher.register_kernel({OpId::Div, cpu_type, DType::F32}, binary_kernel<cpu::div_f32>);
         dispatcher.register_kernel({OpId::Neg, cpu_type, DType::F32}, unary_kernel<cpu::neg_f32>);
+        dispatcher.register_kernel({OpId::Abs, cpu_type, DType::F32}, unary_kernel<cpu::abs_f32>);
+        dispatcher.register_kernel({OpId::Square, cpu_type, DType::F32},
+                                   unary_kernel<cpu::square_f32>);
+        dispatcher.register_kernel({OpId::Relu, cpu_type, DType::F32}, unary_kernel<cpu::relu_f32>);
     }
 
   private:

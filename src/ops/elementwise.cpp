@@ -69,4 +69,10 @@ Tensor div(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Di
 
 Tensor neg(const Tensor& x) { return unary_op(detail::OpId::Neg, x); }
 
+Tensor abs(const Tensor& x) { return unary_op(detail::OpId::Abs, x); }
+
+Tensor square(const Tensor& x) { return unary_op(detail::OpId::Square, x); }
+
+Tensor relu(const Tensor& x) { return unary_op(detail::OpId::Relu, x); }
+
 } // namespace mensurflow
