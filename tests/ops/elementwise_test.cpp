@@ -8,8 +8,10 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace mensurflow::cpu;
@@ -122,6 +124,43 @@ void test_in_place() {
     }
 }
 
+void test_axpy_and_bias_contracts() {
+    float x = 1.0f, y = 2.0f, out = 0.0f;
+    axpy_f32(2.0f, nullptr, nullptr, nullptr, 0);
+    bias_add_f32(nullptr, nullptr, nullptr, 0, 0);
+    bias_add_f32(nullptr, nullptr, nullptr, 0, 7);
+    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, &x, &y, &out, -1); },
+                                                "axpy negative length");
+    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, nullptr, &y, &out, 1); },
+                                                "axpy null x");
+    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, &x, nullptr, &out, 1); },
+                                                "axpy null y");
+    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, &x, &y, nullptr, 1); },
+                                                "axpy null output");
+    for (const auto dimensions : {std::pair<std::int64_t, std::int64_t>{-1, 1}, {0, -1},
+                                  {1, 0}, {2, 3}}) {
+        test::require_throws<std::invalid_argument>(
+            [&] { bias_add_f32(&x, &y, &out, dimensions.first, dimensions.second); },
+            "bias_add invalid length or feature count");
+    }
+    test::require_throws<std::invalid_argument>([&] { bias_add_f32(nullptr, &y, &out, 1, 1); },
+                                                "bias_add null x");
+    test::require_throws<std::invalid_argument>([&] { bias_add_f32(&x, nullptr, &out, 1, 1); },
+                                                "bias_add null bias");
+    test::require_throws<std::invalid_argument>([&] { bias_add_f32(&x, &y, nullptr, 1, 1); },
+                                                "bias_add null output");
+
+    // Fused multiply-add retains the product's low bits and avoids intermediate overflow.
+    x = 0x1.fffffcp-1f;
+    y = -1.0f;
+    axpy_f32(0x1.000002p0f, &x, &y, &out, 1);
+    test::require(out == -0x1p-46f, "axpy uses one fused rounding");
+    x = std::numeric_limits<float>::max();
+    y = -x;
+    axpy_f32(2.0f, &x, &y, &out, 1);
+    test::require(out == x, "axpy avoids intermediate product overflow");
+}
+
 void test_errors() {
     float x = 1.0f;
     test::require_throws<std::invalid_argument>([&] { add_f32(&x, &x, &x, -1); }, "negative n");
@@ -146,6 +185,7 @@ int main() {
     return test::run("elementwise_test", [] {
         test_matches_reference();
         test_in_place();
+        test_axpy_and_bias_contracts();
         test_errors();
     });
 }

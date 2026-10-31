@@ -15,6 +15,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cpu = mensurflow::cpu;
@@ -138,6 +139,89 @@ void test_in_place() {
     }
 }
 
+void test_axpy_and_bias() {
+    const int original_threads = cpu::max_threads();
+    for (std::int64_t n : sizes) {
+        const auto x = make_input(n, 13), y = make_input(n, 14);
+        for (float alpha : {0.0f, -1.25f, 0.75f, 2.0f}) {
+            std::vector<float> want(x.size()), baseline(x.size()), actual(x.size());
+            reference::axpy(alpha, x.data(), y.data(), want.data(), n);
+            seq::axpy_f32(alpha, x.data(), y.data(), baseline.data(), n);
+            test::require(same_bits(want, baseline), "sequential axpy vs float64 reference");
+            auto into_x = x, into_y = y;
+            seq::axpy_f32(alpha, into_x.data(), y.data(), into_x.data(), n);
+            seq::axpy_f32(alpha, x.data(), into_y.data(), into_y.data(), n);
+            test::require(same_bits(want, into_x) && same_bits(want, into_y),
+                          "sequential axpy permits either input as output");
+            for (int threads : {1, 2, 3, original_threads}) {
+                cpu::set_max_threads(threads);
+                cpu::axpy_f32(alpha, x.data(), y.data(), actual.data(), n);
+                test::require(same_bits(baseline, actual), "axpy parallel vs sequential");
+                into_x = x;
+                into_y = y;
+                cpu::axpy_f32(alpha, into_x.data(), y.data(), into_x.data(), n);
+                cpu::axpy_f32(alpha, x.data(), into_y.data(), into_y.data(), n);
+                test::require(same_bits(baseline, into_x) && same_bits(baseline, into_y),
+                              "parallel axpy permits either input as output");
+            }
+        }
+    }
+    // Odd feature counts make parallel blocks begin in the middle of a row.
+    for (const auto shape : {std::pair<std::int64_t, std::int64_t>{0, 0}, {0, 7}, {1, 1},
+                             {cpu::default_grain - 1, 7}, {cpu::default_grain, 128},
+                             {cpu::default_grain + 1, 3}, {cpu::default_grain + 1, 1},
+                             {193 * 257, 257}}) {
+        const auto n = shape.first, features = shape.second;
+        const auto x = make_input(n, 15), bias = make_input(features, 16);
+        std::vector<float> want(x.size()), baseline(x.size()), actual(x.size());
+        reference::bias_add(x.data(), bias.data(), want.data(), n, features);
+        seq::bias_add_f32(x.data(), bias.data(), baseline.data(), n, features);
+        test::require(same_bits(want, baseline), "sequential bias_add vs float64 reference");
+        auto in_place = x;
+        seq::bias_add_f32(in_place.data(), bias.data(), in_place.data(), n, features);
+        test::require(same_bits(want, in_place), "sequential bias_add in place");
+        for (int threads : {1, 2, 3, original_threads}) {
+            cpu::set_max_threads(threads);
+            cpu::bias_add_f32(x.data(), bias.data(), actual.data(), n, features);
+            test::require(same_bits(baseline, actual), "bias_add parallel vs sequential");
+            in_place = x;
+            cpu::bias_add_f32(in_place.data(), bias.data(), in_place.data(), n, features);
+            test::require(same_bits(baseline, in_place), "parallel bias_add in place");
+        }
+    }
+    cpu::set_max_threads(original_threads);
+}
+
+void test_axpy_special_values() {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float large = std::numeric_limits<float>::max();
+    const std::vector<float> pattern{0, -0.0f, 1.1f, -2, large, -large, inf, -inf, nan};
+    const auto n = cpu::default_grain + 17;
+    std::vector<float> x(static_cast<std::size_t>(n)), y(x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] = pattern[i % pattern.size()];
+        y[i] = pattern[(i + 3) % pattern.size()];
+    }
+    const int original_threads = cpu::max_threads();
+    for (float alpha : {0.0f, -1.25f, 2.0f, inf, nan}) {
+        std::vector<float> want(x.size()), baseline(x.size()), actual(x.size());
+        reference::axpy(alpha, x.data(), y.data(), want.data(), n);
+        seq::axpy_f32(alpha, x.data(), y.data(), baseline.data(), n);
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            test::require(std::isnan(want[i]) ? std::isnan(baseline[i])
+                                             : test::close_f32(baseline[i], want[i]),
+                          "axpy float64 reference for special values and coefficients");
+        }
+        for (int threads : {1, 2, 3, original_threads}) {
+            cpu::set_max_threads(threads);
+            cpu::axpy_f32(alpha, x.data(), y.data(), actual.data(), n);
+            test::require(same_bits(baseline, actual), "axpy exact special-value agreement");
+        }
+    }
+    cpu::set_max_threads(original_threads);
+}
+
 void test_dot() {
     const int original_threads = cpu::max_threads();
     for (std::int64_t n : sizes) {
@@ -232,6 +316,26 @@ void test_errors() {
                                                 "null input");
     test::require_throws<std::invalid_argument>([&] { seq::sub_f32(&x, &x, nullptr, 1); },
                                                 "null output");
+    seq::axpy_f32(2, nullptr, nullptr, nullptr, 0);
+    seq::bias_add_f32(nullptr, nullptr, nullptr, 0, 0);
+    test::require_throws<std::invalid_argument>([&] { seq::axpy_f32(2, &x, &x, &x, -1); },
+                                                "sequential axpy negative length");
+    test::require_throws<std::invalid_argument>([&] { seq::axpy_f32(2, nullptr, &x, &x, 1); },
+                                                "sequential axpy null input");
+    test::require_throws<std::invalid_argument>([&] { seq::axpy_f32(2, &x, &x, nullptr, 1); },
+                                                "sequential axpy null output");
+    for (const auto dimensions : {std::pair<std::int64_t, std::int64_t>{-1, 1}, {0, -1},
+                                  {1, 0}, {2, 3}}) {
+        test::require_throws<std::invalid_argument>(
+            [&] { seq::bias_add_f32(&x, &x, &x, dimensions.first, dimensions.second); },
+            "sequential bias_add invalid dimensions");
+    }
+    test::require_throws<std::invalid_argument>(
+        [&] { seq::bias_add_f32(nullptr, &x, &x, 1, 1); }, "sequential bias_add null input");
+    test::require_throws<std::invalid_argument>(
+        [&] { seq::bias_add_f32(&x, nullptr, &x, 1, 1); }, "sequential bias_add null bias");
+    test::require_throws<std::invalid_argument>(
+        [&] { seq::bias_add_f32(&x, &x, nullptr, 1, 1); }, "sequential bias_add null output");
     seq::add_f32(nullptr, nullptr, nullptr, 0); // n == 0 never touches memory
     test::require(seq::dot_f32(nullptr, nullptr, 0) == 0.0f, "empty dot is 0");
     for (const UnaryOp& op : unary_ops) {
@@ -252,6 +356,8 @@ int main() {
         test_elementwise();
         test_in_place();
         test_dot();
+        test_axpy_and_bias();
+        test_axpy_special_values();
         test_unary_special_values();
         test_errors();
     });

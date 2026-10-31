@@ -292,6 +292,130 @@ void test_transcendental_known_values() {
     }
 }
 
+void check_scaled_output(const Tensor& x, const Tensor& y, const Tensor& out,
+                         const Shape& shape, const std::vector<float>& want) {
+    test::require(out.shape() == shape && out.dtype() == x.dtype() && out.device() == x.device(),
+                  "scaled/bias result shape, dtype, and device");
+    test::require(out.is_contiguous() && !out.shares_storage(x) && !out.shares_storage(y),
+                  "scaled/bias result has fresh contiguous storage");
+    test::require(test::matches_f32(out.to_vector<float>(), want),
+                  "scaled/bias result matches independent reference");
+}
+
+void check_axpy_case(float alpha, const Tensor& x, const Tensor& y) {
+    const auto before_x = x.to_vector<float>(), before_y = y.to_vector<float>();
+    const auto want = reference::broadcast_binary(before_x, x.shape(), before_y, y.shape(),
+        [alpha](float a, float b) { return reference::axpy_value(alpha, a, b); });
+    check_scaled_output(x, y, axpy(alpha, x, y), want.shape, want.values);
+    test::require(same_bits(before_x, x.to_vector<float>()) &&
+                      same_bits(before_y, y.to_vector<float>()), "axpy preserves both inputs");
+}
+
+void check_bias_case(const Tensor& x, const Tensor& bias) {
+    const auto before_x = x.to_vector<float>(), before_bias = bias.to_vector<float>();
+    std::vector<float> want(before_x.size());
+    reference::bias_add(before_x.data(), before_bias.data(), want.data(), x.numel(), x.size(1));
+    check_scaled_output(x, bias, bias_add(x, bias), x.shape(), want);
+    test::require(same_bits(before_x, x.to_vector<float>()) &&
+                      same_bits(before_bias, bias.to_vector<float>()), "bias_add preserves inputs");
+}
+
+void test_axpy_and_bias(Device device) {
+    const Tensor matrix = Tensor::from_vector(make_input(12, 20), {3, 4}, device);
+    const Tensor vector = Tensor::from_vector(make_input(8, 21), {8}, device);
+    const Tensor bias = vector.slice(0, 0, 8, 2); // noncontiguous [4] bias
+    const bool has_axpy = detail::Registry::instance().dispatcher().find(
+        {detail::OpId::Axpy, device.type, DType::F32}) != nullptr;
+    const bool has_bias = detail::Registry::instance().dispatcher().find(
+        {detail::OpId::BiasAdd, device.type, DType::F32}) != nullptr;
+    if (has_axpy) {
+        for (float alpha : {0.0f, -2.0f, 0.25f, 1.25f}) {
+            check_axpy_case(alpha, matrix, bias);
+        }
+        check_axpy_case(-2, Tensor::from_vector(std::vector<float>{3}, {}, device), matrix);
+        check_axpy_case(0.5f, matrix.transpose(0, 1),
+                        Tensor::from_vector(std::vector<float>{1, 2, 3}, {3}, device));
+        check_axpy_case(2, matrix.slice(1, 1, 4, 2), vector.slice(0, 1, 5, 2));
+        check_axpy_case(2, bias.unsqueeze(0).expand({3, 4}), matrix);
+        check_axpy_case(2, Tensor::empty({0, 4}, DType::F32, device), bias);
+    } else {
+        for (const Shape& shape : {Shape{3, 4}, Shape{0, 4}}) {
+            const Tensor x = Tensor::empty(shape, DType::F32, device);
+            test::require_throws<detail::NotImplemented>([&] { axpy(2, x, bias); },
+                                                         "axpy without a kernel, including empty");
+        }
+    }
+    if (has_bias) {
+        check_bias_case(matrix, bias);
+        check_bias_case(matrix.slice(0, 1, 3), bias);
+        check_bias_case(matrix.slice(1, 1, 4, 2), vector.slice(0, 1, 5, 2));
+        check_bias_case(matrix.transpose(0, 1),
+                         Tensor::from_vector(std::vector<float>{1, 2, 3}, {3}, device));
+        check_bias_case(bias.unsqueeze(0).expand({3, 4}), bias);
+        check_bias_case(matrix,
+                        Tensor::from_vector(std::vector<float>{2}, {1}, device).expand({4}));
+        for (const Shape& shape : {Shape{0, 4}, Shape{3, 0}, Shape{0, 0}}) {
+            check_bias_case(Tensor::empty(shape, DType::F32, device),
+                            Tensor::from_vector(
+                                std::vector<float>(static_cast<std::size_t>(shape[1]), 0.0f),
+                                {shape[1]}, device));
+        }
+    } else {
+        for (const Shape& shape : {Shape{3, 4}, Shape{0, 4}, Shape{3, 0}}) {
+            const Tensor x = Tensor::empty(shape, DType::F32, device);
+            const Tensor b = Tensor::empty({shape[1]}, DType::F32, device);
+            test::require_throws<detail::NotImplemented>([&] { bias_add(x, b); },
+                                                         "bias_add missing kernel, even if empty");
+        }
+    }
+    const Tensor ints = Tensor::empty({3, 4}, DType::I32, device);
+    const Tensor int_bias = Tensor::empty({4}, DType::I32, device);
+    test::require_throws<std::invalid_argument>([&] { axpy(2, Tensor{}, bias); },
+                                                "axpy undefined x");
+    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, Tensor{}); },
+                                                "axpy undefined y");
+    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, vector); },
+                                                "axpy bad broadcast");
+    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, int_bias); },
+                                                "axpy dtype mismatch");
+    test::require_throws<std::invalid_argument>([&] { bias_add(Tensor{}, bias); },
+                                                "bias_add undefined x");
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, Tensor{}); },
+                                                "bias_add undefined bias");
+    test::require_throws<std::invalid_argument>([&] { bias_add(vector, bias); }, "bias_add x rank");
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, bias.unsqueeze(0)); },
+                                                "bias_add bias must be a vector");
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, vector); },
+                                                "bias_add wrong features");
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, int_bias); },
+                                                "bias_add dtype mismatch");
+    test::require_throws<detail::NotImplemented>([&] { axpy(2, ints, int_bias); },
+                                                "axpy unsupported dtype");
+    test::require_throws<detail::NotImplemented>([&] { bias_add(ints, int_bias); },
+                                                "bias_add unsupported dtype");
+    const Tensor empty = Tensor::empty({0, 4}, DType::I32, device);
+    test::require_throws<detail::NotImplemented>([&] { axpy(2, empty, int_bias); },
+                                                "empty axpy unsupported dtype");
+    test::require_throws<detail::NotImplemented>([&] { bias_add(empty, int_bias); },
+                                                "empty bias_add unsupported dtype");
+}
+
+void test_axpy_fused_values() {
+    const Tensor x = Tensor::from_vector(std::vector<float>{0x1.fffffcp-1f}, {1});
+    const Tensor y = Tensor::from_vector(std::vector<float>{-1}, {1});
+    test::require(axpy(0x1.000002p0f, x, y).item<float>() == -0x1p-46f,
+                  "public axpy retains cancellation bits with fused rounding");
+    const float large = std::numeric_limits<float>::max();
+    const Tensor big = Tensor::from_vector(std::vector<float>{large}, {});
+    const Tensor negative = Tensor::from_vector(std::vector<float>{-large}, {});
+    test::require(axpy(2, big, negative).item<float>() == large,
+                  "public axpy does not overflow its intermediate product");
+    const Tensor infinite = Tensor::from_vector(
+        std::vector<float>{std::numeric_limits<float>::infinity()}, {});
+    test::require(std::isnan(axpy(0, infinite, big).item<float>()),
+                  "zero alpha still evaluates IEEE 754 zero times infinity");
+}
+
 void test_ieee_division() {
     // x / 0 is inf or NaN, as in IEEE 754. Checked on the CPU, where rounding is exact.
     const Device cpu{DeviceType::CPU, 0};
@@ -337,6 +461,12 @@ void test_mixed_devices() {
     const Tensor on_cpu = Tensor::from_vector(std::vector<float>{1, 2}, {2}, devices[0]);
     const Tensor elsewhere = on_cpu.to(devices[1]);
     test::require_throws<std::invalid_argument>([&] { add(on_cpu, elsewhere); }, "mixed devices");
+    test::require_throws<std::invalid_argument>([&] { axpy(2, on_cpu, elsewhere); },
+                                                "axpy mixed devices");
+    const Tensor column = on_cpu.view({2, 1});
+    const Tensor bias = Tensor::from_vector(std::vector<float>{1}, {1}, devices[1]);
+    test::require_throws<std::invalid_argument>([&] { bias_add(column, bias); },
+                                                "bias_add mixed devices");
     test::require(add(elsewhere, elsewhere).to_vector<float>() == (std::vector<float>{2, 4}),
                   "moved tensor works");
 }
@@ -362,9 +492,11 @@ int main() {
             test_shapes(device);
             test_views(device);
             test_unary_shapes_and_views(device);
+            test_axpy_and_bias(device);
             test_errors(device);
         }
         test_ieee_division();
+        test_axpy_fused_values();
         test_unary_special_values();
         test_unary_known_values();
         test_transcendental_known_values();

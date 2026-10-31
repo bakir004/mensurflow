@@ -23,6 +23,18 @@ Tensor sub(const Tensor& a, const Tensor& b); // a - b
 Tensor mul(const Tensor& a, const Tensor& b); // a * b, elementwise (not matrix multiplication)
 Tensor div(const Tensor& a, const Tensor& b); // a / b
 
+// alpha*x + y, using a fused float32 multiply-add (one rounding, as std::fma).
+// Shapes broadcast like add; alpha is a float scalar. Returns a new contiguous tensor.
+// CPU float32 only; unsupported devices/dtypes throw NotImplemented, including empty inputs.
+Tensor axpy(float alpha, const Tensor& x, const Tensor& y);
+
+// Add a [features] bias to every row of a [batch, features] matrix.
+// Both inputs must have the same dtype and device. Views are packed as needed without
+// expanding the bias to matrix size. Returns a new contiguous tensor; inputs are unchanged.
+// Wrong rank or bias length throws invalid_argument. CPU float32 only; unsupported
+// devices/dtypes throw NotImplemented, including empty matrices.
+Tensor bias_add(const Tensor& x, const Tensor& bias);
+
 // Unary operations return a new contiguous tensor with the same shape, dtype, and device;
 // strided and broadcast views are supported. Currently CPU float32 only. Undefined input throws
 // invalid_argument; unsupported devices or dtypes throw NotImplemented, including empty inputs.

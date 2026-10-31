@@ -16,6 +16,15 @@ void sub_f32(const float* a, const float* b, float* out, std::int64_t n);
 void mul_f32(const float* a, const float* b, float* out, std::int64_t n);
 void div_f32(const float* a, const float* b, float* out, std::int64_t n);
 
+// Fused float32 alpha*x + y, with one rounding; out may alias x or y.
+void axpy_f32(float alpha, const float* x, const float* y, float* out, std::int64_t n);
+
+// Add bias[features] to every row of x[n / features, features]. out may alias x but must
+// not overlap bias. Nonnegative n/features are required; n == 0 permits features == 0.
+// For n > 0, features must be positive and divide n exactly, and all pointers must be nonnull.
+void bias_add_f32(const float* x, const float* bias, float* out, std::int64_t n,
+                  std::int64_t features);
+
 // Unary operations follow the same length, null-pointer, and in-place rules as above.
 void neg_f32(const float* x, float* out, std::int64_t n);
 void abs_f32(const float* x, float* out, std::int64_t n);

@@ -94,6 +94,26 @@ void unary_kernel(const OpArgs& args, Stream&) {
     Kernel(TensorAccess::data<float>(args.inputs[0]), TensorAccess::data<float>(out), out.numel());
 }
 
+void axpy_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    if (out.numel() == 0) {
+        return;
+    }
+    cpu::axpy_f32(args.alpha, TensorAccess::data<float>(args.inputs[0]),
+                  TensorAccess::data<float>(args.inputs[1]), TensorAccess::data<float>(out),
+                  out.numel());
+}
+
+void bias_add_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    if (out.numel() == 0) {
+        return;
+    }
+    cpu::bias_add_f32(TensorAccess::data<float>(args.inputs[0]),
+                      TensorAccess::data<float>(args.inputs[1]), TensorAccess::data<float>(out),
+                      out.numel(), out.size(1));
+}
+
 class CpuBackend final : public Backend {
   public:
     DeviceType type() const override { return DeviceType::CPU; }
@@ -127,6 +147,8 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::Exp, cpu_type, DType::F32}, unary_kernel<cpu::exp_f32>);
         dispatcher.register_kernel({OpId::Sigmoid, cpu_type, DType::F32},
                                    unary_kernel<cpu::sigmoid_f32>);
+        dispatcher.register_kernel({OpId::Axpy, cpu_type, DType::F32}, axpy_kernel);
+        dispatcher.register_kernel({OpId::BiasAdd, cpu_type, DType::F32}, bias_add_kernel);
     }
 
   private:

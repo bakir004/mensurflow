@@ -34,6 +34,24 @@ inline void div(const float* a, const float* b, float* out, std::int64_t n) {
     binary(a, b, out, n, [](float x, float y) { return x / y; });
 }
 
+inline float axpy_value(float alpha, float x, float y) {
+    return static_cast<float>(std::fma(static_cast<double>(alpha), static_cast<double>(x),
+                                       static_cast<double>(y)));
+}
+
+inline void axpy(float alpha, const float* x, const float* y, float* out, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = axpy_value(alpha, x[i], y[i]);
+    }
+}
+
+inline void bias_add(const float* x, const float* bias, float* out, std::int64_t n,
+                     std::int64_t features) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = static_cast<float>(static_cast<double>(x[i]) + bias[i % features]);
+    }
+}
+
 // Compute in float64, then round back to the float32 kernel's output type.
 inline void neg(const float* x, float* out, std::int64_t n) {
     for (std::int64_t i = 0; i < n; ++i) {

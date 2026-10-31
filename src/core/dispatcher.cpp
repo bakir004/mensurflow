@@ -33,6 +33,10 @@ const char* op_name(OpId op) {
         return "exp";
     case OpId::Sigmoid:
         return "sigmoid";
+    case OpId::Axpy:
+        return "axpy";
+    case OpId::BiasAdd:
+        return "bias_add";
     }
     throw std::invalid_argument("invalid OpId");
 }

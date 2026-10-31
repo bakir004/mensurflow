@@ -59,7 +59,8 @@ void test_registry() {
                                              "negative index");
     // The CPU is the reference backend and must cover every op.
     for (OpId op : {OpId::Dot, OpId::Add, OpId::Sub, OpId::Mul, OpId::Div, OpId::Neg, OpId::Abs,
-                    OpId::Square, OpId::Relu, OpId::Sqrt, OpId::Exp, OpId::Sigmoid}) {
+                    OpId::Square, OpId::Relu, OpId::Sqrt, OpId::Exp, OpId::Sigmoid, OpId::Axpy,
+                    OpId::BiasAdd}) {
         test::require(registry.dispatcher().find({op, DeviceType::CPU, DType::F32}) != nullptr,
                       std::string("cpu ") + op_name(op) + " is registered");
     }

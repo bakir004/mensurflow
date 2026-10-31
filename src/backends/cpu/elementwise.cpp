@@ -3,6 +3,7 @@
 
 #include "backends/cpu/parallel.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -62,6 +63,44 @@ void mul_f32(const float* a, const float* b, float* out, std::int64_t n) {
 
 void div_f32(const float* a, const float* b, float* out, std::int64_t n) {
     binary(a, b, out, n, [](float x, float y) { return x / y; });
+}
+
+void axpy_f32(float alpha, const float* x, const float* y, float* out, std::int64_t n) {
+    binary(x, y, out, n, [alpha](float a, float b) { return std::fma(alpha, a, b); });
+}
+
+void bias_add_f32(const float* x, const float* bias, float* out, std::int64_t n,
+                  std::int64_t features) {
+    if (n < 0 || features < 0) {
+        throw std::invalid_argument("bias_add: negative dimension");
+    }
+    if (n == 0) {
+        return;
+    }
+    if (features == 0 || n % features != 0) {
+        throw std::invalid_argument("bias_add: features must be positive and divide length");
+    }
+    if (x == nullptr || bias == nullptr || out == nullptr) {
+        throw std::invalid_argument("bias_add: null pointer");
+    }
+    if (features == 1) {
+        const float value = bias[0];
+        unary(x, out, n, [value](float a) { return a + value; });
+        return;
+    }
+    parallel_for(n, [=](std::int64_t begin, std::int64_t end) {
+        // A thread's block can begin inside a row. Use contiguous spans so the inner loop
+        // can vectorize, rather than taking a remainder for every element.
+        std::int64_t feature = begin % features;
+        for (std::int64_t i = begin; i < end;) {
+            const std::int64_t count = std::min(end - i, features - feature);
+            for (std::int64_t j = 0; j < count; ++j) {
+                out[i + j] = x[i + j] + bias[feature + j];
+            }
+            i += count;
+            feature = 0;
+        }
+    });
 }
 
 void neg_f32(const float* x, float* out, std::int64_t n) {

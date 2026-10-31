@@ -19,6 +19,15 @@ void mul_f32(const float* a, const float* b, float* out, std::int64_t n);
 // out[i] = a[i] / b[i]
 void div_f32(const float* a, const float* b, float* out, std::int64_t n);
 
+// out[i] = fma(alpha, x[i], y[i]), with a single float32 rounding. out may alias x or y.
+void axpy_f32(float alpha, const float* x, const float* y, float* out, std::int64_t n);
+
+// Add compact bias[features] to each row of x[n / features, features]. out may alias x;
+// bias must not overlap out. n and features must be nonnegative. n == 0 does nothing,
+// including features == 0; otherwise features must be positive and divide n exactly.
+void bias_add_f32(const float* x, const float* bias, float* out, std::int64_t n,
+                  std::int64_t features);
+
 // Unary kernels allow out == x and follow the same length and pointer rules as binary kernels.
 // out[i] = -x[i]
 void neg_f32(const float* x, float* out, std::int64_t n);

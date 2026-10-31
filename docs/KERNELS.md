@@ -41,6 +41,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`div`|OpenMP, with broadcasting|—|—|MPSGraph, untested|
 |`neg`, `abs`, `square`, `relu`|OpenMP, float32; tensor views supported|—|—|—|
 |`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|—|
+|`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
@@ -60,8 +61,8 @@ and small fully connected networks with externally supplied weights.
 * \[x] `mul(a, b)` — elementwise multiplication, not matrix multiplication.
 * \[x] `div(a, b)` — elementwise division.
 * \[x] `neg(x)` — negation (CPU, float32).
-* \[ ] `axpy(alpha, x, y)` — `alpha\*x + y`; adapt the existing implementation.
-* \[ ] `bias\_add(x, b)` — add `\[features]` bias to `\[batch, features]`.
+* \[x] `axpy(alpha, x, y)` — fused float32 `alpha\*x + y`, with broadcasting (CPU).
+* \[x] `bias\_add(x, b)` — add a compact `\[features]` bias to `\[batch, features]` (CPU, float32).
 
 ### Linear algebra
 

@@ -27,7 +27,9 @@ enum class OpId {
     Relu,
     Sqrt,
     Exp,
-    Sigmoid
+    Sigmoid,
+    Axpy,
+    BiasAdd
 };
 
 const char* op_name(OpId op);
@@ -47,6 +49,7 @@ inline bool operator<(const KernelKey& a, const KernelKey& b) {
 struct OpArgs {
     std::vector<Tensor> inputs;
     std::vector<Tensor> outputs;
+    float alpha = 1.0f; // Scalar multiplier for axpy; unused by other operations.
 };
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);
