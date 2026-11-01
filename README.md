@@ -122,6 +122,7 @@ out-of-place and inputs are not modified.
 ### BLAS-style operations
 
 - `dot`
+- `matvec`
 - `matmul`
 - `axpy`
 - `bias_add`
@@ -146,7 +147,7 @@ out-of-place and inputs are not modified.
 - `exp`
 - `sigmoid`
 
-`matmul` currently has a CPU implementation only. Unsupported backend and
+`matvec` and `matmul` currently have CPU implementations only. Unsupported backend and
 operation combinations throw `NotImplemented`; they do not silently fall back
 to another device.
 
@@ -198,6 +199,7 @@ not silently redirect an operation to another device.
 | Basic elementwise arithmetic | Yes | Partial | Partial | Partial | No |
 | Unary elementwise operations | Yes | No | No | No | No |
 | `dot` | Yes | Yes | Implemented, hardware validation pending | Implemented, hardware validation pending | No |
+| `matvec` | Yes | No | No | No | No |
 | `matmul` | Yes | No | No | No | No |
 | Tensor transfers | Yes | Yes | Yes | Yes | No |
 
@@ -227,6 +229,7 @@ kernel implementations:
 
 - `elementwise_benchmark`
 - `dot_benchmark`
+- `matvec_benchmark`
 - `matmul_benchmark`
 - `cpu_parallel_benchmark`
 

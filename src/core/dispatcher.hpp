@@ -20,6 +20,7 @@ enum class OpId {
     Sub,
     Mul,
     Div,
+    Matvec,
     Matmul,
     Neg,
     Abs,

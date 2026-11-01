@@ -17,6 +17,8 @@ const char* op_name(OpId op) {
         return "mul";
     case OpId::Div:
         return "div";
+    case OpId::Matvec:
+        return "matvec";
     case OpId::Matmul:
         return "matmul";
     case OpId::Neg:
