@@ -98,6 +98,32 @@ void test_errors() {
     test::require_throws<std::logic_error>([&] { undefined.to_vector<float>(); }, "undefined copy");
 }
 
+void test_autograd_contract() {
+    Tensor x = Tensor::from_vector(std::vector<float>{1, 2, 3}, {3});
+    test::require(!x.requires_grad() && !x.has_grad(), "autograd disabled by default");
+
+    x.set_requires_grad();
+    test::require(x.requires_grad() && !x.has_grad(), "requires_grad marks a leaf");
+    test::require(!x.grad().defined(), "leaf gradient starts undefined");
+
+    test::require_throws<std::invalid_argument>(
+        [&] { x.backward(); }, "backward requires a scalar output");
+
+    Tensor scalar = Tensor::from_vector(std::vector<float>{2}, {});
+    scalar.set_requires_grad();
+    test::require_throws<std::logic_error>(
+        [&] { scalar.backward(); }, "backward requires a graph implementation");
+
+    x.zero_grad();
+    test::require(!x.has_grad(), "zero_grad is safe without an accumulated gradient");
+    x.set_requires_grad(false);
+    test::require(!x.requires_grad(), "requires_grad can be disabled");
+
+    Tensor ints = Tensor::from_vector(std::vector<std::int32_t>{1, 2}, {2});
+    test::require_throws<std::invalid_argument>(
+        [&] { ints.set_requires_grad(); }, "autograd only supports f32");
+}
+
 } // namespace
 
 int main() {
@@ -106,5 +132,6 @@ int main() {
         test_round_trip();
         test_constructors();
         test_errors();
+        test_autograd_contract();
     });
 }

@@ -197,6 +197,40 @@ Tensor Tensor::contiguous() const {
     return out;
 }
 
+void Tensor::set_requires_grad(bool requires_grad) {
+    require_defined();
+    if (requires_grad && dtype_ != DType::F32) {
+        throw std::invalid_argument("set_requires_grad: only f32 tensors support autograd");
+    }
+    requires_grad_ = requires_grad;
+    if (!requires_grad_) {
+        grad_.reset();
+    }
+}
+
+Tensor Tensor::grad() const {
+    require_defined();
+    return grad_ == nullptr ? Tensor{} : *grad_;
+}
+
+void Tensor::zero_grad() {
+    require_defined();
+    if (grad_ != nullptr) {
+        grad_ = std::make_shared<Tensor>(Tensor::zeros(shape_, DType::F32, device()));
+    }
+}
+
+void Tensor::backward() const {
+    require_defined();
+    if (!requires_grad_) {
+        throw std::logic_error("backward: tensor does not require gradients");
+    }
+    if (numel() != 1) {
+        throw std::invalid_argument("backward: implicit gradient requires a scalar tensor");
+    }
+    throw std::logic_error("backward: autograd graph construction is not implemented yet");
+}
+
 void Tensor::copy_to_host(void* dst) const {
     require_defined();
     if (nbytes() == 0) {
@@ -251,7 +285,9 @@ void Tensor::copy_to_host(void* dst) const {
 }
 
 Tensor Tensor::make_view(std::int64_t offset, Shape shape, Strides strides) const {
-    return Tensor(storage_, offset, std::move(shape), std::move(strides), dtype_);
+    Tensor view(storage_, offset, std::move(shape), std::move(strides), dtype_);
+    view.requires_grad_ = requires_grad_;
+    return view;
 }
 
 Tensor Tensor::transpose(int d0, int d1) const {

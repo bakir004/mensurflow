@@ -85,6 +85,21 @@ class Tensor {
     // *this if already contiguous, otherwise a packed row-major copy on the same device.
     Tensor contiguous() const;
 
+    // Marks this tensor as a differentiable leaf for the future reverse-mode autograd graph.
+    // Autograd currently supports float32 tensors only.
+    void set_requires_grad(bool requires_grad = true);
+    bool requires_grad() const { return requires_grad_; }
+
+    // Returns the accumulated gradient, or an undefined tensor when no gradient has been
+    // accumulated. Gradients are always float32 tensors with the same shape and device.
+    Tensor grad() const;
+    bool has_grad() const { return grad_ != nullptr; }
+    void zero_grad();
+
+    // Starts reverse-mode automatic differentiation from a scalar output. Operation graph
+    // construction and backward rules are added in the next autograd step.
+    void backward() const;
+
     // Writes numel() elements in row-major order to dst, following strides for views.
     // Blocks until the data is ready.
     void copy_to_host(void* dst) const;
@@ -137,6 +152,8 @@ class Tensor {
     Shape shape_;
     Strides strides_;
     DType dtype_ = DType::F32;
+    bool requires_grad_ = false;
+    std::shared_ptr<Tensor> grad_;
 };
 
 } // namespace mensurflow
