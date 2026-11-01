@@ -158,7 +158,15 @@ links the harness and gives it the include paths for `src/` and `tests/reference
 
 - Release build, no `MENSURFLOW_NATIVE`, CMake from a clean build folder.
 - Plugged in, High performance power plan, other heavy programs closed.
+- **Let the machine cool down between runs.** On the laptop (a 15 W CPU), a run started right
+  after another was slower in almost every row, including single-thread ones, because the CPU slows
+  down once it has been loaded for a few minutes. Wait about 3 minutes before each run.
 - Run twice; if the two runs differ by more than about 10 % in a row, the machine was busy.
+  Expect the **2- and 4-thread rows to vary more** (up to 2x on the laptop even after cooling):
+  unpinned threads can land on two hyperthreads of one core or on separate cores. The 1-thread and
+  all-threads rows were stable. To compare thread counts more reliably, pin the threads
+  (`OMP_PLACES=cores`, `OMP_PROC_BIND=close`); this reduced run-to-run drift in a quick test but has
+  not been checked on other machines, so say in the results if you used it.
 - The header block is part of the result: keep it when you paste the output.
 - Write the commit hash, compiler and version next to the table.
 - On Windows with MinGW, use the **UCRT64** toolchain (`C:\msys64\ucrt64`), not the older `mingw64`

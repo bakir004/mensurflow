@@ -79,9 +79,143 @@ Conditions to keep equal and to write down for every run:
 | Compiler | GCC 16.1.0 (MSYS2 MinGW-w64), `-O3 -DNDEBUG -fopenmp`, no `-march=native` |
 | OpenMP | 5.2 (libgomp) |
 | Code | branch `feat/dispatcher-dot-elementwise`, commit `61187fc` plus the sequential implementation and the updated benchmark (uncommitted when measured) |
-| Power state | **On battery, "Balanced" plan**, with Chrome running in the background (checked: battery 65 %, CPU idling at 801 MHz). The CPU may have been running below its full speed, and the runs vary a lot (see Results) |
+| Power state | Older results below: **on battery, "Balanced" plan**, with Chrome running in the background (battery 65 %, CPU idling at 801 MHz), so the CPU may have run below its full speed. Newest results (2026-11-01): on AC, still "Balanced"; see their conditions |
 
-### Results (two runs, sequential implementation as the baseline)
+### Results with the shared harness (2026-11-01): scalar, sequential, parallel
+
+The first results measured with the shared harness ([BENCHMARKING.md](BENCHMARKING.md)), which adds the
+`scalar` baseline (auto-vectorization off) next to `sequential` (the compiler's SIMD) and `parallel`.
+The older tables further down have no scalar rows.
+
+Conditions of these runs:
+
+- Code: commit `dcdc3c7` plus a later fix that prints more digits for very fast calls (output only).
+  `cpu_parallel_benchmark`, all 14 ops, 15 sizes, run twice; `matmul_benchmark` once.
+- Toolchain: **MSYS2 UCRT64 GCC 16.1.0** (the older tables below came from the `mingw64` one),
+  OpenMP 5.2, `-O3`, no `-march=native`. The CPU has AVX2 but the build only uses baseline SSE2.
+- Power: **on AC** (battery charging), Windows plan reported as "Balanced" (the Best performance
+  mode overlay could not be checked from the command line), CPU load about 5 % before the runs.
+- Chrome (12 processes), Edge and Avast were running but idle.
+- Each run started after a **3-minute pause** (11:37, 11:43, matmul 11:48).
+- Cells below read `run 1 / run 2`. Speedup = sequential time / parallel time.
+
+#### How stable the runs were
+
+Share of rows (size x implementation) whose median differs by more than 10 % between the two runs:
+
+| impl | back to back, no pause (earlier pair) | with a 3-minute pause (these runs) |
+|---|---|---|
+| scalar | 81 of 200 (run 2 slower in 79) | 37 of 199 |
+| sequential | 96 of 200 (run 2 slower in 92) | 26 of 199 |
+| parallel, 1 thread | 98 of 200 | 28 of 198 |
+| parallel, 2 threads | 107 of 200 | **134 of 199** |
+| parallel, 4 threads | 126 of 200 | **126 of 199** |
+| parallel, 8 threads | 120 of 200 | 39 of 200 |
+
+- **Heat.** Started right after another run, almost every row was slower: the whole CPU slows down
+  once it has been loaded for a few minutes (a 15 W laptop part). The pause removes most of that.
+- **Thread placement.** Even with the pause, the **2- and 4-thread rows** differ by up to 2x between
+  runs, with run 2 faster in about 120 of the 130. The 1-thread and 8-thread rows do not. A likely
+  cause: Windows puts 2 or 4 unpinned threads sometimes on two hyperthreads of one core and sometimes
+  on separate cores; with 1 thread, or all 8, there is no choice. This was not confirmed.
+  Trust the 1-thread and 8-thread rows; treat 2 and 4 threads as a range.
+
+#### SIMD: scalar vs sequential (n = 1,000,000)
+
+| op | scalar ms | sequential ms | SIMD gain |
+|---|---|---|---|
+| add | 0.6160 / 0.5920 | 0.4282 / 0.4183 | 1.4x / 1.4x |
+| sub | 0.5827 / 0.6026 | 0.4430 / 0.4508 | 1.3x / 1.3x |
+| mul | 0.5988 / 0.6053 | 0.4096 / 0.4279 | 1.5x / 1.4x |
+| div | 0.8664 / 0.9279 | 0.4125 / 0.4182 | 2.1x / 2.2x |
+| neg | 0.4817 / 0.5099 | 0.2152 / 0.2400 | 2.2x / 2.1x |
+| abs | 0.4836 / 0.5281 | 0.2130 / 0.2351 | 2.3x / 2.2x |
+| square | 0.4505 / 0.4652 | 0.2130 / 0.2290 | 2.1x / 2.0x |
+| relu | 0.6031 / 0.6538 | 0.2384 / 0.2383 | 2.5x / 2.7x |
+| sqrt | 0.8940 / 0.9140 | 0.8761 / 0.9145 | 1.0x / 1.0x |
+| exp | 4.2683 / 4.7687 | 4.5447 / 4.6566 | 0.9x / 1.0x |
+| sigmoid | 5.1545 / 5.1511 | 4.7137 / 5.1112 | 1.1x / 1.0x |
+| axpy | 2.1016 / 2.1866 | 1.8800 / 1.9339 | 1.1x / 1.1x |
+| bias_add | 0.5760 / 0.5796 | 0.2669 / 0.2537 | 2.2x / 2.3x |
+| dot | 1.2667 / 1.2651 | 1.1704 / 1.1823 | 1.1x / 1.1x |
+
+- Simple arithmetic gains **1.3-2.7x** from SIMD (the larger gains are the ops that read and write
+  fewer arrays: `neg`, `abs`, `square`, `relu`, `bias_add`).
+- **`sqrt`, `exp`, `sigmoid`, `axpy` and `dot` gain nothing (0.9-1.1x).** The compiler did not
+  vectorize them. Likely reasons, not checked: calls into the C library (`exp`, `fma`) and `sqrt`
+  with error handling cannot be vectorized as written, and `dot` accumulates in order. These are the
+  ops where a hand-written SIMD kernel could help most.
+
+#### Threads at n = 100,000 (below the point where threads pay off)
+
+| op | sequential ms | 1 thread | 8 threads | best of 2, 4, 8 threads |
+|---|---|---|---|---|
+| add | 0.02079 / 0.02069 | 1.11x / 0.96x | 0.36x / 0.32x | 0.59x / 0.50x |
+| sub | 0.01919 / 0.02267 | 0.94x / 1.05x | 0.28x / 0.34x | 0.37x / 0.64x |
+| mul | 0.02016 / 0.02313 | 0.98x / 1.09x | 0.30x / 0.34x | 0.38x / 0.66x |
+| div | 0.02063 / 0.02261 | 0.98x / 0.99x | 0.31x / 0.35x | 0.39x / 0.56x |
+| neg | 0.01566 / 0.01660 | 1.00x / 1.00x | 0.24x / 0.26x | 0.31x / 0.46x |
+| abs | 0.01590 / 0.01755 | 0.99x / 1.00x | 0.24x / 0.26x | 0.33x / 0.54x |
+| square | 0.01657 / 0.01695 | 1.01x / 1.01x | 0.23x / 0.27x | 0.32x / 0.47x |
+| relu | 0.01751 / 0.01852 | 1.03x / 1.03x | 0.26x / 0.27x | 0.35x / 0.57x |
+| sqrt | 0.08388 / 0.08929 | 1.00x / 1.01x | 0.96x / 1.06x | 0.99x / 1.40x |
+| exp | 0.4516 / 0.4871 | 1.00x / 1.00x | 2.31x / 2.37x | 2.31x / 2.86x |
+| sigmoid | 0.5180 / 0.5475 | 0.99x / 0.99x | 2.30x / 2.33x | 2.30x / 2.76x |
+| axpy | 0.1908 / 0.1960 | 1.00x / 1.17x | 1.77x / 1.87x | 1.80x / 2.23x |
+| bias_add | 0.02020 / 0.02148 | 0.93x / 0.90x | 0.27x / 0.30x | 0.37x / 0.56x |
+| dot | 0.1149 / 0.1119 | 1.21x / 1.00x | 1.35x / 1.32x | 1.42x / 1.60x |
+
+- For the **memory-bound** ops (`add`, `sub`, `mul`, `div`, `neg`, `abs`, `square`, `relu`,
+  `bias_add`) 8 threads are **3-4x slower** than sequential (0.23-0.36x), and no thread count beats
+  sequential. The single cutoff of 32,768 elements is too low for them.
+- The **compute-bound** ops already benefit at this size: `exp` and `sigmoid` 2.3x, `axpy` 1.8x,
+  `dot` 1.3-1.4x; `sqrt` breaks even.
+
+#### Threads at n = 10,000,000
+
+| op | sequential ms | 1 thread | 8 threads | best of 2, 4, 8 threads |
+|---|---|---|---|---|
+| add | 6.6756 / 6.5806 | 1.11x / 1.03x | 1.16x / 1.07x | 1.16x / 1.10x |
+| sub | 6.4391 / 6.5929 | 1.02x / 1.01x | 1.12x / 1.09x | 1.12x / 1.18x |
+| mul | 5.9621 / 6.4490 | 1.00x / 1.09x | 1.00x / 1.08x | 1.00x / 1.08x |
+| div | 6.6056 / 6.6819 | 1.00x / 1.02x | 1.09x / 1.11x | 1.12x / 1.17x |
+| neg | 4.2196 / 4.3606 | 1.04x / 1.02x | 0.88x / 0.92x | 0.99x / 0.94x |
+| abs | 4.2196 / 4.2737 | 0.84x / 1.01x | 0.89x / 0.92x | 1.07x / 0.94x |
+| square | 5.1371 / 4.2686 | 1.25x / 0.80x | 1.10x / 0.94x | 1.28x / 0.94x |
+| relu | 4.3281 / 4.3852 | 1.05x / 1.03x | 0.94x / 0.97x | 0.94x / 0.97x |
+| sqrt | 8.9500 / 9.1125 | 1.05x / 1.00x | 1.84x / 1.93x | 1.84x / 1.93x |
+| exp | 43.0849 / 45.7848 | 1.01x / 1.00x | 3.47x / 3.49x | 3.47x / 3.49x |
+| sigmoid | 46.0249 / 49.9925 | 0.93x / 1.00x | 3.06x / 3.12x | 3.06x / 3.53x |
+| axpy | 19.2260 / 19.1744 | 0.99x / 1.03x | 2.99x / 3.11x | 2.99x / 3.11x |
+| bias_add | 5.3904 / 4.3526 | 1.25x / 1.00x | 1.17x / 0.93x | 1.36x / 1.00x |
+| dot | 12.5836 / 11.9880 | 1.03x / 1.00x | 4.63x / 4.46x | 4.63x / 4.46x |
+
+- Memory-bound ops: **0.8-1.3x**. The sequential loop already moves data at the laptop's memory
+  bandwidth, so threads add little and `neg`, `abs`, `relu` are even slightly slower.
+- Compute-bound ops scale: `dot` 4.5x, `exp` 3.5x, `sigmoid` 3.1x, `axpy` 3.0x, `sqrt` 1.9x.
+
+#### Matrix multiplication (one run, GFLOP/s, square matrices)
+
+| n | scalar | sequential | 1 thread | 2 threads | 4 threads | 8 threads |
+|---|---|---|---|---|---|---|
+| 64 | 3.887 | 12.073 | 11.181 | 9.718 | 8.402 | 6.487 |
+| 128 | 3.705 | 11.749 | 11.863 | 19.566 | 19.817 | 22.973 |
+| 256 | 4.069 | 14.003 | 12.615 | 26.189 | 27.289 | 36.336 |
+| 512 | 4.269 | 12.096 | 13.777 | 27.706 | 52.134 | 49.869 |
+| 1024 | 4.301 | 12.616 | 11.423 | 13.112 | 23.803 | 38.989 |
+
+- SIMD gives about 3x (scalar 3.7-4.3, sequential 11.7-14.0 GFLOP/s).
+- Threads reach **39 GFLOP/s at n = 1024** (8 threads, about 3.1x sequential, CPU/wall 7.2 so the
+  threads were busy) and **52 GFLOP/s at n = 512** (4 threads). At n = 64 threads are slower.
+- This is one run, so the 2- and 4-thread values are uncertain (at n = 1024 with 2 threads the min
+  was 103 ms and the median 164 ms). The earlier matmul numbers below used the other toolchain
+  and were measured on battery; do not mix them with these.
+
+Raw outputs of these runs are not stored in the repository (about 1,500 lines each); rerun the
+benchmarks to regenerate them.
+
+### Earlier results (before the scalar baseline; sequential as the only baseline)
+
 
 The baseline is the plain sequential kernel (`src/backends/cpu/sequential.cpp`: one loop, no OpenMP).
 Cells show run 3 / run 4 (the two runs with the final benchmark). "8 threads" is the parallel

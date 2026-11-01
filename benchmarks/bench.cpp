@@ -324,6 +324,17 @@ std::string fixed(double value, int decimals) {
     return out.str();
 }
 
+// Milliseconds with at least 4 decimals, and more for very fast calls so that a 50 ns call does not
+// print as 0.0000: about 4 significant digits, up to 7 decimals.
+std::string milliseconds(double seconds) {
+    const double ms = seconds * 1e3;
+    int decimals = 4;
+    if (ms > 0.0) {
+        decimals = std::max(4, std::min(7, 3 - static_cast<int>(std::floor(std::log10(ms)))));
+    }
+    return fixed(ms, decimals);
+}
+
 std::string speedup(const Sample* baseline, const Sample& sample) {
     if (baseline == nullptr || sample.median_s <= 0.0) {
         return "-";
@@ -360,8 +371,8 @@ void Table::row(const std::string& n, const std::string& impl, const std::string
     const std::string cpu_over_wall =
         sample.cpu_over_wall > 0.0 ? fixed(sample.cpu_over_wall, 2) : "-";
     std::cout << std::setw(10) << n << std::setw(13) << impl << std::setw(9) << threads
-              << std::setw(12) << fixed(sample.median_s * 1e3, 4) << std::setw(12)
-              << fixed(sample.min_s * 1e3, 4) << std::setw(12) << fixed(sample.max_s * 1e3, 4)
+              << std::setw(12) << milliseconds(sample.median_s) << std::setw(12)
+              << milliseconds(sample.min_s) << std::setw(12) << milliseconds(sample.max_s)
               << std::setw(11) << rate;
     if (!baseline_a_.empty()) {
         std::cout << std::setw(11) << speedup(baseline_a, sample);
