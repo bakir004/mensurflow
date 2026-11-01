@@ -44,6 +44,7 @@ class NoGradGuard {
 
 void propagate(const Tensor& tensor, const Tensor& gradient);
 void backward(const Tensor& output);
+Tensor reduce_gradient(const Tensor& gradient, const Shape& target_shape);
 
 } // namespace autograd
 } // namespace mensurflow::detail

@@ -3,6 +3,7 @@
 #include "mensurflow/ops/elementwise.hpp"
 
 #include <stdexcept>
+#include <vector>
 
 namespace mensurflow::detail {
 
@@ -36,6 +37,41 @@ void AutogradAccess::record(Tensor& output, std::vector<Tensor> parents,
 
 namespace autograd {
 
+Tensor reduce_gradient(const Tensor& gradient, const Shape& target_shape) {
+    if (gradient.shape() == target_shape) {
+        return gradient;
+    }
+    if (gradient.dim() < static_cast<int>(target_shape.size())) {
+        throw std::invalid_argument("autograd: target shape has higher rank than gradient");
+    }
+    const int rank_delta = gradient.dim() - static_cast<int>(target_shape.size());
+    const auto values = gradient.to_vector<float>();
+    std::vector<float> reduced(static_cast<std::size_t>(numel(target_shape)), 0.0f);
+    std::vector<std::int64_t> index(static_cast<std::size_t>(gradient.dim()), 0);
+    for (std::size_t flat = 0; flat < values.size(); ++flat) {
+        std::size_t target_flat = 0;
+        std::size_t target_stride = 1;
+        for (int d = static_cast<int>(target_shape.size()) - 1; d >= 0; --d) {
+            const int source_d = d + rank_delta;
+            const std::int64_t coordinate =
+                target_shape[static_cast<std::size_t>(d)] == 1
+                    ? 0
+                    : index[static_cast<std::size_t>(source_d)];
+            target_flat += static_cast<std::size_t>(coordinate) * target_stride;
+            target_stride *= static_cast<std::size_t>(target_shape[static_cast<std::size_t>(d)]);
+        }
+        reduced[target_flat] += values[flat];
+        for (int d = gradient.dim() - 1; d >= 0; --d) {
+            auto& coordinate = index[static_cast<std::size_t>(d)];
+            if (++coordinate < gradient.size(d)) {
+                break;
+            }
+            coordinate = 0;
+        }
+    }
+    return Tensor::from_vector(reduced, target_shape, gradient.device());
+}
+
 bool enabled() { return no_grad_depth == 0; }
 
 NoGradGuard::NoGradGuard() { ++no_grad_depth; }
@@ -50,7 +86,7 @@ void propagate(const Tensor& tensor, const Tensor& gradient) {
         gradient.dtype() != DType::F32) {
         throw std::invalid_argument("autograd: gradient shape, device, or dtype mismatch");
     }
-    auto& state = AutogradAccess::state(tensor);
+    const auto state = AutogradAccess::state(tensor);
     if (state->grad == nullptr) {
         state->grad = std::make_shared<Tensor>(gradient);
     } else {

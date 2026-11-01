@@ -143,6 +143,24 @@ void test_autograd_operations() {
     test::require(!x.grad().to_vector<float>().empty(), "zero_grad keeps gradient storage");
     test::require(x.grad().to_vector<float>() == std::vector<float>{0, 0},
                   "zero_grad clears gradient");
+
+    Tensor input = Tensor::from_vector(std::vector<float>{2, 3}, {2, 1});
+    Tensor bias = Tensor::from_vector(std::vector<float>{4, 5, 6}, {3});
+    input.set_requires_grad();
+    bias.set_requires_grad();
+    Tensor broadcast_loss = sum(mul(input, bias));
+    broadcast_loss.backward();
+    test::require(input.grad().to_vector<float>() == std::vector<float>{15, 15},
+                  "broadcast gradient for input");
+    test::require(bias.grad().to_vector<float>() == std::vector<float>{5, 5, 5},
+                  "broadcast gradient for bias");
+
+    Tensor quotient_input = Tensor::from_vector(std::vector<float>{2, 4}, {2});
+    quotient_input.set_requires_grad();
+    Tensor quotient = sum(div(quotient_input, Tensor::from_vector(std::vector<float>{2, 4}, {2})));
+    quotient.backward();
+    test::require(quotient_input.grad().to_vector<float>() == std::vector<float>{0.5f, 0.25f},
+                  "division gradient");
 }
 
 } // namespace

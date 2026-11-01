@@ -6,8 +6,10 @@
 #include "core/dispatcher.hpp"
 #include "core/autograd.hpp"
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace mensurflow {
 
@@ -21,24 +23,58 @@ Tensor unary_op(detail::OpId op, const Tensor& x) {
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
     detail::dispatch(op, {{input}, {out}});
     if (x.requires_grad()) {
-        if (op == detail::OpId::Neg) {
-            detail::AutogradAccess::record(
-                out, {x}, [x](const Tensor& gradient) {
-                    detail::autograd::NoGradGuard guard;
-                    detail::autograd::propagate(x, neg(gradient));
-                });
-        } else if (op == detail::OpId::Relu) {
-            detail::AutogradAccess::record(
-                out, {x}, [x](const Tensor& gradient) {
-                    const auto input = x.to_vector<float>();
-                    auto values = gradient.to_vector<float>();
-                    for (std::size_t i = 0; i < values.size(); ++i) {
-                        values[i] = input[i] > 0.0f ? values[i] : 0.0f;
+        detail::AutogradAccess::record(
+            out, {x}, [x, op](const Tensor& gradient) {
+                const auto input = x.to_vector<float>();
+                const auto upstream = gradient.to_vector<float>();
+                std::vector<float> values(upstream.size());
+                for (std::size_t i = 0; i < values.size(); ++i) {
+                    const float value = input[i];
+                    switch (op) {
+                    case detail::OpId::Neg:
+                        values[i] = -upstream[i];
+                        break;
+                    case detail::OpId::Abs:
+                        values[i] = value < 0.0f ? -upstream[i] : upstream[i];
+                        break;
+                    case detail::OpId::Square:
+                        values[i] = 2.0f * value * upstream[i];
+                        break;
+                    case detail::OpId::Relu:
+                        values[i] = value > 0.0f ? upstream[i] : 0.0f;
+                        break;
+                    case detail::OpId::Sqrt:
+                        values[i] = upstream[i] / (2.0f * std::sqrt(value));
+                        break;
+                    case detail::OpId::Exp:
+                        values[i] = std::exp(value) * upstream[i];
+                        break;
+                    case detail::OpId::Sigmoid: {
+                        const float sigmoid_value =
+                            value >= 0.0f
+                                ? 1.0f / (1.0f + std::exp(-value))
+                                : (std::exp(value) / (1.0f + std::exp(value)));
+                        values[i] = sigmoid_value * (1.0f - sigmoid_value) * upstream[i];
+                        break;
                     }
-                    detail::autograd::propagate(
-                        x, Tensor::from_vector(values, x.shape(), x.device()));
-                });
-        }
+                    case detail::OpId::Log:
+                        values[i] = upstream[i] / value;
+                        break;
+                    case detail::OpId::Rsqrt:
+                        values[i] = -0.5f * std::pow(value, -1.5f) * upstream[i];
+                        break;
+                    case detail::OpId::Tanh: {
+                        const float tanh_value = std::tanh(value);
+                        values[i] = (1.0f - tanh_value * tanh_value) * upstream[i];
+                        break;
+                    }
+                    default:
+                        throw std::logic_error("autograd: unsupported unary operation");
+                    }
+                }
+                detail::autograd::propagate(
+                    x, Tensor::from_vector(values, x.shape(), x.device()));
+            });
     }
     return out;
 }
@@ -85,22 +121,38 @@ Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha 
     Tensor out = Tensor::empty(shape, a.dtype(), a.device());
     detail::dispatch(op, {{x, y}, {out}, alpha});
     if (a.requires_grad() || b.requires_grad()) {
-        if (a.shape() != b.shape()) {
-            throw std::logic_error("autograd: broadcasted gradients are not implemented yet");
-        }
-        if (op == detail::OpId::Add || op == detail::OpId::Mul) {
-            detail::AutogradAccess::record(
-                out, {a, b}, [a, b, op](const Tensor& gradient) {
-                    detail::autograd::NoGradGuard guard;
-                    if (op == detail::OpId::Add) {
-                        detail::autograd::propagate(a, gradient);
-                        detail::autograd::propagate(b, gradient);
-                    } else {
-                        detail::autograd::propagate(a, mul(gradient, b));
-                        detail::autograd::propagate(b, mul(gradient, a));
-                    }
-                });
-        }
+        detail::AutogradAccess::record(
+            out, {a, b}, [a, b, op, alpha](const Tensor& gradient) {
+                detail::autograd::NoGradGuard guard;
+                Tensor grad_a;
+                Tensor grad_b;
+                if (op == detail::OpId::Add) {
+                    grad_a = gradient;
+                    grad_b = gradient;
+                } else if (op == detail::OpId::Sub) {
+                    grad_a = gradient;
+                    grad_b = neg(gradient);
+                } else if (op == detail::OpId::Mul) {
+                    grad_a = mul(gradient, b);
+                    grad_b = mul(gradient, a);
+                } else if (op == detail::OpId::Div) {
+                    grad_a = div(gradient, b);
+                    grad_b = neg(div(mul(gradient, a), square(b)));
+                } else if (op == detail::OpId::Axpy) {
+                    grad_a = mul(gradient, Tensor::full({}, alpha, DType::F32, a.device()));
+                    grad_b = gradient;
+                } else {
+                    throw std::logic_error("autograd: unsupported binary operation");
+                }
+                if (a.requires_grad()) {
+                    detail::autograd::propagate(
+                        a, detail::autograd::reduce_gradient(grad_a, a.shape()));
+                }
+                if (b.requires_grad()) {
+                    detail::autograd::propagate(
+                        b, detail::autograd::reduce_gradient(grad_b, b.shape()));
+                }
+            });
     }
     return out;
 }
