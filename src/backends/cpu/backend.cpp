@@ -6,6 +6,7 @@
 #include "backends/cpu/elementwise.hpp"
 #include "backends/cpu/matmul.hpp"
 #include "backends/cpu/parallel.hpp"
+#include "backends/cpu/reduction.hpp"
 #include "core/dispatcher.hpp"
 #include "core/registry.hpp"
 #include "core/tensor_access.hpp"
@@ -109,9 +110,25 @@ void bias_add_kernel(const OpArgs& args, Stream&) {
     if (out.numel() == 0) {
         return;
     }
+
     cpu::bias_add_f32(TensorAccess::data<float>(args.inputs[0]),
                       TensorAccess::data<float>(args.inputs[1]), TensorAccess::data<float>(out),
                       out.numel(), out.size(1));
+}
+
+void sum_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::sum_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void mean_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::mean_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void max_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::max_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
 }
 
 class CpuBackend final : public Backend {
@@ -149,6 +166,9 @@ class CpuBackend final : public Backend {
                                    unary_kernel<cpu::sigmoid_f32>);
         dispatcher.register_kernel({OpId::Axpy, cpu_type, DType::F32}, axpy_kernel);
         dispatcher.register_kernel({OpId::BiasAdd, cpu_type, DType::F32}, bias_add_kernel);
+        dispatcher.register_kernel({OpId::Sum, cpu_type, DType::F32}, sum_kernel);
+        dispatcher.register_kernel({OpId::Mean, cpu_type, DType::F32}, mean_kernel);
+        dispatcher.register_kernel({OpId::Max, cpu_type, DType::F32}, max_kernel);
     }
 
   private:

@@ -37,6 +37,12 @@ const char* op_name(OpId op) {
         return "axpy";
     case OpId::BiasAdd:
         return "bias_add";
+    case OpId::Sum:
+        return "sum";
+    case OpId::Mean:
+        return "mean";
+    case OpId::Max:
+        return "max";
     }
     throw std::invalid_argument("invalid OpId");
 }
