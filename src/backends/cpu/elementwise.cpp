@@ -64,6 +64,10 @@ void div_f32(const float* a, const float* b, float* out, std::int64_t n) {
     binary(a, b, out, n, [](float x, float y) { return x / y; });
 }
 
+void pow_f32(const float* a, const float* b, float* out, std::int64_t n) {
+    binary(a, b, out, n, [](float x, float y) { return std::pow(x, y); });
+}
+
 void axpy_f32(float alpha, const float* x, const float* y, float* out, std::int64_t n) {
     binary(x, y, out, n, [alpha](float a, float b) { return std::fma(alpha, a, b); });
 }
@@ -133,6 +137,48 @@ void sigmoid_f32(const float* x, float* out, std::int64_t n) {
         }
         const float z = std::exp(value);
         return z / (1.0f + z);
+    });
+}
+
+void log_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::log(value); });
+}
+
+void rsqrt_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return 1.0f / std::sqrt(value); });
+}
+
+void tanh_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::tanh(value); });
+}
+
+void sin_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::sin(value); });
+}
+
+void cos_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::cos(value); });
+}
+
+void reciprocal_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return 1.0f / value; });
+}
+
+void minimum_f32(const float* a, const float* b, float* out, std::int64_t n) {
+    binary(a, b, out, n, [](float x, float y) {
+        return std::isnan(x) ? x : (std::isnan(y) ? y : std::fmin(x, y));
+    });
+}
+
+void maximum_f32(const float* a, const float* b, float* out, std::int64_t n) {
+    binary(a, b, out, n, [](float x, float y) {
+        return std::isnan(x) ? x : (std::isnan(y) ? y : std::fmax(x, y));
+    });
+}
+
+void clamp_f32(const float* x, float* out, std::int64_t n, float lower, float upper) {
+    unary(x, out, n, [lower, upper](float value) {
+        return std::isnan(value) ? value : std::fmin(std::fmax(value, lower), upper);
     });
 }
 

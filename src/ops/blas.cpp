@@ -1,7 +1,9 @@
 // Validation and dispatch for BLAS operations. Kernels receive checked, contiguous inputs.
 #include "mensurflow/ops/blas.hpp"
 
+#include "core/autograd.hpp"
 #include "core/dispatcher.hpp"
+#include "mensurflow/ops/elementwise.hpp"
 
 #include <cstddef>
 #include <stdexcept>
@@ -63,6 +65,122 @@ Tensor dot(const Tensor& a, const Tensor& b) {
     return out;
 }
 
+Tensor scal(float alpha, const Tensor& x) {
+    require_vector(x, "scal", "x");
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    if (x.size(0) == 0) {
+        return out;
+    }
+    const Tensor input = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Scal, {{input}, {out}, alpha});
+    return out;
+}
+
+Tensor asum(const Tensor& x) {
+    require_vector(x, "asum", "x");
+    if (x.size(0) == 0) {
+        const std::vector<std::byte> zero(dtype_size(x.dtype()));
+        return Tensor::from_host(zero.data(), {}, x.dtype(), x.device());
+    }
+    Tensor out = Tensor::empty({}, x.dtype(), x.device());
+    const Tensor input = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Asum, {{input}, {out}});
+    return out;
+}
+
+Tensor nrm2(const Tensor& x) {
+    require_vector(x, "nrm2", "x");
+    if (x.size(0) == 0) {
+        const std::vector<std::byte> zero(dtype_size(x.dtype()));
+        return Tensor::from_host(zero.data(), {}, x.dtype(), x.device());
+    }
+
+    Tensor out = Tensor::empty({}, x.dtype(), x.device());
+    const Tensor input = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Nrm2, {{input}, {out}});
+    return out;
+}
+
+Tensor copy(const Tensor& x) {
+    if (!x.defined()) {
+        throw std::invalid_argument("copy: undefined tensor");
+    }
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    if (x.numel() == 0) {
+        return out;
+    }
+    const Tensor input = x.contiguous();
+    detail::dispatch(detail::OpId::Copy, {{input}, {out}});
+    return out;
+}
+
+Tensor matvec(const Tensor& a, const Tensor& x) {
+    require_matrix(a, "matvec", "a");
+    require_vector(x, "matvec", "x");
+    if (a.dtype() != x.dtype()) {
+        throw std::invalid_argument(std::string("matvec: dtypes differ (") + dtype_name(a.dtype()) +
+                                    " and " + dtype_name(x.dtype()) + ")");
+    }
+
+    if (a.device() != x.device()) {
+        throw std::invalid_argument("matvec: tensors are on " + to_string(a.device()) + " and " +
+                                    to_string(x.device()) + "; move one with Tensor::to()");
+    }
+    const std::int64_t m = a.size(0), k = a.size(1);
+    if (x.size(0) != k) {
+        throw std::invalid_argument("matvec: inner dimensions differ (" + to_string(a.shape()) +
+                                    " times " + to_string(x.shape()) + ")");
+    }
+    Tensor out = Tensor::empty({m}, a.dtype(), a.device());
+    if (m == 0) {
+        return out;
+    }
+
+    if (k == 0) {
+        const std::vector<std::byte> zeros(out.nbytes());
+        return Tensor::from_host(zeros.data(), {m}, a.dtype(), a.device());
+    }
+    const Tensor matrix = a.is_contiguous() ? a : a.contiguous();
+    const Tensor vector = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Matvec, {{matrix, vector}, {out}});
+    return out;
+}
+
+Tensor gemv(const Tensor& a, const Tensor& x, float alpha, const Tensor* y, float beta,
+            bool transpose_a) {
+    require_matrix(a, "gemv", "a");
+    require_vector(x, "gemv", "x");
+    if (y == nullptr && beta != 0.0f) {
+        throw std::invalid_argument("gemv: beta requires an output vector");
+    }
+    if (a.dtype() != x.dtype() || (y != nullptr && a.dtype() != y->dtype())) {
+        throw std::invalid_argument("gemv: dtypes differ");
+    }
+    if (a.device() != x.device() || (y != nullptr && a.device() != y->device())) {
+        throw std::invalid_argument("gemv: tensors must share a device");
+    }
+    const std::int64_t rows = a.size(0);
+    const std::int64_t cols = a.size(1);
+    const std::int64_t input = transpose_a ? rows : cols;
+    const std::int64_t output = transpose_a ? cols : rows;
+    if (x.size(0) != input) {
+        throw std::invalid_argument("gemv: input length does not match matrix dimensions");
+    }
+    if (y != nullptr && y->size(0) != output) {
+        throw std::invalid_argument("gemv: output length does not match matrix dimensions");
+    }
+    Tensor out = Tensor::empty({output}, a.dtype(), a.device());
+    detail::OpArgs args{{a.contiguous(), x.contiguous()}, {out}};
+    if (y != nullptr) {
+        args.inputs.push_back(y->contiguous());
+    }
+    args.alpha = alpha;
+    args.beta = beta;
+    args.transpose = transpose_a;
+    detail::dispatch(detail::OpId::Gemv, args);
+    return out;
+}
+
 Tensor matmul(const Tensor& a, const Tensor& b) {
     require_matrix(a, "matmul", "a");
     require_matrix(b, "matmul", "b");
@@ -93,7 +211,47 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     const Tensor x = a.is_contiguous() ? a : a.contiguous();
     const Tensor y = b.is_contiguous() ? b : b.contiguous();
     detail::dispatch(detail::OpId::Matmul, {{x, y}, {out}});
+    if (a.requires_grad() || b.requires_grad()) {
+        detail::AutogradAccess::record(out, {a, b}, [a, b](const Tensor& gradient) {
+            detail::autograd::NoGradGuard guard;
+            if (a.requires_grad()) {
+                detail::autograd::propagate(a, matmul(gradient, b.transpose(0, 1)));
+            }
+            if (b.requires_grad()) {
+                detail::autograd::propagate(b, matmul(a.transpose(0, 1), gradient));
+            }
+        });
+    }
     return out;
+}
+
+Tensor gemm(const Tensor& a, const Tensor& b, float alpha, const Tensor* c, float beta,
+            bool transpose_a, bool transpose_b) {
+    require_matrix(a, "gemm", "a");
+    require_matrix(b, "gemm", "b");
+    if (a.dtype() != b.dtype() || (c != nullptr && c->dtype() != a.dtype())) {
+        throw std::invalid_argument("gemm: dtypes differ");
+    }
+    if (a.device() != b.device() || (c != nullptr && c->device() != a.device())) {
+        throw std::invalid_argument("gemm: tensors are on different devices");
+    }
+    const Tensor left = transpose_a ? a.transpose(0, 1) : a;
+    const Tensor right = transpose_b ? b.transpose(0, 1) : b;
+    Tensor result = matmul(left, right);
+    if (alpha != 1.0f) {
+        result = mul(result, Tensor::full({}, alpha, DType::F32, result.device()));
+    }
+    if (c != nullptr) {
+        if (c->shape() != result.shape()) {
+            throw std::invalid_argument("gemm: c shape does not match result");
+        }
+        if (beta != 0.0f) {
+            result = add(result, scal(beta, c->view({c->numel()})).view(c->shape()));
+        }
+    } else if (beta != 0.0f) {
+        throw std::invalid_argument("gemm: beta requires c");
+    }
+    return result;
 }
 
 } // namespace mensurflow

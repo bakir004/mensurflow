@@ -18,6 +18,8 @@ namespace mensurflow {
 namespace detail {
 struct Storage;
 struct TensorAccess;
+struct AutogradState;
+struct AutogradAccess;
 } // namespace detail
 
 class Tensor {
@@ -29,6 +31,16 @@ class Tensor {
     // default_device() to pick the best available). Throws runtime_error if the device is
     // unavailable.
     static Tensor empty(Shape shape, DType dtype = DType::F32, Device device = {});
+
+    static Tensor constant(Shape shape, double value, DType dtype = DType::F32, Device device = {});
+    static Tensor zeros(Shape shape, DType dtype = DType::F32, Device device = {});
+    static Tensor ones(Shape shape, DType dtype = DType::F32, Device device = {});
+    static Tensor full(Shape shape, double value, DType dtype = DType::F32, Device device = {});
+    static Tensor eye(std::int64_t n, DType dtype = DType::F32, Device device = {});
+
+    static Tensor zeros_like(const Tensor& other);
+    static Tensor ones_like(const Tensor& other);
+    static Tensor full_like(const Tensor& other, double value);
 
     // Copies numel(shape) * dtype_size(dtype) bytes from contiguous host memory.
     static Tensor from_host(const void* data, Shape shape, DType dtype, Device device = {});
@@ -74,6 +86,21 @@ class Tensor {
     // *this if already contiguous, otherwise a packed row-major copy on the same device.
     Tensor contiguous() const;
 
+    // Marks this tensor as a differentiable leaf for the future reverse-mode autograd graph.
+    // Autograd currently supports float32 tensors only.
+    void set_requires_grad(bool requires_grad = true);
+    bool requires_grad() const;
+
+    // Returns the accumulated gradient, or an undefined tensor when no gradient has been
+    // accumulated. Gradients are always float32 tensors with the same shape and device.
+    Tensor grad() const;
+    bool has_grad() const;
+    void zero_grad();
+    void copy_from(const Tensor& source);
+
+    // Starts reverse-mode automatic differentiation from a scalar output.
+    void backward() const;
+
     // Writes numel() elements in row-major order to dst, following strides for views.
     // Blocks until the data is ready.
     void copy_to_host(void* dst) const;
@@ -114,6 +141,7 @@ class Tensor {
 
   private:
     friend struct detail::TensorAccess;
+    friend struct detail::AutogradAccess;
 
     Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Shape shape,
            Strides strides, DType dtype);
@@ -126,6 +154,7 @@ class Tensor {
     Shape shape_;
     Strides strides_;
     DType dtype_ = DType::F32;
+    std::shared_ptr<detail::AutogradState> autograd_;
 };
 
 } // namespace mensurflow

@@ -1,5 +1,5 @@
 // Tests Tensor creation, metadata, host round trips, and error handling on the CPU.
-#include "mensurflow/tensor.hpp"
+#include "mensurflow/mensurflow.hpp"
 #include "test_util.hpp"
 
 #include <cstdint>
@@ -47,6 +47,31 @@ void test_round_trip() {
     test::require(copied.to_vector<float>() == std::vector<float>{1, 2}, "from_vector copies");
 }
 
+void test_constructors() {
+    test::require(Tensor::zeros({2, 2}).to_vector<float>() == std::vector<float>{0, 0, 0, 0},
+                  "zeros");
+    test::require(Tensor::ones({2, 2}).to_vector<float>() == std::vector<float>{1, 1, 1, 1},
+                  "ones");
+    test::require(Tensor::constant({2, 2}, 2.5).to_vector<float>() ==
+                      std::vector<float>{2.5f, 2.5f, 2.5f, 2.5f},
+                  "constant");
+    test::require(Tensor::full({3}, 7, DType::I32).to_vector<std::int32_t>() ==
+                      std::vector<std::int32_t>{7, 7, 7},
+                  "integer full");
+    test::require(
+        Tensor::eye(3).to_vector<float>() == std::vector<float>{1, 0, 0, 0, 1, 0, 0, 0, 1}, "eye");
+    const Tensor source = Tensor::from_vector(std::vector<float>{4, 5}, {2});
+    test::require(Tensor::zeros_like(source).to_vector<float>() == std::vector<float>{0, 0},
+                  "zeros_like");
+    test::require(Tensor::ones_like(source).to_vector<float>() == std::vector<float>{1, 1},
+                  "ones_like");
+    test::require(Tensor::full_like(source, 3).to_vector<float>() == std::vector<float>{3, 3},
+                  "full_like");
+    test::require_throws<std::invalid_argument>([] { Tensor::eye(-1); }, "negative eye");
+    test::require_throws<std::invalid_argument>([] { Tensor::full({2}, 1.5, DType::I32); },
+                                                "fractional integer full");
+}
+
 void test_errors() {
     test::require_throws<std::invalid_argument>(
         [] { Tensor::from_vector(std::vector<float>{1, 2, 3}, {2, 2}); }, "size mismatch");
@@ -67,12 +92,80 @@ void test_errors() {
     test::require_throws<std::logic_error>([&] { undefined.to_vector<float>(); }, "undefined copy");
 }
 
+void test_autograd_contract() {
+    Tensor x = Tensor::from_vector(std::vector<float>{1, 2, 3}, {3});
+    test::require(!x.requires_grad() && !x.has_grad(), "autograd disabled by default");
+
+    x.set_requires_grad();
+    test::require(x.requires_grad() && !x.has_grad(), "requires_grad marks a leaf");
+    test::require(!x.grad().defined(), "leaf gradient starts undefined");
+
+    test::require_throws<std::invalid_argument>([&] { x.backward(); },
+                                                "backward requires a scalar output");
+
+    Tensor scalar = Tensor::from_vector(std::vector<float>{2}, {});
+    scalar.set_requires_grad();
+    scalar.backward();
+    test::require(scalar.grad().item<float>() == 1.0f, "scalar backward seed");
+
+    x.zero_grad();
+    test::require(!x.has_grad(), "zero_grad is safe without an accumulated gradient");
+    x.set_requires_grad(false);
+    test::require(!x.requires_grad(), "requires_grad can be disabled");
+
+    Tensor ints = Tensor::from_vector(std::vector<std::int32_t>{1, 2}, {2});
+    test::require_throws<std::invalid_argument>([&] { ints.set_requires_grad(); },
+                                                "autograd only supports f32");
+}
+
+void test_autograd_operations() {
+    Tensor x = Tensor::from_vector(std::vector<float>{2, -3}, {2});
+    Tensor y = Tensor::from_vector(std::vector<float>{4, 5}, {2});
+    x.set_requires_grad();
+    y.set_requires_grad();
+
+    Tensor loss = sum(relu(add(mul(x, y), x)));
+    loss.backward();
+
+    test::require(x.grad().to_vector<float>() == std::vector<float>{5, 0},
+                  "composed gradient for x");
+    test::require(y.grad().to_vector<float>() == std::vector<float>{2, 0},
+                  "composed gradient for y");
+
+    x.zero_grad();
+    y.zero_grad();
+    test::require(!x.grad().to_vector<float>().empty(), "zero_grad keeps gradient storage");
+    test::require(x.grad().to_vector<float>() == std::vector<float>{0, 0},
+                  "zero_grad clears gradient");
+
+    Tensor input = Tensor::from_vector(std::vector<float>{2, 3}, {2, 1});
+    Tensor bias = Tensor::from_vector(std::vector<float>{4, 5, 6}, {3});
+    input.set_requires_grad();
+    bias.set_requires_grad();
+    Tensor broadcast_loss = sum(mul(input, bias));
+    broadcast_loss.backward();
+    test::require(input.grad().to_vector<float>() == std::vector<float>{15, 15},
+                  "broadcast gradient for input");
+    test::require(bias.grad().to_vector<float>() == std::vector<float>{5, 5, 5},
+                  "broadcast gradient for bias");
+
+    Tensor quotient_input = Tensor::from_vector(std::vector<float>{2, 4}, {2});
+    quotient_input.set_requires_grad();
+    Tensor quotient = sum(div(quotient_input, Tensor::from_vector(std::vector<float>{2, 4}, {2})));
+    quotient.backward();
+    test::require(quotient_input.grad().to_vector<float>() == std::vector<float>{0.5f, 0.25f},
+                  "division gradient");
+}
+
 } // namespace
 
 int main() {
     return test::run("tensor_test", [] {
         test_empty();
         test_round_trip();
+        test_constructors();
         test_errors();
+        test_autograd_contract();
+        test_autograd_operations();
     });
 }

@@ -3,10 +3,13 @@
 // keeps its bias vector compact.
 #include "mensurflow/ops/elementwise.hpp"
 
+#include "core/autograd.hpp"
 #include "core/dispatcher.hpp"
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace mensurflow {
 
@@ -19,6 +22,66 @@ Tensor unary_op(detail::OpId op, const Tensor& x) {
     const Tensor input = x.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
     detail::dispatch(op, {{input}, {out}});
+    if (x.requires_grad()) {
+        detail::AutogradAccess::record(out, {x}, [x, op](const Tensor& gradient) {
+            const auto input = x.to_vector<float>();
+            const auto upstream = gradient.to_vector<float>();
+            std::vector<float> values(upstream.size());
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                const float value = input[i];
+                switch (op) {
+                case detail::OpId::Neg:
+                    values[i] = -upstream[i];
+                    break;
+                case detail::OpId::Abs:
+                    values[i] = value < 0.0f ? -upstream[i] : upstream[i];
+                    break;
+                case detail::OpId::Square:
+                    values[i] = 2.0f * value * upstream[i];
+                    break;
+                case detail::OpId::Relu:
+                    values[i] = value > 0.0f ? upstream[i] : 0.0f;
+                    break;
+                case detail::OpId::Sqrt:
+                    values[i] = upstream[i] / (2.0f * std::sqrt(value));
+                    break;
+                case detail::OpId::Exp:
+                    values[i] = std::exp(value) * upstream[i];
+                    break;
+                case detail::OpId::Sigmoid: {
+                    const float sigmoid_value = value >= 0.0f
+                                                    ? 1.0f / (1.0f + std::exp(-value))
+                                                    : (std::exp(value) / (1.0f + std::exp(value)));
+                    values[i] = sigmoid_value * (1.0f - sigmoid_value) * upstream[i];
+                    break;
+                }
+                case detail::OpId::Log:
+                    values[i] = upstream[i] / value;
+                    break;
+                case detail::OpId::Rsqrt:
+                    values[i] = -0.5f * std::pow(value, -1.5f) * upstream[i];
+                    break;
+                case detail::OpId::Tanh: {
+                    const float tanh_value = std::tanh(value);
+                    values[i] = (1.0f - tanh_value * tanh_value) * upstream[i];
+                    break;
+                }
+                case detail::OpId::Sin:
+                    values[i] = std::cos(value) * upstream[i];
+                    break;
+                case detail::OpId::Cos:
+                    values[i] = -std::sin(value) * upstream[i];
+                    break;
+                case detail::OpId::Reciprocal:
+                    values[i] = -upstream[i] / (value * value);
+                    break;
+                default:
+                    throw std::logic_error("autograd: unsupported unary operation");
+                }
+            }
+            detail::autograd::propagate(x, Tensor::from_vector(values, x.shape(), x.device()));
+        });
+    }
     return out;
 }
 
@@ -63,6 +126,42 @@ Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha 
     const Tensor y = packed(b);
     Tensor out = Tensor::empty(shape, a.dtype(), a.device());
     detail::dispatch(op, {{x, y}, {out}, alpha});
+    if (a.requires_grad() || b.requires_grad()) {
+        detail::AutogradAccess::record(out, {a, b}, [a, b, op, alpha](const Tensor& gradient) {
+            detail::autograd::NoGradGuard guard;
+            Tensor grad_a;
+            Tensor grad_b;
+            if (op == detail::OpId::Add) {
+                grad_a = gradient;
+                grad_b = gradient;
+            } else if (op == detail::OpId::Sub) {
+                grad_a = gradient;
+                grad_b = neg(gradient);
+            } else if (op == detail::OpId::Mul) {
+                grad_a = mul(gradient, b);
+                grad_b = mul(gradient, a);
+            } else if (op == detail::OpId::Div) {
+                grad_a = div(gradient, b);
+                grad_b = neg(div(mul(gradient, a), square(b)));
+            } else if (op == detail::OpId::Pow) {
+                grad_a = mul(gradient, mul(b, pow(a, sub(b, Tensor::ones_like(b)))));
+                grad_b = mul(gradient, mul(pow(a, b), log(a)));
+            } else if (op == detail::OpId::Axpy) {
+                grad_a = mul(gradient, Tensor::full({}, alpha, DType::F32, a.device()));
+                grad_b = gradient;
+            } else {
+                throw std::logic_error("autograd: unsupported binary operation");
+            }
+            if (a.requires_grad()) {
+                detail::autograd::propagate(a,
+                                            detail::autograd::reduce_gradient(grad_a, a.shape()));
+            }
+            if (b.requires_grad()) {
+                detail::autograd::propagate(b,
+                                            detail::autograd::reduce_gradient(grad_b, b.shape()));
+            }
+        });
+    }
     return out;
 }
 
@@ -75,6 +174,8 @@ Tensor sub(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Su
 Tensor mul(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Mul, a, b); }
 
 Tensor div(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Div, a, b); }
+
+Tensor pow(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Pow, a, b); }
 
 Tensor axpy(float alpha, const Tensor& x, const Tensor& y) {
     return binary_op(detail::OpId::Axpy, x, y, alpha);
@@ -93,6 +194,26 @@ Tensor bias_add(const Tensor& x, const Tensor& bias) {
     const Tensor packed_bias = bias.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
     detail::dispatch(detail::OpId::BiasAdd, {{input, packed_bias}, {out}});
+    if (x.requires_grad() || bias.requires_grad()) {
+        detail::AutogradAccess::record(out, {x, bias}, [x, bias](const Tensor& gradient) {
+            detail::autograd::NoGradGuard guard;
+            if (x.requires_grad()) {
+                detail::autograd::propagate(x, gradient);
+            }
+            if (bias.requires_grad()) {
+                const auto values = gradient.to_vector<float>();
+                std::vector<float> reduced(static_cast<std::size_t>(bias.numel()), 0.0f);
+                for (std::int64_t row = 0; row < x.size(0); ++row) {
+                    for (std::int64_t feature = 0; feature < x.size(1); ++feature) {
+                        reduced[static_cast<std::size_t>(feature)] +=
+                            values[static_cast<std::size_t>(row * x.size(1) + feature)];
+                    }
+                }
+                detail::autograd::propagate(
+                    bias, Tensor::from_vector(reduced, bias.shape(), bias.device()));
+            }
+        });
+    }
     return out;
 }
 
@@ -109,5 +230,37 @@ Tensor sqrt(const Tensor& x) { return unary_op(detail::OpId::Sqrt, x); }
 Tensor exp(const Tensor& x) { return unary_op(detail::OpId::Exp, x); }
 
 Tensor sigmoid(const Tensor& x) { return unary_op(detail::OpId::Sigmoid, x); }
+
+Tensor log(const Tensor& x) { return unary_op(detail::OpId::Log, x); }
+
+Tensor rsqrt(const Tensor& x) { return unary_op(detail::OpId::Rsqrt, x); }
+
+Tensor tanh(const Tensor& x) { return unary_op(detail::OpId::Tanh, x); }
+
+Tensor sin(const Tensor& x) { return unary_op(detail::OpId::Sin, x); }
+
+Tensor cos(const Tensor& x) { return unary_op(detail::OpId::Cos, x); }
+
+Tensor reciprocal(const Tensor& x) { return unary_op(detail::OpId::Reciprocal, x); }
+
+Tensor minimum(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Minimum, a, b); }
+
+Tensor maximum(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Maximum, a, b); }
+
+Tensor clamp(const Tensor& x, float lower, float upper) {
+    if (lower > upper) {
+        throw std::invalid_argument("clamp: lower bound must not exceed upper bound");
+    }
+    if (!x.defined()) {
+        throw std::invalid_argument("clamp: undefined tensor");
+    }
+    const Tensor input = x.contiguous();
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    detail::OpArgs args{{input}, {out}};
+    args.alpha = lower;
+    args.beta = upper;
+    detail::dispatch(detail::OpId::Clamp, args);
+    return out;
+}
 
 } // namespace mensurflow

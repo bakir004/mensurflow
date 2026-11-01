@@ -22,6 +22,7 @@ Tensor add(const Tensor& a, const Tensor& b); // a + b
 Tensor sub(const Tensor& a, const Tensor& b); // a - b
 Tensor mul(const Tensor& a, const Tensor& b); // a * b, elementwise (not matrix multiplication)
 Tensor div(const Tensor& a, const Tensor& b); // a / b
+Tensor pow(const Tensor& a, const Tensor& b); // a raised to b
 
 // alpha*x + y, using a fused float32 multiply-add (one rounding, as std::fma).
 // Shapes broadcast like add; alpha is a float scalar. Returns a new contiguous tensor.
@@ -45,5 +46,15 @@ Tensor relu(const Tensor& x);    // x < 0 ? +0 : x; preserves NaNs and signed ze
 Tensor sqrt(const Tensor& x);    // sqrt(x); negatives -> NaN, preserves signed zeros
 Tensor exp(const Tensor& x);     // exp(x); overflow -> +inf, underflow may produce +0
 Tensor sigmoid(const Tensor& x); // stable logistic function; -inf -> 0, +inf -> 1
+Tensor log(const Tensor& x);     // natural logarithm
+Tensor rsqrt(const Tensor& x);   // reciprocal square root
+Tensor tanh(const Tensor& x);    // hyperbolic tangent
+Tensor sin(const Tensor& x);
+Tensor cos(const Tensor& x);
+Tensor reciprocal(const Tensor& x);
+
+Tensor minimum(const Tensor& a, const Tensor& b); // elementwise minimum
+Tensor maximum(const Tensor& a, const Tensor& b); // elementwise maximum
+Tensor clamp(const Tensor& x, float lower, float upper);
 
 } // namespace mensurflow

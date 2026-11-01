@@ -2,10 +2,13 @@
 // dispatcher. Always built and always available.
 #include "backends/backend.hpp"
 
+#include "backends/cpu/argmax.hpp"
 #include "backends/cpu/blas.hpp"
 #include "backends/cpu/elementwise.hpp"
 #include "backends/cpu/matmul.hpp"
 #include "backends/cpu/parallel.hpp"
+#include "backends/cpu/reduction.hpp"
+#include "backends/cpu/softmax.hpp"
 #include "core/dispatcher.hpp"
 #include "core/registry.hpp"
 #include "core/tensor_access.hpp"
@@ -77,6 +80,49 @@ void dot_kernel(const OpArgs& args, Stream&) {
         cpu::dot_f32(TensorAccess::data<float>(x), TensorAccess::data<float>(y), x.size(0));
 }
 
+void scal_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    if (out.numel() == 0) {
+        return;
+    }
+    cpu::scal_f32(args.alpha, TensorAccess::data<float>(args.inputs[0]),
+                  TensorAccess::data<float>(out), out.numel());
+}
+
+void asum_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::asum_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void nrm2_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::nrm2_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void copy_kernel(const OpArgs& args, Stream&) {
+    if (args.outputs[0].numel() != 0) {
+        std::memcpy(TensorAccess::data<float>(args.outputs[0]),
+                    TensorAccess::data<float>(args.inputs[0]), args.outputs[0].nbytes());
+    }
+}
+
+void matvec_kernel(const OpArgs& args, Stream&) {
+    const Tensor& a = args.inputs[0];
+    const Tensor& x = args.inputs[1];
+    cpu::matvec_f32(TensorAccess::data<float>(a), TensorAccess::data<float>(x),
+                    TensorAccess::data<float>(args.outputs[0]), a.size(0), a.size(1));
+}
+
+void gemv_kernel(const OpArgs& args, Stream&) {
+    const Tensor& a = args.inputs[0];
+    const Tensor& x = args.inputs[1];
+    const float* initial =
+        args.inputs.size() > 2 ? TensorAccess::data<float>(args.inputs[2]) : nullptr;
+    cpu::gemv_f32(TensorAccess::data<float>(a), TensorAccess::data<float>(x),
+                  TensorAccess::data<float>(args.outputs[0]), a.size(0), a.size(1), args.alpha,
+                  args.beta, initial, args.transpose);
+}
+
 // Ops hand kernels contiguous tensors of equal shape, so n is simply the output's element count.
 template <void (*Kernel)(const float*, const float*, float*, std::int64_t)>
 void binary_kernel(const OpArgs& args, Stream&) {
@@ -104,14 +150,113 @@ void axpy_kernel(const OpArgs& args, Stream&) {
                   out.numel());
 }
 
+void clamp_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    if (out.numel() == 0) {
+        return;
+    }
+    cpu::clamp_f32(TensorAccess::data<float>(args.inputs[0]), TensorAccess::data<float>(out),
+                   out.numel(), args.alpha, args.beta);
+}
+
 void bias_add_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
     if (out.numel() == 0) {
         return;
     }
+
     cpu::bias_add_f32(TensorAccess::data<float>(args.inputs[0]),
                       TensorAccess::data<float>(args.inputs[1]), TensorAccess::data<float>(out),
                       out.numel(), out.size(1));
+}
+
+void sum_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::sum_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void mean_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::mean_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void max_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::max_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void min_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::min_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void prod_kernel(const OpArgs& args, Stream&) {
+    *TensorAccess::data<float>(args.outputs[0]) =
+        cpu::prod_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
+}
+
+void axis_sum_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    if (args.outputs[0].numel() == 0) {
+        return;
+    }
+    const std::vector<std::int64_t>& shape = input.shape();
+    cpu::sum_axis_f32(TensorAccess::data<float>(input), TensorAccess::data<float>(args.outputs[0]),
+                      shape.data(), input.dim(), args.axis);
+}
+
+void axis_mean_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    if (args.outputs[0].numel() == 0) {
+        return;
+    }
+    const std::vector<std::int64_t>& shape = input.shape();
+    cpu::mean_axis_f32(TensorAccess::data<float>(input), TensorAccess::data<float>(args.outputs[0]),
+                       shape.data(), input.dim(), args.axis);
+}
+
+void axis_max_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    if (args.outputs[0].numel() == 0) {
+        return;
+    }
+    const std::vector<std::int64_t>& shape = input.shape();
+    cpu::max_axis_f32(TensorAccess::data<float>(input), TensorAccess::data<float>(args.outputs[0]),
+                      shape.data(), input.dim(), args.axis);
+}
+
+void axis_min_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    if (args.outputs[0].numel() == 0)
+        return;
+    const auto& shape = input.shape();
+    cpu::min_axis_f32(TensorAccess::data<float>(input), TensorAccess::data<float>(args.outputs[0]),
+                      shape.data(), input.dim(), args.axis);
+}
+
+void axis_prod_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    if (args.outputs[0].numel() == 0)
+        return;
+    const auto& shape = input.shape();
+    cpu::prod_axis_f32(TensorAccess::data<float>(input), TensorAccess::data<float>(args.outputs[0]),
+                       shape.data(), input.dim(), args.axis);
+}
+
+void softmax_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    const std::int64_t width = input.size(input.dim() - 1);
+    cpu::softmax_f32(TensorAccess::data<float>(input), TensorAccess::data<float>(out),
+                     input.numel() / width, width);
+}
+
+void argmax_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    const std::int64_t width = input.size(input.dim() - 1);
+    cpu::argmax_f32(TensorAccess::data<float>(input), TensorAccess::data<std::int64_t>(out),
+                    input.numel() / width, width);
 }
 
 class CpuBackend final : public Backend {
@@ -133,6 +278,13 @@ class CpuBackend final : public Backend {
     void register_kernels(Dispatcher& dispatcher) override {
         constexpr DeviceType cpu_type = DeviceType::CPU;
         dispatcher.register_kernel({OpId::Dot, cpu_type, DType::F32}, dot_kernel);
+        dispatcher.register_kernel({OpId::Scal, cpu_type, DType::F32}, scal_kernel);
+        dispatcher.register_kernel({OpId::Asum, cpu_type, DType::F32}, asum_kernel);
+        dispatcher.register_kernel({OpId::Nrm2, cpu_type, DType::F32}, nrm2_kernel);
+        dispatcher.register_kernel({OpId::Copy, cpu_type, DType::F32}, copy_kernel);
+        dispatcher.register_kernel({OpId::Matvec, cpu_type, DType::F32}, matvec_kernel);
+        dispatcher.register_kernel({OpId::Gemv, cpu_type, DType::F32}, gemv_kernel);
+        dispatcher.register_kernel({OpId::Pow, cpu_type, DType::F32}, binary_kernel<cpu::pow_f32>);
         dispatcher.register_kernel({OpId::Matmul, cpu_type, DType::F32}, matmul_kernel);
         dispatcher.register_kernel({OpId::Add, cpu_type, DType::F32}, binary_kernel<cpu::add_f32>);
         dispatcher.register_kernel({OpId::Sub, cpu_type, DType::F32}, binary_kernel<cpu::sub_f32>);
@@ -147,8 +299,33 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::Exp, cpu_type, DType::F32}, unary_kernel<cpu::exp_f32>);
         dispatcher.register_kernel({OpId::Sigmoid, cpu_type, DType::F32},
                                    unary_kernel<cpu::sigmoid_f32>);
+        dispatcher.register_kernel({OpId::Log, cpu_type, DType::F32}, unary_kernel<cpu::log_f32>);
+        dispatcher.register_kernel({OpId::Rsqrt, cpu_type, DType::F32},
+                                   unary_kernel<cpu::rsqrt_f32>);
+        dispatcher.register_kernel({OpId::Tanh, cpu_type, DType::F32}, unary_kernel<cpu::tanh_f32>);
+        dispatcher.register_kernel({OpId::Sin, cpu_type, DType::F32}, unary_kernel<cpu::sin_f32>);
+        dispatcher.register_kernel({OpId::Cos, cpu_type, DType::F32}, unary_kernel<cpu::cos_f32>);
+        dispatcher.register_kernel({OpId::Reciprocal, cpu_type, DType::F32},
+                                   unary_kernel<cpu::reciprocal_f32>);
         dispatcher.register_kernel({OpId::Axpy, cpu_type, DType::F32}, axpy_kernel);
+        dispatcher.register_kernel({OpId::Minimum, cpu_type, DType::F32},
+                                   binary_kernel<cpu::minimum_f32>);
+        dispatcher.register_kernel({OpId::Maximum, cpu_type, DType::F32},
+                                   binary_kernel<cpu::maximum_f32>);
+        dispatcher.register_kernel({OpId::Clamp, cpu_type, DType::F32}, clamp_kernel);
         dispatcher.register_kernel({OpId::BiasAdd, cpu_type, DType::F32}, bias_add_kernel);
+        dispatcher.register_kernel({OpId::Sum, cpu_type, DType::F32}, sum_kernel);
+        dispatcher.register_kernel({OpId::Mean, cpu_type, DType::F32}, mean_kernel);
+        dispatcher.register_kernel({OpId::Max, cpu_type, DType::F32}, max_kernel);
+        dispatcher.register_kernel({OpId::Min, cpu_type, DType::F32}, min_kernel);
+        dispatcher.register_kernel({OpId::Prod, cpu_type, DType::F32}, prod_kernel);
+        dispatcher.register_kernel({OpId::AxisSum, cpu_type, DType::F32}, axis_sum_kernel);
+        dispatcher.register_kernel({OpId::AxisMean, cpu_type, DType::F32}, axis_mean_kernel);
+        dispatcher.register_kernel({OpId::AxisMax, cpu_type, DType::F32}, axis_max_kernel);
+        dispatcher.register_kernel({OpId::AxisMin, cpu_type, DType::F32}, axis_min_kernel);
+        dispatcher.register_kernel({OpId::AxisProd, cpu_type, DType::F32}, axis_prod_kernel);
+        dispatcher.register_kernel({OpId::Softmax, cpu_type, DType::F32}, softmax_kernel);
+        dispatcher.register_kernel({OpId::Argmax, cpu_type, DType::F32}, argmax_kernel);
     }
 
   private:

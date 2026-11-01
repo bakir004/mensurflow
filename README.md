@@ -16,8 +16,8 @@ is not yet implemented.
 | ROCm backend | Optional; partial and hardware validation pending |
 | Metal backend | Optional; partial and hardware validation pending |
 | Vulkan backend | Planned |
-| Graph runtime | Planned |
-| Autograd and training | Planned |
+| Graph runtime | Partial; CPU reverse-mode autograd |
+| Autograd and training | CPU float32 training path implemented |
 | Mixed precision | Planned |
 
 The current implementation is primarily a float32 tensor library. GPU support
@@ -122,9 +122,35 @@ out-of-place and inputs are not modified.
 ### BLAS-style operations
 
 - `dot`
+- `matvec`
+- `gemv`
 - `matmul`
+- `softmax`
+- `argmax`
 - `axpy`
 - `bias_add`
+- `gemm`
+- `copy`
+
+### Reductions
+
+- `sum` — full-tensor sum; an empty tensor returns zero
+- `mean` — full-tensor arithmetic mean; empty tensors are invalid
+- `max` — full-tensor maximum; empty tensors are invalid
+- `min` — full-tensor minimum; empty tensors are invalid
+- `prod` — full-tensor product; empty tensors return one
+- Axis reductions support `sum`, `mean`, and `max` with `keepdim`
+
+### Training (CPU float32)
+
+- Reverse-mode autograd with `requires_grad`, `grad`, `zero_grad`, and `backward`
+- Differentiable elementwise operations, reductions, `matmul`, and `bias_add`
+- `mse_loss`, `log_softmax`, and `cross_entropy`
+- SGD with optional momentum and weight decay
+- General `gemm` with scaling and transpose flags
+
+The training path is currently CPU-only. GPU backends do not yet register the
+autograd, loss, or optimizer operations.
 
 ### Elementwise operations
 
@@ -139,8 +165,10 @@ out-of-place and inputs are not modified.
 - `sqrt`
 - `exp`
 - `sigmoid`
+- `log`, `rsqrt`, `tanh`, `sin`, `cos`, and `reciprocal`
+- `pow`, `minimum`, and `maximum`
 
-`matmul` currently has a CPU implementation only. Unsupported backend and
+`matvec` and `matmul` currently have CPU implementations only. Unsupported backend and
 operation combinations throw `NotImplemented`; they do not silently fall back
 to another device.
 
@@ -154,6 +182,8 @@ The current `Tensor` API includes:
 - Host transfer with `copy_to_host` and `to_vector`
 - Scalar reads with `item`
 - Views with `transpose`, `slice`, `expand`, `unsqueeze`, and `view`
+- Value constructors with `zeros`, `ones`, `full`, `constant`, `eye`, and
+  their `*_like` variants
 - Packing non-contiguous data with `contiguous`
 - Metadata queries for shape, strides, dtype, device, dimensions, and size
 
@@ -192,7 +222,10 @@ not silently redirect an operation to another device.
 | Basic elementwise arithmetic | Yes | Partial | Partial | Partial | No |
 | Unary elementwise operations | Yes | No | No | No | No |
 | `dot` | Yes | Yes | Implemented, hardware validation pending | Implemented, hardware validation pending | No |
+| `matvec` | Yes | No | No | No | No |
 | `matmul` | Yes | No | No | No | No |
+| `softmax` | Yes | No | No | No | No |
+| `argmax` | Yes | No | No | No | No |
 | Tensor transfers | Yes | Yes | Yes | Yes | No |
 
 GPU-specific capabilities depend on the SDK, driver, and hardware available at
@@ -221,7 +254,10 @@ kernel implementations:
 
 - `elementwise_benchmark`
 - `dot_benchmark`
+- `matvec_benchmark`
 - `matmul_benchmark`
+- `softmax_benchmark`
+- `argmax_benchmark`
 - `cpu_parallel_benchmark`
 
 Build the benchmark targets with:
@@ -229,6 +265,16 @@ Build the benchmark targets with:
 ```powershell
 cmake --build build-release --config Release
 ```
+
+Run the end-to-end training example with:
+
+```powershell
+cmake --build build-release --config Release --target mlp_xor
+.\build-release\Release\mlp_xor.exe
+```
+
+Use Release builds for meaningful timings. Compare benchmark runs using the
+same machine, compiler, build type, thread count, and tensor shapes.
 
 Benchmark results and instructions are documented in
 [`docs/benchmarks/README.md`](docs/benchmarks/README.md).
@@ -277,10 +323,9 @@ The detailed plans are:
 
 The next implementation milestones are:
 
-1. Complete CPU P0 operations such as reductions, softmax, and matrix-vector
-   multiplication.
-2. Add operation/backend coverage testing.
+1. Add an end-to-end dense-inference example and coverage tests.
+2. Decide whether optional GEMM parameters (`alpha`, `beta`, and transpose
+   flags) are needed before backend work.
 3. Improve CPU GEMM and reduction performance.
 4. Integrate the Vulkan backend.
-5. Add graph execution.
-6. Add neural-network layers and autograd.
+5. Add graph execution, neural-network layers, and autograd.

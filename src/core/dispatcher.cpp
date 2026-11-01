@@ -9,6 +9,14 @@ const char* op_name(OpId op) {
     switch (op) {
     case OpId::Dot:
         return "dot";
+    case OpId::Scal:
+        return "scal";
+    case OpId::Asum:
+        return "asum";
+    case OpId::Nrm2:
+        return "nrm2";
+    case OpId::Copy:
+        return "copy";
     case OpId::Add:
         return "add";
     case OpId::Sub:
@@ -17,6 +25,12 @@ const char* op_name(OpId op) {
         return "mul";
     case OpId::Div:
         return "div";
+    case OpId::Pow:
+        return "pow";
+    case OpId::Matvec:
+        return "matvec";
+    case OpId::Gemv:
+        return "gemv";
     case OpId::Matmul:
         return "matmul";
     case OpId::Neg:
@@ -33,10 +47,52 @@ const char* op_name(OpId op) {
         return "exp";
     case OpId::Sigmoid:
         return "sigmoid";
+    case OpId::Log:
+        return "log";
+    case OpId::Rsqrt:
+        return "rsqrt";
+    case OpId::Tanh:
+        return "tanh";
+    case OpId::Sin:
+        return "sin";
+    case OpId::Cos:
+        return "cos";
+    case OpId::Reciprocal:
+        return "reciprocal";
     case OpId::Axpy:
         return "axpy";
+    case OpId::Minimum:
+        return "minimum";
+    case OpId::Maximum:
+        return "maximum";
+    case OpId::Clamp:
+        return "clamp";
     case OpId::BiasAdd:
         return "bias_add";
+    case OpId::Sum:
+        return "sum";
+    case OpId::Mean:
+        return "mean";
+    case OpId::Max:
+        return "max";
+    case OpId::Min:
+        return "min";
+    case OpId::Prod:
+        return "prod";
+    case OpId::AxisSum:
+        return "sum_axis";
+    case OpId::AxisMean:
+        return "mean_axis";
+    case OpId::AxisMax:
+        return "max_axis";
+    case OpId::AxisMin:
+        return "min_axis";
+    case OpId::AxisProd:
+        return "prod_axis";
+    case OpId::Softmax:
+        return "softmax";
+    case OpId::Argmax:
+        return "argmax";
     }
     throw std::invalid_argument("invalid OpId");
 }

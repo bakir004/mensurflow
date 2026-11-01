@@ -138,6 +138,25 @@ float dot_f32(const float* x, const float* y, std::int64_t n) {
     return static_cast<float>(sum);
 }
 
+void matvec_f32(const float* a, const float* x, float* y, std::int64_t m, std::int64_t k) {
+    if (m < 0 || k < 0) {
+        throw std::invalid_argument("matvec: negative dimension");
+    }
+    if (m == 0) {
+        return;
+    }
+    if (y == nullptr || (k > 0 && (a == nullptr || x == nullptr))) {
+        throw std::invalid_argument("matvec: null pointer");
+    }
+    for (std::int64_t i = 0; i < m; ++i) {
+        double sum = 0.0;
+        for (std::int64_t j = 0; j < k; ++j) {
+            sum += static_cast<double>(a[i * k + j]) * static_cast<double>(x[j]);
+        }
+        y[i] = static_cast<float>(sum);
+    }
+}
+
 void matmul_f32(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
                 std::int64_t k) {
     if (m < 0 || n < 0 || k < 0) {

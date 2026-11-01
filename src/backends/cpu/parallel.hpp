@@ -3,7 +3,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #ifdef _OPENMP
@@ -105,6 +107,45 @@ double parallel_sum(std::int64_t n, Body&& body, std::int64_t grain = default_gr
             total += p;
         }
         return total;
+    }
+#endif
+    (void)grain;
+    return body(std::int64_t{0}, n);
+}
+
+template <typename Body>
+float parallel_max(std::int64_t n, Body&& body, std::int64_t grain = default_grain) {
+    if (n <= 0) {
+        return 0.0f;
+    }
+#ifdef _OPENMP
+    if (n > grain && omp_get_max_threads() > 1) {
+        std::vector<float> partial(static_cast<std::size_t>(omp_get_max_threads()),
+                                   -std::numeric_limits<float>::infinity());
+#pragma omp parallel
+        {
+            const int id = omp_get_thread_num();
+            std::int64_t begin = 0, end = 0;
+            block_range(n, omp_get_num_threads(), id, begin, end);
+            if (begin < end) {
+                partial[static_cast<std::size_t>(id)] = body(begin, end);
+            }
+        }
+        float result = partial[0];
+        for (float value : partial) {
+            if (std::isnan(value)) {
+                return value;
+            }
+            if (std::isnan(result)) {
+                return result;
+            }
+            if (result == 0.0f && value == 0.0f) {
+                result = 0.0f;
+                continue;
+            }
+            result = std::fmax(result, value);
+        }
+        return result;
     }
 #endif
     (void)grain;
