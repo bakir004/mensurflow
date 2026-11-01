@@ -1,126 +1,286 @@
-# mensurflow
+# Mensurflow
 
-A C++17 library for tensors, BLAS and ML ops that is meant to detect the user's hardware
-and run on the best backend: cuBLAS on NVIDIA, rocBLAS on AMD, MPS on Apple, our own
-kernels on CPU, and **Vulkan compute** as the portable GPU fallback.
+Mensurflow is a C++17 tensor and numerical-kernel library.
 
-> **Status: early.** Only the core types exist so far: `DType`, `Device`, `Shape`/`Strides`
-> with broadcasting, and a CPU-only `Tensor` with zero-copy views. There are no ops,
-> no dispatcher, and no GPU backends yet. See [Roadmap](#roadmap).
+It provides a common `Tensor` API, device selection, backend dispatch, CPU
+kernels, and optional CUDA, ROCm, and Metal integrations. Vulkan is planned but
+is not yet implemented.
 
-The design lives in [`docs/plan/`](docs/plan/README.md); start with
-[ARCHITECTURE.md](docs/plan/ARCHITECTURE.md).
+## Current status
+
+| Area | Status |
+|---|---|
+| Tensor API | Implemented |
+| CPU backend | Implemented |
+| CUDA backend | Optional; partial |
+| ROCm backend | Optional; partial and hardware validation pending |
+| Metal backend | Optional; partial and hardware validation pending |
+| Vulkan backend | Planned |
+| Graph runtime | Planned |
+| Autograd and training | Planned |
+| Mixed precision | Planned |
+
+The current implementation is primarily a float32 tensor library. GPU support
+varies by operation and backend.
+
+## Requirements
+
+- CMake 3.20 or newer
+- A C++17 compiler
+- OpenMP is optional
+- CUDA Toolkit is optional
+- ROCm and rocBLAS are optional
+- Metal and MPSGraph are optional and available only on macOS
 
 ## Build and test
 
-Requires CMake >= 3.20 and a C++17 compiler. Ninja and ccache are used if installed.
+### Windows
 
-```sh
-./test.sh              # Linux/macOS: configure Debug build in build/, compile, run all tests
-./test.sh -R view      # extra arguments go to ctest (here: only tests matching "view")
+Use an x64 Visual Studio Developer Command Prompt:
+
+```powershell
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --config Release
+ctest --test-dir build-release -C Release --output-on-failure
 ```
 
-On Windows, run `test.bat` (same arguments). The scripts also enable the formatting
-git hook (see [Formatting](#formatting)).
-
-Manual equivalent:
+### Linux and macOS
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --config Release
+ctest --test-dir build-release --config Release --output-on-failure
 ```
 
-Link the library from your own CMake project with
-`target_link_libraries(your_program PRIVATE mensurflow)`.
+For a deterministic CPU-only build:
 
-## Use
+```powershell
+cmake -S . -B build-cpu `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DMENSURFLOW_CUDA=OFF `
+  -DMENSURFLOW_ROCM=OFF `
+  -DMENSURFLOW_METAL=OFF
+```
+
+The available CMake options are:
+
+| Option | Values | Default |
+|---|---|---|
+| `MENSURFLOW_CUDA` | `AUTO`, `ON`, `OFF` | `AUTO` |
+| `MENSURFLOW_ROCM` | `AUTO`, `ON`, `OFF` | `AUTO` |
+| `MENSURFLOW_METAL` | `AUTO`, `ON`, `OFF` | `AUTO` |
+| `MENSURFLOW_OPENMP` | `ON`, `OFF` | `ON` |
+| `MENSURFLOW_NATIVE` | `ON`, `OFF` | `OFF` |
+
+`AUTO` enables a backend when its development SDK is found. `ON` requires the
+backend SDK and fails configuration when it is unavailable. `OFF` disables the
+backend.
+
+OpenMP parallelizes suitable CPU kernels. `MENSURFLOW_NATIVE=ON` enables
+machine-specific compiler optimizations and should not be used for portable
+builds.
+
+## Public API
+
+Include the umbrella header:
 
 ```cpp
-#include "mensurflow/tensor.hpp"
-
-using namespace mensurflow;
-
-// Copy host data into a tensor (dtype is taken from the element type: float -> F32).
-Tensor m = Tensor::from_vector(std::vector<float>{0, 1, 2, 3, 4, 5}, {2, 3});
-// m = [[0, 1, 2],
-//      [3, 4, 5]]     shape {2, 3}, strides {3, 1}
-
-// Views share m's memory; only shape/strides/offset change.
-Tensor t   = m.transpose(0, 1);          // [[0, 3], [1, 4], [2, 5]]
-Tensor col = m.slice(1, 1, 2);           // column 1: [[1], [4]]
-Tensor r   = m.view({3, 2});             // [[0, 1], [2, 3], [4, 5]]
-
-Tensor bias = Tensor::from_vector(std::vector<float>{10, 20, 30}, {3});
-Tensor b2   = bias.expand({2, 3});       // stride 0 repeats the row, no copy
-Tensor c    = bias.unsqueeze(1);         // shape {3, 1}, broadcasts as a column
-
-std::vector<float> out = t.to_vector<float>();  // {0, 3, 1, 4, 2, 5}
+#include "mensurflow/mensurflow.hpp"
 ```
 
-### Concepts
+Example:
 
-- **Shape** is the size of each dimension, outermost first. `{}` is a scalar.
-- **Strides** are how many *elements* to jump in memory per index step. An element's
-  position is `offset + sum(index[i] * stride[i])`.
-- **Views** (`transpose`, `slice`, `expand`, `unsqueeze`, `view`) build new
-  shape/strides/offset over the same storage, so they never copy data.
-- **Broadcasting** follows NumPy: align shapes from the right; each pair of sizes must
-  be equal or one of them must be 1. Stretched dimensions get stride 0.
-- **Copying a `Tensor` shares memory** (like PyTorch). Memory is freed when the last
-  tensor using it goes away.
-- **Host** means the CPU and normal RAM. `from_host`/`from_vector` copy into the
-  tensor's device memory, and `copy_to_host`/`to_vector` copy back out. Only `cpu:0`
-  exists today, so both are `memcpy`.
+```cpp
+#include "mensurflow/mensurflow.hpp"
 
-### Error handling
+#include <iostream>
 
-| Situation | Exception |
-|---|---|
-| Invalid shape, size mismatch, bad broadcast, wrong dtype in `to_vector`, `view` of a non-contiguous tensor | `std::invalid_argument` |
-| Dimension index out of range | `std::out_of_range` |
-| Device other than `cpu:0` (no backends yet) | `std::runtime_error` |
-| Using a default-constructed (undefined) `Tensor` | `std::logic_error` |
+int main() {
+    using namespace mensurflow;
 
-## Source layout
+    const auto x = Tensor::from_vector<float>({1.0f, 2.0f, 3.0f}, {3});
+    const auto y = Tensor::from_vector<float>({10.0f, 20.0f, 30.0f}, {3});
+    const Tensor result = add(x, y);
+
+    for (float value : result.to_vector<float>()) {
+        std::cout << value << ' ';
+    }
+}
+```
+
+Expected output:
 
 ```text
-include/mensurflow/        # public API (never includes vendor headers)
-  dtype.hpp                # DType, dtype_size, dtype_name, dtype_of<T>
-  device.hpp               # DeviceType, Device, parse_device ("cuda:1")
-  shape.hpp                # Shape, Strides, numel, contiguity, broadcasting
-  tensor.hpp               # Tensor: creation, metadata, views, host copies
-src/core/
-  dtype.cpp, device.cpp, shape.cpp, tensor.cpp
-  storage.hpp/.cpp         # internal: one 64-byte aligned allocation shared by views
-tests/
-  test_util.hpp            # require / require_throws / run helpers
-  core/*_test.cpp          # one executable per test, registered with CTest
-docs/
-  plan/                    # architecture, kernel roadmap, Vulkan design
-  SPECS.md, KERNELS.md, TECHNOLOGY_OVERVIEW.md, FORMATTING.md
-test.sh / test.bat         # build + run tests
+11 22 33
+```
+
+Operations run on the device where their input tensors reside. Results are
+out-of-place and inputs are not modified.
+
+## Supported operations
+
+### BLAS-style operations
+
+- `dot`
+- `matmul`
+- `axpy`
+- `bias_add`
+
+### Elementwise operations
+
+- `add`
+- `sub`
+- `mul`
+- `div`
+- `neg`
+- `abs`
+- `square`
+- `relu`
+- `sqrt`
+- `exp`
+- `sigmoid`
+
+`matmul` currently has a CPU implementation only. Unsupported backend and
+operation combinations throw `NotImplemented`; they do not silently fall back
+to another device.
+
+## Tensor operations
+
+The current `Tensor` API includes:
+
+- Construction with `Tensor::empty` and `Tensor::from_host`
+- Typed construction with `Tensor::from_vector`
+- Device transfer with `Tensor::to`
+- Host transfer with `copy_to_host` and `to_vector`
+- Scalar reads with `item`
+- Views with `transpose`, `slice`, `expand`, `unsqueeze`, and `view`
+- Packing non-contiguous data with `contiguous`
+- Metadata queries for shape, strides, dtype, device, dimensions, and size
+
+Views share storage and do not copy data. Operations that require contiguous
+inputs create packed copies internally.
+
+## Devices and backend selection
+
+```cpp
+auto selected = default_device();
+auto devices = list_devices();
+
+Tensor x = Tensor::empty({1024}, DType::F32, selected);
+```
+
+`Device` values use a device type and index, for example `cpu`, `cuda:0`, or
+`rocm:1`. `default_device()` uses the first available backend according to the
+library's selection policy. CPU is always available.
+
+The `MENSURFLOW_DEVICE` environment variable overrides automatic selection:
+
+```text
+MENSURFLOW_DEVICE=cpu
+MENSURFLOW_DEVICE=cuda:0
+MENSURFLOW_DEVICE=rocm:0
+MENSURFLOW_DEVICE=metal:0
+```
+
+An explicitly selected unavailable device produces an error. The library does
+not silently redirect an operation to another device.
+
+## Backend coverage
+
+| Operation family | CPU | CUDA | ROCm | Metal | Vulkan |
+|---|---:|---:|---:|---:|---:|
+| Basic elementwise arithmetic | Yes | Partial | Partial | Partial | No |
+| Unary elementwise operations | Yes | No | No | No | No |
+| `dot` | Yes | Yes | Implemented, hardware validation pending | Implemented, hardware validation pending | No |
+| `matmul` | Yes | No | No | No | No |
+| Tensor transfers | Yes | Yes | Yes | Yes | No |
+
+GPU-specific capabilities depend on the SDK, driver, and hardware available at
+runtime.
+
+## Testing
+
+Run the complete configured test suite with:
+
+```powershell
+ctest --test-dir build-release -C Release --output-on-failure
+```
+
+CPU tests run on every supported build. GPU-specific tests run only when the
+corresponding backend and hardware are available. A skipped GPU test does not
+count as GPU correctness evidence.
+
+The GitHub Actions workflow in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs CPU-only Release
+configure, build, and CTest checks on Ubuntu and Windows.
+
+## Benchmarks
+
+Benchmarks are built with the project and measure the current tensor and CPU
+kernel implementations:
+
+- `elementwise_benchmark`
+- `dot_benchmark`
+- `matmul_benchmark`
+- `cpu_parallel_benchmark`
+
+Build the benchmark targets with:
+
+```powershell
+cmake --build build-release --config Release
+```
+
+Benchmark results and instructions are documented in
+[`docs/benchmarks/README.md`](docs/benchmarks/README.md).
+
+## Formatting
+
+The project uses `.clang-format` for C++, CUDA, and Objective-C++ sources.
+Configure and build the formatting target when `clang-format` is available:
+
+```powershell
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target format
+```
+
+The tracked pre-commit hook can be enabled with:
+
+```powershell
+git config --local core.hooksPath .githooks
+```
+
+The hook formats staged source files. Documentation-only changes do not require
+formatting.
+
+## Project layout
+
+```text
+include/mensurflow/       Public headers
+src/core/                 Tensor, device, shape, storage, and dispatcher
+src/ops/                  Validation and public operation dispatch
+src/backends/cpu/         CPU implementations
+src/backends/cuda/        CUDA backend
+src/backends/rocm/        ROCm backend
+src/backends/metal/       Metal backend
+tests/                    Correctness tests
+benchmarks/               Performance benchmarks
+docs/plan/                Architecture and future roadmap
 ```
 
 ## Roadmap
 
-Following [ARCHITECTURE.md §8](docs/plan/ARCHITECTURE.md):
+The detailed plans are:
 
-- [x] Core types: `DType`, `Device`, `Shape`/`Strides`, broadcasting
-- [x] CPU `Tensor` with views and strided host copies
-- [ ] Dispatcher and backend registry, device detection (`default_device`, `MENSURFLOW_DEVICE`)
-- [ ] First CPU ops (elementwise, matmul) through the dispatcher
-- [ ] Vulkan backend (RAII core, VMA, shaders compiled to SPIR-V at build time)
-- [ ] Milestone 1 kernels on CPU + Vulkan; train an MLP on MNIST
-- [ ] Vendor backends (CUDA/cuBLAS, ROCm/rocBLAS, Metal/MPS), autograd, `nn` modules
+- [`docs/plan/ARCHITECTURE.md`](docs/plan/ARCHITECTURE.md)
+- [`docs/plan/KERNELS_ROADMAP.md`](docs/plan/KERNELS_ROADMAP.md)
+- [`docs/plan/VULKAN_DESIGN.md`](docs/plan/VULKAN_DESIGN.md)
 
-## Formatting
+The next implementation milestones are:
 
-Code is formatted with `clang-format` (`.clang-format`) by a git pre-commit hook, which
-`test.sh`/`test.bat` enable automatically. Setup and manual enabling are described in
-[docs/FORMATTING.md](docs/FORMATTING.md).
-
-```sh
-git config --local mensurflow.formatOnCommit false   # disable for this clone
-git -c mensurflow.formatOnCommit=false commit ...    # skip for one commit
-```
+1. Complete CPU P0 operations such as reductions, softmax, and matrix-vector
+   multiplication.
+2. Add operation/backend coverage testing.
+3. Improve CPU GEMM and reduction performance.
+4. Integrate the Vulkan backend.
+5. Add graph execution.
+6. Add neural-network layers and autograd.

@@ -45,7 +45,12 @@ add_library(mensurflow
     src/backends/cpu/blas.cpp
     src/backends/cpu/elementwise.cpp
     src/backends/cpu/matmul.cpp
+    src/backends/cpu/scalar.cpp
     src/backends/cpu/sequential.cpp)
+# scalar.cpp is sequential.cpp compiled again with auto-vectorization off: the baseline that
+# separates what SIMD adds from what threads add in the benchmarks (see docs/BENCHMARKING.md).
+set_source_files_properties(src/backends/cpu/scalar.cpp PROPERTIES COMPILE_OPTIONS
+    "$<$<CXX_COMPILER_ID:GNU>:-fno-tree-vectorize>;$<$<CXX_COMPILER_ID:Clang,AppleClang>:-fno-vectorize>;$<$<CXX_COMPILER_ID:Clang,AppleClang>:-fno-slp-vectorize>;$<$<CXX_COMPILER_ID:MSVC>:/Qvec->")
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -142,14 +147,20 @@ mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
 mensurflow_add_test(sequential_test tests/ops/sequential_test.cpp)
+mensurflow_add_test(scalar_test tests/ops/scalar_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
+# The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
+add_library(mensurflow_bench STATIC benchmarks/bench.cpp)
+target_link_libraries(mensurflow_bench PUBLIC mensurflow)
+target_include_directories(mensurflow_bench PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks
+                                                   ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                                   ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+
 function(mensurflow_add_benchmark name source)
     add_executable(${name} ${source})
-    target_link_libraries(${name} PRIVATE mensurflow)
-    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests
-                                               ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(${name} PRIVATE mensurflow_bench)
 endfunction()
 
 mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.cpp)

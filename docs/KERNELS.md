@@ -39,6 +39,9 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |-|-|-|-|-|
 |`add`, `sub`, `mul`|OpenMP, with broadcasting|cuBLAS (copy + axpy, `sdgmm`)|same, untested|MPSGraph, untested|
 |`div`|OpenMP, with broadcasting|—|—|MPSGraph, untested|
+|`neg`, `abs`, `square`, `relu`|OpenMP, float32; tensor views supported|—|—|—|
+|`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|—|
+|`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
@@ -57,9 +60,9 @@ and small fully connected networks with externally supplied weights.
 * \[x] `sub(a, b)` — subtraction.
 * \[x] `mul(a, b)` — elementwise multiplication, not matrix multiplication.
 * \[x] `div(a, b)` — elementwise division.
-* \[ ] `neg(x)` — negation.
-* \[ ] `axpy(alpha, x, y)` — `alpha\*x + y`; adapt the existing implementation.
-* \[ ] `bias\_add(x, b)` — add `\[features]` bias to `\[batch, features]`.
+* \[x] `neg(x)` — negation (CPU, float32).
+* \[x] `axpy(alpha, x, y)` — fused float32 `alpha\*x + y`, with broadcasting (CPU).
+* \[x] `bias\_add(x, b)` — add a compact `\[features]` bias to `\[batch, features]` (CPU, float32).
 
 ### Linear algebra
 
@@ -79,8 +82,8 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[ ] `sum(x, axis, keepdim)` — summation.
 * \[ ] `mean(x, axis, keepdim)` — average.
 * \[ ] `max(x, axis, keepdim)` — maximum values.
-* \[ ] `relu(x)` — `max(x, 0)`.
-* \[ ] `sigmoid(x)` — logistic function, using a stable implementation.
+* \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
+* \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
 * \[ ] `softmax(x, axis)` — normalized exponentials; subtract the axis maximum
 before exponentiation. Implement last-axis softmax first.
 
@@ -109,7 +112,9 @@ Implement these after P0 works end to end.
 
 ### Elementwise math and comparisons
 
-* \[ ] `exp`, `log`, `sqrt`, `rsqrt`, `abs`, and `square`.
+* \[x] `abs` and `square` — absolute value and squaring (CPU, float32).
+* \[x] `exp` and `sqrt` — exponential and square root (CPU, float32).
+* \[ ] `log` and `rsqrt`.
 * \[ ] `minimum`, `maximum`, and `clamp`.
 * \[ ] `equal`, `less`, `greater`, and related comparisons producing boolean masks.
 * \[ ] `where(mask, a, b)` — conditional element selection.

@@ -19,6 +19,24 @@ const char* op_name(OpId op) {
         return "div";
     case OpId::Matmul:
         return "matmul";
+    case OpId::Neg:
+        return "neg";
+    case OpId::Abs:
+        return "abs";
+    case OpId::Square:
+        return "square";
+    case OpId::Relu:
+        return "relu";
+    case OpId::Sqrt:
+        return "sqrt";
+    case OpId::Exp:
+        return "exp";
+    case OpId::Sigmoid:
+        return "sigmoid";
+    case OpId::Axpy:
+        return "axpy";
+    case OpId::BiasAdd:
+        return "bias_add";
     }
     throw std::invalid_argument("invalid OpId");
 }
