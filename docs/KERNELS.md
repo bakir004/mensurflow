@@ -46,6 +46,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`matvec`|OpenMP, double accumulation per row|—|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full-tensor reductions|—|—|—|
 |`softmax`|OpenMP, stable last-axis implementation|—|—|—|
+|`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|—|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
 CUDA was tested on an RTX 3060; ROCm and Metal have never been built on real hardware. The
@@ -104,7 +105,8 @@ pass-through.
 * \[ ] `transpose` / `permute` — initially materialize contiguous output; views can
 follow once strides are supported.
 * \[ ] `contiguous` — copy a strided view into a packed row-major buffer.
-* \[ ] `argmax(x, axis)` — integer predictions for classification; specify tie rules.
+* \[x] `argmax(x, axis)` — last-axis integer predictions for classification; ties select the first
+index and the first NaN selects its index (CPU, float32 input, int64 output).
 
 **Acceptance demo:** run `XW + b`, then sigmoid for binary classification or
 softmax for multiclass classification. Run a two-layer ReLU network and compare

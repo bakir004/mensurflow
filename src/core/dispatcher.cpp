@@ -47,6 +47,8 @@ const char* op_name(OpId op) {
         return "max";
     case OpId::Softmax:
         return "softmax";
+    case OpId::Argmax:
+        return "argmax";
     }
     throw std::invalid_argument("invalid OpId");
 }

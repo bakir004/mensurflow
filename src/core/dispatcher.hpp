@@ -34,7 +34,8 @@ enum class OpId {
     Sum,
     Mean,
     Max,
-    Softmax
+    Softmax,
+    Argmax
 };
 
 const char* op_name(OpId op);

@@ -3,6 +3,7 @@
 #include "backends/backend.hpp"
 
 #include "backends/cpu/blas.hpp"
+#include "backends/cpu/argmax.hpp"
 #include "backends/cpu/elementwise.hpp"
 #include "backends/cpu/matmul.hpp"
 #include "backends/cpu/parallel.hpp"
@@ -147,6 +148,14 @@ void softmax_kernel(const OpArgs& args, Stream&) {
                      input.numel() / width, width);
 }
 
+void argmax_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    const std::int64_t width = input.size(input.dim() - 1);
+    cpu::argmax_f32(TensorAccess::data<float>(input), TensorAccess::data<std::int64_t>(out),
+                    input.numel() / width, width);
+}
+
 class CpuBackend final : public Backend {
   public:
     DeviceType type() const override { return DeviceType::CPU; }
@@ -187,6 +196,7 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::Mean, cpu_type, DType::F32}, mean_kernel);
         dispatcher.register_kernel({OpId::Max, cpu_type, DType::F32}, max_kernel);
         dispatcher.register_kernel({OpId::Softmax, cpu_type, DType::F32}, softmax_kernel);
+        dispatcher.register_kernel({OpId::Argmax, cpu_type, DType::F32}, argmax_kernel);
     }
 
   private:

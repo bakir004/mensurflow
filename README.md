@@ -125,6 +125,7 @@ out-of-place and inputs are not modified.
 - `matvec`
 - `matmul`
 - `softmax`
+- `argmax`
 - `axpy`
 - `bias_add`
 
@@ -203,6 +204,7 @@ not silently redirect an operation to another device.
 | `matvec` | Yes | No | No | No | No |
 | `matmul` | Yes | No | No | No | No |
 | `softmax` | Yes | No | No | No | No |
+| `argmax` | Yes | No | No | No | No |
 | Tensor transfers | Yes | Yes | Yes | Yes | No |
 
 GPU-specific capabilities depend on the SDK, driver, and hardware available at
@@ -234,6 +236,7 @@ kernel implementations:
 - `matvec_benchmark`
 - `matmul_benchmark`
 - `softmax_benchmark`
+- `argmax_benchmark`
 - `cpu_parallel_benchmark`
 
 Build the benchmark targets with:
@@ -289,8 +292,8 @@ The detailed plans are:
 
 The next implementation milestones are:
 
-1. Complete remaining CPU P0 operations such as softmax and matrix-vector
-   multiplication.
+1. Complete remaining CPU P0 operations such as tensor constructors and dense
+   inference integration.
 2. Add operation/backend coverage testing.
 3. Improve CPU GEMM and reduction performance.
 4. Integrate the Vulkan backend.
