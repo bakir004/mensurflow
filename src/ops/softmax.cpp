@@ -14,8 +14,17 @@ Tensor softmax(const Tensor& x, int axis) {
         throw std::invalid_argument("softmax: input must have at least one dimension");
     }
     const int normalized_axis = axis < 0 ? axis + x.dim() : axis;
+    if (normalized_axis < 0 || normalized_axis >= x.dim()) {
+        throw std::invalid_argument("softmax: axis out of range");
+    }
+    if (x.size(normalized_axis) == 0) {
+        throw std::invalid_argument("softmax: axis is empty");
+    }
     if (normalized_axis != x.dim() - 1) {
-        throw std::invalid_argument("softmax: only the last axis is supported");
+        const Tensor moved = x.transpose(normalized_axis, x.dim() - 1).contiguous();
+        Tensor moved_out = Tensor::empty(moved.shape(), moved.dtype(), moved.device());
+        detail::dispatch(detail::OpId::Softmax, {{moved}, {moved_out}});
+        return moved_out.transpose(normalized_axis, x.dim() - 1).contiguous();
     }
     const std::int64_t width = x.size(x.dim() - 1);
     const std::int64_t rows = width == 0 ? 0 : x.numel() / width;

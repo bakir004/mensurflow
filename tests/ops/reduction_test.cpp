@@ -46,6 +46,14 @@ void check_reduction(Device device, const std::vector<float>& values) {
 }
 
 void test_public_api(Device device) {
+    const Tensor matrix =
+        Tensor::from_vector(std::vector<float>{1, 2, 3, 4, 5, 6}, {2, 3}, device);
+    test::require(sum(matrix, 0).to_vector<float>() == std::vector<float>{5, 7, 9},
+                  "axis sum");
+    test::require(sum(matrix, -1, true).shape() == (Shape{2, 1}), "axis sum keepdim shape");
+    test::require(mean(matrix, 0).to_vector<float>() == std::vector<float>{2.5f, 3.5f, 4.5f},
+                  "axis mean");
+    test::require(max(matrix, 1).to_vector<float>() == std::vector<float>{3, 6}, "axis max");
     for (std::int64_t n : {1, 2, 15, 16, 17, 32768, 32769, 100003}) {
         check_reduction(device, make_input(n));
     }

@@ -63,6 +63,41 @@ Tensor dot(const Tensor& a, const Tensor& b) {
     return out;
 }
 
+Tensor scal(float alpha, const Tensor& x) {
+    require_vector(x, "scal", "x");
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    if (x.size(0) == 0) {
+        return out;
+    }
+    const Tensor input = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Scal, {{input}, {out}, alpha});
+    return out;
+}
+
+Tensor asum(const Tensor& x) {
+    require_vector(x, "asum", "x");
+    if (x.size(0) == 0) {
+        const std::vector<std::byte> zero(dtype_size(x.dtype()));
+        return Tensor::from_host(zero.data(), {}, x.dtype(), x.device());
+    }
+    Tensor out = Tensor::empty({}, x.dtype(), x.device());
+    const Tensor input = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Asum, {{input}, {out}});
+    return out;
+}
+
+Tensor nrm2(const Tensor& x) {
+    require_vector(x, "nrm2", "x");
+    if (x.size(0) == 0) {
+        const std::vector<std::byte> zero(dtype_size(x.dtype()));
+        return Tensor::from_host(zero.data(), {}, x.dtype(), x.device());
+    }
+    Tensor out = Tensor::empty({}, x.dtype(), x.device());
+    const Tensor input = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Nrm2, {{input}, {out}});
+    return out;
+}
+
 Tensor matvec(const Tensor& a, const Tensor& x) {
     require_matrix(a, "matvec", "a");
     require_vector(x, "matvec", "x");

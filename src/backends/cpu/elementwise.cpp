@@ -137,4 +137,34 @@ void sigmoid_f32(const float* x, float* out, std::int64_t n) {
     });
 }
 
+void log_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::log(value); });
+}
+
+void rsqrt_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return 1.0f / std::sqrt(value); });
+}
+
+void tanh_f32(const float* x, float* out, std::int64_t n) {
+    unary(x, out, n, [](float value) { return std::tanh(value); });
+}
+
+void minimum_f32(const float* a, const float* b, float* out, std::int64_t n) {
+    binary(a, b, out, n, [](float x, float y) {
+        return std::isnan(x) ? x : (std::isnan(y) ? y : std::fmin(x, y));
+    });
+}
+
+void maximum_f32(const float* a, const float* b, float* out, std::int64_t n) {
+    binary(a, b, out, n, [](float x, float y) {
+        return std::isnan(x) ? x : (std::isnan(y) ? y : std::fmax(x, y));
+    });
+}
+
+void clamp_f32(const float* x, float* out, std::int64_t n, float lower, float upper) {
+    unary(x, out, n, [lower, upper](float value) {
+        return std::isnan(value) ? value : std::fmin(std::fmax(value, lower), upper);
+    });
+}
+
 } // namespace mensurflow::cpu

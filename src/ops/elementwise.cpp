@@ -110,4 +110,34 @@ Tensor exp(const Tensor& x) { return unary_op(detail::OpId::Exp, x); }
 
 Tensor sigmoid(const Tensor& x) { return unary_op(detail::OpId::Sigmoid, x); }
 
+Tensor log(const Tensor& x) { return unary_op(detail::OpId::Log, x); }
+
+Tensor rsqrt(const Tensor& x) { return unary_op(detail::OpId::Rsqrt, x); }
+
+Tensor tanh(const Tensor& x) { return unary_op(detail::OpId::Tanh, x); }
+
+Tensor minimum(const Tensor& a, const Tensor& b) {
+    return binary_op(detail::OpId::Minimum, a, b);
+}
+
+Tensor maximum(const Tensor& a, const Tensor& b) {
+    return binary_op(detail::OpId::Maximum, a, b);
+}
+
+Tensor clamp(const Tensor& x, float lower, float upper) {
+    if (lower > upper) {
+        throw std::invalid_argument("clamp: lower bound must not exceed upper bound");
+    }
+    if (!x.defined()) {
+        throw std::invalid_argument("clamp: undefined tensor");
+    }
+    const Tensor input = x.contiguous();
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    detail::OpArgs args{{input}, {out}};
+    args.alpha = lower;
+    args.beta = upper;
+    detail::dispatch(detail::OpId::Clamp, args);
+    return out;
+}
+
 } // namespace mensurflow

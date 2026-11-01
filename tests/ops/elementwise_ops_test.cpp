@@ -471,6 +471,32 @@ void test_mixed_devices() {
                   "moved tensor works");
 }
 
+void test_added_cpu_ops() {
+    const Tensor x = Tensor::from_vector(std::vector<float>{-4.0f, -1.0f, 0.0f, 1.0f, 4.0f}, {5});
+    const Tensor y = Tensor::from_vector(std::vector<float>{-2.0f, -2.0f, 2.0f, 2.0f, 2.0f}, {5});
+    const auto values = x.to_vector<float>();
+    const auto logs = log(Tensor::from_vector(std::vector<float>{1.0f, 2.0f, 4.0f}, {3}))
+                          .to_vector<float>();
+    test::require(std::abs(logs[1] - std::log(2.0f)) < 1e-6f, "log");
+    test::require(std::abs(rsqrt(Tensor::from_vector(std::vector<float>{1.0f, 4.0f}, {2}))
+                               .to_vector<float>()[1] -
+                           0.5f) < 1e-6f,
+                  "rsqrt");
+    test::require(std::abs(tanh(x).to_vector<float>()[3] - std::tanh(1.0f)) < 1e-6f, "tanh");
+    test::require(minimum(x, y).to_vector<float>() ==
+                      std::vector<float>{-4.0f, -2.0f, 0.0f, 1.0f, 2.0f},
+                  "minimum");
+    test::require(maximum(x, y).to_vector<float>() ==
+                      std::vector<float>{-2.0f, -1.0f, 2.0f, 2.0f, 4.0f},
+                  "maximum");
+    test::require(clamp(x, -1.0f, 1.0f).to_vector<float>() ==
+                      std::vector<float>{-1.0f, -1.0f, 0.0f, 1.0f, 1.0f},
+                  "clamp");
+    test::require(values[0] == -4.0f, "input unchanged");
+    test::require_throws<std::invalid_argument>([&] { clamp(x, 2.0f, 1.0f); },
+                                                "invalid clamp bounds");
+}
+
 } // namespace
 
 int main() {
@@ -500,6 +526,7 @@ int main() {
         test_unary_special_values();
         test_unary_known_values();
         test_transcendental_known_values();
+        test_added_cpu_ops();
         test_mixed_devices();
     });
 }

@@ -17,6 +17,12 @@ Tensor mean(const Tensor& x);
 // propagate to the result; positive zero wins when the maximum values are both zero.
 Tensor max(const Tensor& x);
 
+// Reduces one axis and optionally retains it as a size-one dimension. Empty reduction axes are
+// invalid for mean and max; sum over an empty axis returns zeros.
+Tensor sum(const Tensor& x, int axis, bool keepdim = false);
+Tensor mean(const Tensor& x, int axis, bool keepdim = false);
+Tensor max(const Tensor& x, int axis, bool keepdim = false);
+
 // Returns the index of the largest element independently along the last axis. Ties select the
 // first index; a NaN selects its first index and propagates the NaN choice within that row.
 // The result has the input shape with its last dimension removed and dtype int64. Empty axes are

@@ -64,4 +64,72 @@ float max_f32(const float* x, std::int64_t n) {
     });
 }
 
+namespace {
+
+template <typename Reduce>
+void reduce_axis(const float* x, float* out, const std::int64_t* shape, std::int64_t rank,
+                 std::int64_t axis, Reduce reduce) {
+    std::int64_t outer = 1;
+    std::int64_t inner = 1;
+    for (std::int64_t i = 0; i < axis; ++i) {
+        outer *= shape[i];
+    }
+    for (std::int64_t i = axis + 1; i < rank; ++i) {
+        inner *= shape[i];
+    }
+    const std::int64_t width = shape[axis];
+    parallel_for(outer * inner, [=](std::int64_t begin, std::int64_t end) {
+        for (std::int64_t index = begin; index < end; ++index) {
+            const std::int64_t row = index / inner;
+            const std::int64_t column = index % inner;
+            out[index] = reduce(x + row * width * inner + column, width, inner);
+        }
+    });
+}
+
+} // namespace
+
+void sum_axis_f32(const float* x, float* out, const std::int64_t* shape, std::int64_t rank,
+                  std::int64_t axis) {
+    reduce_axis(x, out, shape, rank, axis, [](const float* start, std::int64_t width,
+                                              std::int64_t stride) {
+        double result = 0.0;
+        for (std::int64_t i = 0; i < width; ++i) {
+            result += start[i * stride];
+        }
+        return static_cast<float>(result);
+    });
+}
+
+void mean_axis_f32(const float* x, float* out, const std::int64_t* shape, std::int64_t rank,
+                   std::int64_t axis) {
+    reduce_axis(x, out, shape, rank, axis, [](const float* start, std::int64_t width,
+                                               std::int64_t stride) {
+        double result = 0.0;
+        for (std::int64_t i = 0; i < width; ++i) {
+            result += start[i * stride];
+        }
+        return static_cast<float>(result / static_cast<double>(width));
+    });
+}
+
+void max_axis_f32(const float* x, float* out, const std::int64_t* shape, std::int64_t rank,
+                  std::int64_t axis) {
+    reduce_axis(x, out, shape, rank, axis, [](const float* start, std::int64_t width,
+                                              std::int64_t stride) {
+        float result = start[0];
+        for (std::int64_t i = 1; i < width; ++i) {
+            const float value = start[i * stride];
+            if (std::isnan(value)) {
+                return value;
+            }
+            if (std::isnan(result)) {
+                return result;
+            }
+            result = std::fmax(result, value);
+        }
+        return result;
+    });
+}
+
 } // namespace mensurflow::cpu

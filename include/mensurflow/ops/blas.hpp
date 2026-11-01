@@ -15,6 +15,15 @@ namespace mensurflow {
 // (a runtime_error) if the device has no kernel for the dtype.
 Tensor dot(const Tensor& a, const Tensor& b);
 
+// Scales every element of a vector by alpha. The result is a new contiguous tensor.
+Tensor scal(float alpha, const Tensor& x);
+
+// Sum of absolute values of a vector. Empty inputs give zero.
+Tensor asum(const Tensor& x);
+
+// Euclidean norm of a vector. Empty inputs give zero.
+Tensor nrm2(const Tensor& x);
+
 // Matrix-vector product of a [M, K] and a [K] tensor, giving a new contiguous [M] tensor on the
 // same device. Both inputs must have the same dtype and device. An empty M gives an empty result;
 // K == 0 gives zeros. Only float32, and only on the CPU so far.

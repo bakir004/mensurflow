@@ -45,5 +45,12 @@ Tensor relu(const Tensor& x);   // x < 0 ? +0 : x; preserves NaNs and signed zer
 Tensor sqrt(const Tensor& x);   // sqrt(x); negatives -> NaN, preserves signed zeros
 Tensor exp(const Tensor& x);    // exp(x); overflow -> +inf, underflow may produce +0
 Tensor sigmoid(const Tensor& x); // stable logistic function; -inf -> 0, +inf -> 1
+Tensor log(const Tensor& x);    // natural logarithm
+Tensor rsqrt(const Tensor& x);  // reciprocal square root
+Tensor tanh(const Tensor& x);   // hyperbolic tangent
+
+Tensor minimum(const Tensor& a, const Tensor& b); // elementwise minimum
+Tensor maximum(const Tensor& a, const Tensor& b); // elementwise maximum
+Tensor clamp(const Tensor& x, float lower, float upper);
 
 } // namespace mensurflow

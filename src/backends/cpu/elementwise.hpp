@@ -49,5 +49,11 @@ void exp_f32(const float* x, float* out, std::int64_t n);
 
 // Numerically stable logistic function; -inf -> 0, +inf -> 1, NaN -> NaN.
 void sigmoid_f32(const float* x, float* out, std::int64_t n);
+void log_f32(const float* x, float* out, std::int64_t n);
+void rsqrt_f32(const float* x, float* out, std::int64_t n);
+void tanh_f32(const float* x, float* out, std::int64_t n);
+void minimum_f32(const float* a, const float* b, float* out, std::int64_t n);
+void maximum_f32(const float* a, const float* b, float* out, std::int64_t n);
+void clamp_f32(const float* x, float* out, std::int64_t n, float lower, float upper);
 
 } // namespace mensurflow::cpu

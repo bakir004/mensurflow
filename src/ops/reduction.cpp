@@ -32,6 +32,47 @@ Tensor mean(const Tensor& x) { return reduce(detail::OpId::Mean, x, false); }
 
 Tensor max(const Tensor& x) { return reduce(detail::OpId::Max, x, false); }
 
+Tensor reduce_axis(detail::OpId op, const Tensor& x, int axis, bool keepdim) {
+    if (!x.defined()) {
+        throw std::invalid_argument(std::string(detail::op_name(op)) + ": undefined tensor");
+    }
+    if (x.dim() == 0) {
+        throw std::invalid_argument(std::string(detail::op_name(op)) + ": input must have a dimension");
+    }
+    const int normalized_axis = axis < 0 ? axis + x.dim() : axis;
+    if (normalized_axis < 0 || normalized_axis >= x.dim()) {
+        throw std::invalid_argument(std::string(detail::op_name(op)) + ": axis out of range");
+    }
+    if (x.size(normalized_axis) == 0 && op != detail::OpId::AxisSum) {
+        throw std::invalid_argument(std::string(detail::op_name(op)) + ": axis is empty");
+    }
+    Shape output_shape = x.shape();
+    if (keepdim) {
+        output_shape[static_cast<std::size_t>(normalized_axis)] = 1;
+    } else {
+        output_shape.erase(output_shape.begin() + normalized_axis);
+    }
+    Tensor out = Tensor::empty(output_shape, x.dtype(), x.device());
+    const Tensor input = x.contiguous();
+    detail::OpArgs args{{input}, {out}};
+    args.axis = normalized_axis;
+    args.keepdim = keepdim;
+    detail::dispatch(op, args);
+    return out;
+}
+
+Tensor sum(const Tensor& x, int axis, bool keepdim) {
+    return reduce_axis(detail::OpId::AxisSum, x, axis, keepdim);
+}
+
+Tensor mean(const Tensor& x, int axis, bool keepdim) {
+    return reduce_axis(detail::OpId::AxisMean, x, axis, keepdim);
+}
+
+Tensor max(const Tensor& x, int axis, bool keepdim) {
+    return reduce_axis(detail::OpId::AxisMax, x, axis, keepdim);
+}
+
 Tensor argmax(const Tensor& x, int axis) {
     if (!x.defined()) {
         throw std::invalid_argument("argmax: undefined tensor");

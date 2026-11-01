@@ -58,6 +58,15 @@ void test_empty(Device device) {
     const Tensor none = Tensor::empty({0}, DType::F32, device);
     const Tensor result = dot(none, none);
     test::require(result.dim() == 0 && result.item<float>() == 0.0f, "empty dot is 0");
+    test::require(asum(none).item<float>() == 0.0f, "empty asum is 0");
+    test::require(nrm2(none).item<float>() == 0.0f, "empty nrm2 is 0");
+}
+
+void test_level_one(Device device) {
+    const Tensor x = Tensor::from_vector(std::vector<float>{-3, 4, -12}, {3}, device);
+    test::require(scal(2.0f, x).to_vector<float>() == std::vector<float>{-6, 8, -24}, "scal");
+    test::require(asum(x).item<float>() == 19.0f, "asum");
+    test::require(nrm2(x).item<float>() == 13.0f, "nrm2");
 }
 
 void test_views(Device device) {
@@ -131,6 +140,7 @@ int main() {
             test_matches_reference(device);
             test_known_values(device);
             test_empty(device);
+            test_level_one(device);
             test_views(device);
             test_errors(device);
         }

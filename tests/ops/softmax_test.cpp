@@ -99,7 +99,13 @@ void test_public(Device device) {
     test::require(!view.is_contiguous(), "softmax input view");
     const Tensor view_result = softmax(view, 1);
     test::require(view_result.shape() == (Shape{2, 2}), "softmax view shape");
-    test::require_throws<std::invalid_argument>([&] { softmax(input, 0); }, "non-last axis");
+    const auto column_result = softmax(input, 0).to_vector<float>();
+    for (std::int64_t column = 0; column < 3; ++column) {
+        test::require(test::close_f32(column_result[static_cast<std::size_t>(column)] +
+                                          column_result[static_cast<std::size_t>(3 + column)],
+                                      1.0f, 2e-6f),
+                      "softmax column sums to one");
+    }
     test::require_throws<std::invalid_argument>([&] { softmax(Tensor(), -1); }, "undefined input");
     test::require_throws<std::invalid_argument>(
         [&] { softmax(Tensor::empty({}, DType::F32, device)); }, "scalar input");

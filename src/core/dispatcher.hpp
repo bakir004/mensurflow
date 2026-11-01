@@ -16,6 +16,9 @@ namespace mensurflow::detail {
 
 enum class OpId {
     Dot,
+    Scal,
+    Asum,
+    Nrm2,
     Add,
     Sub,
     Mul,
@@ -29,11 +32,20 @@ enum class OpId {
     Sqrt,
     Exp,
     Sigmoid,
+    Log,
+    Rsqrt,
+    Tanh,
     Axpy,
+    Minimum,
+    Maximum,
+    Clamp,
     BiasAdd,
     Sum,
     Mean,
     Max,
+    AxisSum,
+    AxisMean,
+    AxisMax,
     Softmax,
     Argmax
 };
@@ -56,6 +68,9 @@ struct OpArgs {
     std::vector<Tensor> inputs;
     std::vector<Tensor> outputs;
     float alpha = 1.0f; // Scalar multiplier for axpy; unused by other operations.
+    float beta = 1.0f;  // Upper bound for clamp; unused by other operations.
+    int axis = -1;      // Reduction/softmax axis; unused by other operations.
+    bool keepdim = false;
 };
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);

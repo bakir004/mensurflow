@@ -9,6 +9,12 @@ const char* op_name(OpId op) {
     switch (op) {
     case OpId::Dot:
         return "dot";
+    case OpId::Scal:
+        return "scal";
+    case OpId::Asum:
+        return "asum";
+    case OpId::Nrm2:
+        return "nrm2";
     case OpId::Add:
         return "add";
     case OpId::Sub:
@@ -35,8 +41,20 @@ const char* op_name(OpId op) {
         return "exp";
     case OpId::Sigmoid:
         return "sigmoid";
+    case OpId::Log:
+        return "log";
+    case OpId::Rsqrt:
+        return "rsqrt";
+    case OpId::Tanh:
+        return "tanh";
     case OpId::Axpy:
         return "axpy";
+    case OpId::Minimum:
+        return "minimum";
+    case OpId::Maximum:
+        return "maximum";
+    case OpId::Clamp:
+        return "clamp";
     case OpId::BiasAdd:
         return "bias_add";
     case OpId::Sum:
@@ -45,6 +63,12 @@ const char* op_name(OpId op) {
         return "mean";
     case OpId::Max:
         return "max";
+    case OpId::AxisSum:
+        return "sum_axis";
+    case OpId::AxisMean:
+        return "mean_axis";
+    case OpId::AxisMax:
+        return "max_axis";
     case OpId::Softmax:
         return "softmax";
     case OpId::Argmax:
