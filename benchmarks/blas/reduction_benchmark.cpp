@@ -32,10 +32,14 @@ int main() {
     };
     const std::int64_t sizes[] = {1, 16, 32768, 32769, 100000, 1000003, 10000000};
 
+    const int configured_threads = cpu::max_threads();
+    const std::vector<int> thread_counts = bench::thread_counts(configured_threads);
     bench::print_header(
         "CPU full-tensor reductions (float32)", config,
         {"direct kernels only; values are validated before timing",
-         "rate is elements per second; parallel uses the configured OpenMP thread count"});
+         "rate is elements per second; parallel uses the configured OpenMP thread count",
+         "thread-count sweep uses the configured maximum of " +
+             std::to_string(configured_threads)});
 
     bench::Table table("elements/s", 1e9, "vs sequential", "");
     for (const Reduction& reduction : reductions) {
@@ -47,18 +51,30 @@ int main() {
             float result = 0.0f;
             auto run_serial = [&] { result = reduction.serial(values.data(), n); };
             auto run_parallel = [&] { result = reduction.parallel(values.data(), n); };
-            run_parallel();
-            bench::check_value(expected, result, 2e-4, std::string(reduction.name) + " parallel",
-                               std::abs(static_cast<double>(expected)) + 1.0);
             const bench::Sample serial =
                 bench::measure(config, run_serial, [&] { return static_cast<double>(result); });
-            const bench::Sample parallel =
-                bench::measure(config, run_parallel, [&] { return static_cast<double>(result); });
             const std::string label = std::to_string(n);
-            table.row(label, "parallel", std::to_string(cpu::max_threads()), parallel,
-                      static_cast<double>(n), &serial);
             table.row(label, "sequential", "-", serial, static_cast<double>(n), &serial);
+            for (int threads : thread_counts) {
+                cpu::set_max_threads(threads);
+                run_parallel();
+                bench::check_value(expected, result, 2e-4,
+                                   std::string(reduction.name) + " parallel (" +
+                                       std::to_string(threads) + " threads)",
+                                   std::abs(static_cast<double>(expected)) + 1.0);
+                const float first = result;
+                run_parallel();
+                bench::check_value(first, result, 2e-4,
+                                   std::string(reduction.name) + " repeat (" +
+                                       std::to_string(threads) + " threads)",
+                                   std::abs(static_cast<double>(expected)) + 1.0);
+                const bench::Sample parallel =
+                    bench::measure(config, run_parallel, [&] { return static_cast<double>(result); });
+                table.row(label, "parallel", std::to_string(threads), parallel,
+                          static_cast<double>(n), &serial);
+            }
             table.blank();
         }
     }
+    cpu::set_max_threads(configured_threads);
 }

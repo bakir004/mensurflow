@@ -28,6 +28,7 @@ tried yet). Results are identical to the sequential ones, and `tests/ops/scalar_
 | Executable | Question | Source |
 |---|---|---|
 | `cpu_parallel_benchmark` | scalar vs sequential vs parallel for every elementwise op and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
+| `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
 | `matmul_benchmark` | the same for matrix multiplication, in GFLOP/s | `benchmarks/blas/matmul_benchmark.cpp` |
 | `dot_benchmark` | `dot` on every device, the cost of one API call, API vs direct kernel | `benchmarks/blas/dot_benchmark.cpp` |
 | `elementwise_benchmark` | `add` and `mul` on every device through the public API | `benchmarks/elementwise_benchmark.cpp` |

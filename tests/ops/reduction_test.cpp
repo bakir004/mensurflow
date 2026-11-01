@@ -1,4 +1,5 @@
 #include "mensurflow/mensurflow.hpp"
+#include "backends/cpu/parallel.hpp"
 #include "backends/cpu/reduction.hpp"
 #include "backends/cpu/sequential_reduction.hpp"
 #include "reference/reduction.hpp"
@@ -105,6 +106,24 @@ void test_kernels() {
                   "parallel and sequential max");
 }
 
+void test_thread_stability() {
+    const int original_threads = cpu::max_threads();
+    const auto values = make_input(100003);
+    const auto n = static_cast<std::int64_t>(values.size());
+    const float expected = sequential::sum_f32(values.data(), n);
+
+    for (int threads : {1, original_threads}) {
+        cpu::set_max_threads(threads);
+        const float first = cpu::sum_f32(values.data(), n);
+        const float second = cpu::sum_f32(values.data(), n);
+        test::require(test::close_f32(first, expected, 2e-4f),
+                      "sum remains within tolerance across thread counts");
+        test::require(test::close_f32(second, first, 2e-4f),
+                      "sum repeats consistently for a thread count");
+    }
+    cpu::set_max_threads(original_threads);
+}
+
 } // namespace
 
 int main() {
@@ -115,5 +134,6 @@ int main() {
             test_special_values(device);
         }
         test_kernels();
+        test_thread_stability();
     });
 }
