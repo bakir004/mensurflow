@@ -50,6 +50,10 @@ float max_f32(const float* x, std::int64_t n) {
         if (std::isnan(result)) {
             return result;
         }
+        if (result == 0.0f && x[i] == 0.0f) {
+            result = 0.0f;
+            continue;
+        }
         result = std::fmax(result, x[i]);
     }
     return result;

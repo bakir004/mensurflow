@@ -14,7 +14,7 @@ Tensor sum(const Tensor& x);
 Tensor mean(const Tensor& x);
 
 // Returns the maximum element as a scalar tensor. Empty tensors are invalid. NaN inputs
-// propagate to the result; equal values follow std::fmax semantics.
+// propagate to the result; positive zero wins when the maximum values are both zero.
 Tensor max(const Tensor& x);
 
 } // namespace mensurflow

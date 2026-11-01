@@ -139,6 +139,10 @@ float parallel_max(std::int64_t n, Body&& body, std::int64_t grain = default_gra
             if (std::isnan(result)) {
                 return result;
             }
+            if (result == 0.0f && value == 0.0f) {
+                result = 0.0f;
+                continue;
+            }
             result = std::fmax(result, value);
         }
         return result;
