@@ -23,11 +23,15 @@ Tensor asum(const Tensor& x);
 
 // Euclidean norm of a vector. Empty inputs give zero.
 Tensor nrm2(const Tensor& x);
+Tensor copy(const Tensor& x);
 
 // Matrix-vector product of a [M, K] and a [K] tensor, giving a new contiguous [M] tensor on the
 // same device. Both inputs must have the same dtype and device. An empty M gives an empty result;
 // K == 0 gives zeros. Only float32, and only on the CPU so far.
 Tensor matvec(const Tensor& a, const Tensor& x);
+
+Tensor gemv(const Tensor& a, const Tensor& x, float alpha = 1.0f,
+            const Tensor* y = nullptr, float beta = 0.0f, bool transpose_a = false);
 
 // Matrix product of a [M, K] and a [K, N] tensor, giving a new contiguous [M, N] tensor on the same
 // device. Both inputs must have the same dtype and device. Transposed or sliced views are accepted
@@ -35,5 +39,11 @@ Tensor matvec(const Tensor& a, const Tensor& x);
 // Only float32, and only on the CPU so far: a GPU device reports NotImplemented.
 // Throws invalid_argument for non-2-D inputs, mismatched inner dimensions, dtypes or devices.
 Tensor matmul(const Tensor& a, const Tensor& b);
+
+// General matrix multiply. Computes alpha * op(a) * op(b) + beta * c, where c is optional and
+// defaults to zero. The result is always a new contiguous tensor.
+Tensor gemm(const Tensor& a, const Tensor& b, float alpha = 1.0f,
+            const Tensor* c = nullptr, float beta = 0.0f, bool transpose_a = false,
+            bool transpose_b = false);
 
 } // namespace mensurflow

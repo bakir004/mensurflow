@@ -68,6 +68,15 @@ Tensor unary_op(detail::OpId op, const Tensor& x) {
                         values[i] = (1.0f - tanh_value * tanh_value) * upstream[i];
                         break;
                     }
+                    case detail::OpId::Sin:
+                        values[i] = std::cos(value) * upstream[i];
+                        break;
+                    case detail::OpId::Cos:
+                        values[i] = -std::sin(value) * upstream[i];
+                        break;
+                    case detail::OpId::Reciprocal:
+                        values[i] = -upstream[i] / (value * value);
+                        break;
                     default:
                         throw std::logic_error("autograd: unsupported unary operation");
                     }
@@ -138,6 +147,9 @@ Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha 
                 } else if (op == detail::OpId::Div) {
                     grad_a = div(gradient, b);
                     grad_b = neg(div(mul(gradient, a), square(b)));
+                } else if (op == detail::OpId::Pow) {
+                    grad_a = mul(gradient, mul(b, pow(a, sub(b, Tensor::ones_like(b)))));
+                    grad_b = mul(gradient, mul(pow(a, b), log(a)));
                 } else if (op == detail::OpId::Axpy) {
                     grad_a = mul(gradient, Tensor::full({}, alpha, DType::F32, a.device()));
                     grad_b = gradient;
@@ -167,6 +179,8 @@ Tensor mul(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Mu
 
 Tensor div(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Div, a, b); }
 
+Tensor pow(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Pow, a, b); }
+
 Tensor axpy(float alpha, const Tensor& x, const Tensor& y) {
     return binary_op(detail::OpId::Axpy, x, y, alpha);
 }
@@ -184,6 +198,27 @@ Tensor bias_add(const Tensor& x, const Tensor& bias) {
     const Tensor packed_bias = bias.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
     detail::dispatch(detail::OpId::BiasAdd, {{input, packed_bias}, {out}});
+    if (x.requires_grad() || bias.requires_grad()) {
+        detail::AutogradAccess::record(
+            out, {x, bias}, [x, bias](const Tensor& gradient) {
+                detail::autograd::NoGradGuard guard;
+                if (x.requires_grad()) {
+                    detail::autograd::propagate(x, gradient);
+                }
+                if (bias.requires_grad()) {
+                    const auto values = gradient.to_vector<float>();
+                    std::vector<float> reduced(static_cast<std::size_t>(bias.numel()), 0.0f);
+                    for (std::int64_t row = 0; row < x.size(0); ++row) {
+                        for (std::int64_t feature = 0; feature < x.size(1); ++feature) {
+                            reduced[static_cast<std::size_t>(feature)] +=
+                                values[static_cast<std::size_t>(row * x.size(1) + feature)];
+                        }
+                    }
+                    detail::autograd::propagate(
+                        bias, Tensor::from_vector(reduced, bias.shape(), bias.device()));
+                }
+            });
+    }
     return out;
 }
 
@@ -206,6 +241,12 @@ Tensor log(const Tensor& x) { return unary_op(detail::OpId::Log, x); }
 Tensor rsqrt(const Tensor& x) { return unary_op(detail::OpId::Rsqrt, x); }
 
 Tensor tanh(const Tensor& x) { return unary_op(detail::OpId::Tanh, x); }
+
+Tensor sin(const Tensor& x) { return unary_op(detail::OpId::Sin, x); }
+
+Tensor cos(const Tensor& x) { return unary_op(detail::OpId::Cos, x); }
+
+Tensor reciprocal(const Tensor& x) { return unary_op(detail::OpId::Reciprocal, x); }
 
 Tensor minimum(const Tensor& a, const Tensor& b) {
     return binary_op(detail::OpId::Minimum, a, b);

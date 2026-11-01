@@ -42,6 +42,7 @@ float max_f32(const float* x, std::int64_t n) {
     if (n <= 0) {
         throw std::invalid_argument(n == 0 ? "max: empty input" : "max: negative length");
     }
+
     if (x == nullptr) {
         throw std::invalid_argument("max: null pointer");
     }
@@ -62,6 +63,28 @@ float max_f32(const float* x, std::int64_t n) {
         }
         return result;
     });
+}
+
+float min_f32(const float* x, std::int64_t n) {
+    if (n <= 0) {
+        throw std::invalid_argument(n == 0 ? "min: empty input" : "min: negative length");
+    }
+    if (x == nullptr) throw std::invalid_argument("min: null pointer");
+    float result = x[0];
+    for (std::int64_t i = 1; i < n; ++i) {
+        if (std::isnan(x[i])) return x[i];
+        if (std::isnan(result)) return result;
+        result = std::fmin(result, x[i]);
+    }
+    return result;
+}
+
+float prod_f32(const float* x, std::int64_t n) {
+    if (n < 0) throw std::invalid_argument("prod: negative length");
+    if (n > 0 && x == nullptr) throw std::invalid_argument("prod: null pointer");
+    double result = 1.0;
+    for (std::int64_t i = 0; i < n; ++i) result *= x[i];
+    return static_cast<float>(result);
 }
 
 namespace {
@@ -129,6 +152,39 @@ void max_axis_f32(const float* x, float* out, const std::int64_t* shape, std::in
             result = std::fmax(result, value);
         }
         return result;
+    });
+}
+
+void min_axis_f32(const float* x, float* out, const std::int64_t* shape, std::int64_t rank,
+                  std::int64_t axis) {
+    reduce_axis(x, out, shape, rank, axis, [](const float* start, std::int64_t width,
+                                              std::int64_t stride) {
+        float result = start[0];
+        for (std::int64_t i = 1; i < width; ++i) {
+            const float value = start[i * stride];
+            if (std::isnan(value)) return value;
+            if (std::isnan(result)) return result;
+            result = std::fmin(result, value);
+        }
+        return result;
+    });
+}
+
+void prod_axis_f32(const float* x, float* out, const std::int64_t* shape, std::int64_t rank,
+                   std::int64_t axis) {
+    if (shape[axis] == 0) {
+        std::int64_t output = 1;
+        for (std::int64_t i = 0; i < rank; ++i) {
+            if (i != axis) output *= shape[i];
+        }
+        for (std::int64_t i = 0; i < output; ++i) out[i] = 1.0f;
+        return;
+    }
+    reduce_axis(x, out, shape, rank, axis, [](const float* start, std::int64_t width,
+                                              std::int64_t stride) {
+        double result = 1.0;
+        for (std::int64_t i = 0; i < width; ++i) result *= start[i * stride];
+        return static_cast<float>(result);
     });
 }
 

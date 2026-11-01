@@ -44,10 +44,10 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
 |`matvec`|OpenMP, double accumulation per row|—|—|—|
-|`sum`, `mean`, `max`|OpenMP, float32; full-tensor reductions|—|—|—|
-|`softmax`|OpenMP, stable last-axis implementation|—|—|—|
+|`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|—|
+|`softmax`|OpenMP, stable arbitrary-axis implementation|—|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|—|
-|`matmul`|blocked, rows split across threads|—|—|—|
+|`matmul`|blocked, rows split across threads; CPU autograd backward|—|—|—|
 
 CUDA was tested on an RTX 3060; ROCm and Metal have never been built on real hardware. The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
@@ -72,10 +72,10 @@ and small fully connected networks with externally supplied weights.
 
 * \[x] `dot(x, y)` — vector dot product.
 * \[x] `matvec(A, x)` — matrix–vector multiplication (CPU, float32).
-* \[x] `matmul(A, B)` / GEMM — `\[M,K] × \[K,N] → \[M,N]`. Basic form done (CPU, float32); the
-optional `alpha`, `beta`, and transpose flags are not.
-* \[ ] Optional GEMM parameters: `alpha`, `beta`, and transpose flags, introduced
-after basic multiplication works.
+* \[x] `gemv` — matrix–vector multiply with alpha/beta scaling and transpose support.
+* \[x] `matmul(A, B)` / GEMM — `\[M,K] × \[K,N] → \[M,N]`, including CPU backward.
+* \[x] `gemm` — separate CPU API with `alpha`, `beta`, and transpose flags.
+* \[x] `copy` — contiguous out-of-place tensor copy.
 
 GEMM is the most important performance kernel for dense ML. Start with a simple
 CPU reference, then blocked/parallel CPU and tiled GPU implementations. Test
@@ -86,11 +86,11 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[x] `sum(x)` — full-tensor summation; an empty tensor returns zero (CPU, float32).
 * \[x] `mean(x)` — full-tensor average; empty tensors are invalid (CPU, float32).
 * \[x] `max(x)` — full-tensor maximum; empty tensors are invalid and NaNs propagate (CPU, float32).
+* \[x] `min(x)` and `prod(x)` — full-tensor minimum/product reductions.
 * \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
-* \[x] `softmax(x, axis)` — normalized exponentials; subtract the axis maximum
-before exponentiation. Last-axis implementation done (CPU, float32); other axes are not yet
-supported.
+* \[x] `softmax(x, axis)` — normalized exponentials with arbitrary-axis CPU support.
+* \[x] `mse_loss`, `log_softmax`, and index-target `cross_entropy` with CPU backward.
 
 ### Tensor plumbing
 
@@ -111,12 +111,11 @@ index and the first NaN selects its index (CPU, float32 input, int64 output).
 softmax for multiclass classification. Run a two-layer ReLU network and compare
 with a reference. This supports inference, not training by itself.
 
-**Current project status:** the CPU dense-inference P0 is complete for the
-implemented float32 API, including tensor construction, matvec, matmul,
-reductions, softmax, and argmax. Optional GEMM parameters (`alpha`, `beta`, and
-transpose flags) remain intentionally deferred. The broader vendor-kernel P0
-table above is not a claim that every backend or every training primitive is
-complete.
+**Current project status:** the CPU float32 path now includes reverse-mode
+autograd for the implemented elementwise, reduction, bias, matrix multiply,
+and loss operations, plus SGD and a runnable MLP example. GPU backends,
+backend-independent correctness infrastructure, and the broader vendor-kernel
+coverage table remain separate work.
 
 ## P1 — Broader numerical and classical ML support
 
@@ -126,13 +125,13 @@ Implement these after P0 works end to end.
 
 * \[x] `abs` and `square` — absolute value and squaring (CPU, float32).
 * \[x] `exp` and `sqrt` — exponential and square root (CPU, float32).
-* \[ ] `log` and `rsqrt`.
-* \[ ] `minimum`, `maximum`, and `clamp`.
+* \[x] `log` and `rsqrt`.
+* \[x] `minimum`, `maximum`, and `clamp`.
 * \[ ] `equal`, `less`, `greater`, and related comparisons producing boolean masks.
 * \[ ] `where(mask, a, b)` — conditional element selection.
-* \[ ] `tanh` — activation used by older networks and recurrent models.
-* \[ ] `pow` and `reciprocal`.
-* \[ ] `sin` and `cos` — rotary and sinusoidal position encodings.
+* \[x] `tanh` — activation used by older networks and recurrent models.
+* \[x] `pow` and `reciprocal`.
+* \[x] `sin` and `cos` — rotary and sinusoidal position encodings.
 * \[ ] `erf` — exact GELU.
 * \[ ] `floor`, `ceil`, `round`, `trunc`, and `sign`.
 * \[ ] `log1p` and `expm1` — accurate near zero.
@@ -154,8 +153,7 @@ integer masks and unpacking int4 weights.
 
 ### Additional reductions and linear algebra
 
-* \[ ] `min`, `argmin`, and `sum\_of\_squares`.
-* \[ ] `prod`, `any`, and `all`.
+* \[x] `min` and `prod`; `argmin`, `sum\_of\_squares`, `any`, and `all` remain.
 * \[ ] `cumsum` along an axis — top-p sampling and state-space models.
 * \[ ] `logsumexp` as a standalone reduction.
 * \[ ] `sort` and `argsort`, with defined tie and stability rules.
@@ -201,10 +199,10 @@ of a tensor, e.g. KV-cache updates.
 
 ### Losses and evaluation
 
-* \[ ] Mean squared error (MSE).
+* \[x] Mean squared error (MSE).
 * \[ ] Binary cross-entropy **with logits**, using a stable formula.
-* \[ ] `log\_softmax`, using stable log-sum-exp.
-* \[ ] Multiclass cross-entropy **with logits**, with integer class labels.
+* \[x] `log\_softmax`, using stable log-sum-exp.
+* \[x] Multiclass cross-entropy **with logits**, with integer class labels.
 * \[ ] Negative log-likelihood loss on log-probabilities.
 * \[ ] Huber / smooth-L1 loss and KL divergence.
 * \[ ] Label smoothing for cross-entropy.
@@ -221,11 +219,11 @@ graphs if a full automatic differentiation system would exceed scope.
 
 ### Backward operations
 
-* \[ ] Elementwise gradients for arithmetic, ReLU, sigmoid, and tanh.
-* \[ ] GEMM gradients using transposed GEMMs.
-* \[ ] Bias gradients and reduction gradients using sum/broadcast.
-* \[ ] MSE, binary cross-entropy-with-logits, and cross-entropy-with-logits gradients.
-* \[ ] Softmax/log-softmax backward when required independently of fused losses.
+* \[x] Elementwise gradients for arithmetic, ReLU, sigmoid, and tanh.
+* \[x] GEMM gradients using transposed GEMMs.
+* \[x] Bias gradients and reduction gradients using sum/broadcast.
+* \[x] MSE and cross-entropy-with-logits gradients.
+* \[x] Softmax/log-softmax backward when required independently of fused losses.
 * \[ ] `sum\_to\_shape` — reduce broadcasted gradients back to an input's shape.
 * \[ ] Gradient accumulation for parameters used by multiple graph branches.
 * \[ ] Scatter-add or equivalent accumulation for gather/indexing gradients;
@@ -239,7 +237,7 @@ kernel. For example, GEMM backward can dispatch two existing GEMM operations.
 * \[ ] Seeded uniform and normal random initialization.
 * \[ ] `randperm` and Bernoulli sampling — data shuffling and dropout masks.
 * \[ ] Xavier/He initialization built from random generation and scaling.
-* \[ ] SGD parameter update.
+* \[x] SGD parameter update.
 * \[ ] Optional momentum SGD, followed by Adam with optimizer state and bias
 correction.
 * \[ ] AdamW — Adam with decoupled weight decay; the usual optimizer for

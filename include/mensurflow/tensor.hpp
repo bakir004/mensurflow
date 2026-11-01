@@ -97,6 +97,7 @@ class Tensor {
     Tensor grad() const;
     bool has_grad() const;
     void zero_grad();
+    void copy_from(const Tensor& source);
 
     // Starts reverse-mode automatic differentiation from a scalar output.
     void backward() const;

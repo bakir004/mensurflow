@@ -18,6 +18,7 @@ void mul_f32(const float* a, const float* b, float* out, std::int64_t n);
 
 // out[i] = a[i] / b[i]
 void div_f32(const float* a, const float* b, float* out, std::int64_t n);
+void pow_f32(const float* a, const float* b, float* out, std::int64_t n);
 
 // out[i] = fma(alpha, x[i], y[i]), with a single float32 rounding. out may alias x or y.
 void axpy_f32(float alpha, const float* x, const float* y, float* out, std::int64_t n);
@@ -52,6 +53,9 @@ void sigmoid_f32(const float* x, float* out, std::int64_t n);
 void log_f32(const float* x, float* out, std::int64_t n);
 void rsqrt_f32(const float* x, float* out, std::int64_t n);
 void tanh_f32(const float* x, float* out, std::int64_t n);
+void sin_f32(const float* x, float* out, std::int64_t n);
+void cos_f32(const float* x, float* out, std::int64_t n);
+void reciprocal_f32(const float* x, float* out, std::int64_t n);
 void minimum_f32(const float* a, const float* b, float* out, std::int64_t n);
 void maximum_f32(const float* a, const float* b, float* out, std::int64_t n);
 void clamp_f32(const float* x, float* out, std::int64_t n, float lower, float upper);

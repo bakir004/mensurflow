@@ -96,4 +96,31 @@ void matvec_f32(const float* a, const float* x, float* y, std::int64_t m, std::i
         grain, 1);
 }
 
+void gemv_f32(const float* a, const float* x, float* y, std::int64_t rows, std::int64_t cols,
+              float alpha, float beta, const float* initial, bool transpose) {
+    const std::int64_t output = transpose ? cols : rows;
+    const std::int64_t input = transpose ? rows : cols;
+    if (rows < 0 || cols < 0 || output < 0 || input < 0) {
+        throw std::invalid_argument("gemv: negative dimension");
+    }
+    if (output == 0) {
+        return;
+    }
+    if (y == nullptr || (input > 0 && (a == nullptr || x == nullptr)) ||
+        (beta != 0.0f && initial == nullptr)) {
+        throw std::invalid_argument("gemv: null pointer");
+    }
+    parallel_for(output, [=](std::int64_t begin, std::int64_t end) {
+        for (std::int64_t i = begin; i < end; ++i) {
+            double total = 0.0;
+            for (std::int64_t j = 0; j < input; ++j) {
+                const float value = transpose ? a[j * cols + i] : a[i * cols + j];
+                total += static_cast<double>(value) * static_cast<double>(x[j]);
+            }
+            y[i] = static_cast<float>(alpha * total +
+                                      (beta == 0.0f ? 0.0 : beta * initial[i]));
+        }
+    });
+}
+
 } // namespace mensurflow::cpu

@@ -233,6 +233,19 @@ void Tensor::zero_grad() {
     }
 }
 
+void Tensor::copy_from(const Tensor& source) {
+    require_defined();
+    source.require_defined();
+    if (shape_ != source.shape_ || dtype_ != source.dtype_ || device() != source.device()) {
+        throw std::invalid_argument("copy_from: tensors must have matching shape, dtype, and device");
+    }
+    const Tensor packed = source.contiguous();
+    std::vector<std::byte> bytes(packed.nbytes());
+    packed.copy_to_host(bytes.data());
+    storage_->copy_from_host(static_cast<std::size_t>(offset_) * itemsize(), bytes.data(),
+                             bytes.size());
+}
+
 void Tensor::backward() const {
     require_defined();
     detail::autograd::backward(*this);

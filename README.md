@@ -16,8 +16,8 @@ is not yet implemented.
 | ROCm backend | Optional; partial and hardware validation pending |
 | Metal backend | Optional; partial and hardware validation pending |
 | Vulkan backend | Planned |
-| Graph runtime | Planned |
-| Autograd and training | Planned |
+| Graph runtime | Partial; CPU reverse-mode autograd |
+| Autograd and training | CPU float32 training path implemented |
 | Mixed precision | Planned |
 
 The current implementation is primarily a float32 tensor library. GPU support
@@ -123,17 +123,34 @@ out-of-place and inputs are not modified.
 
 - `dot`
 - `matvec`
+- `gemv`
 - `matmul`
 - `softmax`
 - `argmax`
 - `axpy`
 - `bias_add`
+- `gemm`
+- `copy`
 
 ### Reductions
 
 - `sum` — full-tensor sum; an empty tensor returns zero
 - `mean` — full-tensor arithmetic mean; empty tensors are invalid
 - `max` — full-tensor maximum; empty tensors are invalid
+- `min` — full-tensor minimum; empty tensors are invalid
+- `prod` — full-tensor product; empty tensors return one
+- Axis reductions support `sum`, `mean`, and `max` with `keepdim`
+
+### Training (CPU float32)
+
+- Reverse-mode autograd with `requires_grad`, `grad`, `zero_grad`, and `backward`
+- Differentiable elementwise operations, reductions, `matmul`, and `bias_add`
+- `mse_loss`, `log_softmax`, and `cross_entropy`
+- SGD with optional momentum and weight decay
+- General `gemm` with scaling and transpose flags
+
+The training path is currently CPU-only. GPU backends do not yet register the
+autograd, loss, or optimizer operations.
 
 ### Elementwise operations
 
@@ -148,6 +165,8 @@ out-of-place and inputs are not modified.
 - `sqrt`
 - `exp`
 - `sigmoid`
+- `log`, `rsqrt`, `tanh`, `sin`, `cos`, and `reciprocal`
+- `pow`, `minimum`, and `maximum`
 
 `matvec` and `matmul` currently have CPU implementations only. Unsupported backend and
 operation combinations throw `NotImplemented`; they do not silently fall back
@@ -246,6 +265,16 @@ Build the benchmark targets with:
 ```powershell
 cmake --build build-release --config Release
 ```
+
+Run the end-to-end training example with:
+
+```powershell
+cmake --build build-release --config Release --target mlp_xor
+.\build-release\Release\mlp_xor.exe
+```
+
+Use Release builds for meaningful timings. Compare benchmark runs using the
+same machine, compiler, build type, thread count, and tensor shapes.
 
 Benchmark results and instructions are documented in
 [`docs/benchmarks/README.md`](docs/benchmarks/README.md).

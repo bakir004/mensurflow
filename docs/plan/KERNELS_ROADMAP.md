@@ -204,6 +204,12 @@ seed — makes cross-backend testing much easier.
 Ordered so every step unlocks something you can actually run.
 
 ### Milestone 1 — "train an MLP on MNIST" (all P0)
+
+The CPU reference implementation now covers every operation in the P0 rows
+above: BLAS-1 copy/scal/axpy/dot, GEMV and GEMM variants, P0 unary and binary
+math, full and axis reductions, stable softmax/log-softmax and losses, bias
+gradients, SGD, contiguous copies, and transpose views. GPU backend
+registration and backend-specific performance work remain separate.
 1. `fill`, `copy`, strided copy/`contiguous`
 2. Unary + binary elementwise (contiguous, then broadcasting)
 3. `scal`, `axpy` (done)

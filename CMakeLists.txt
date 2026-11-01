@@ -44,6 +44,8 @@ add_library(mensurflow
     src/ops/elementwise.cpp
     src/ops/reduction.cpp
     src/ops/softmax.cpp
+    src/ops/loss.cpp
+    src/optim.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/blas.cpp
     src/backends/cpu/argmax.cpp
@@ -162,6 +164,7 @@ mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
 mensurflow_add_test(softmax_test tests/ops/softmax_test.cpp)
 mensurflow_add_test(argmax_test tests/ops/argmax_test.cpp)
 mensurflow_add_test(reduction_test tests/ops/reduction_test.cpp)
+mensurflow_add_test(p0_extended_test tests/ops/p0_extended_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -184,3 +187,6 @@ mensurflow_add_benchmark(softmax_benchmark benchmarks/blas/softmax_benchmark.cpp
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
+
+add_executable(mlp_xor examples/mlp_xor.cpp)
+target_link_libraries(mlp_xor PRIVATE mensurflow)

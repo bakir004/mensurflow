@@ -12,6 +12,9 @@ float dot_f32(const float* x, const float* y, std::int64_t n);
 void scal_f32(float alpha, const float* x, float* out, std::int64_t n);
 float asum_f32(const float* x, std::int64_t n);
 float nrm2_f32(const float* x, std::int64_t n);
+void gemv_f32(const float* a, const float* x, float* y, std::int64_t rows,
+              std::int64_t cols, float alpha, float beta, const float* initial,
+              bool transpose);
 
 // y[i] = sum_j a[i,j] * x[j], accumulated in double and rounded to float.
 void matvec_f32(const float* a, const float* x, float* y, std::int64_t m, std::int64_t k);

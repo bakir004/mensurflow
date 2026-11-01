@@ -19,11 +19,14 @@ enum class OpId {
     Scal,
     Asum,
     Nrm2,
+    Copy,
     Add,
     Sub,
     Mul,
     Div,
+    Pow,
     Matvec,
+    Gemv,
     Matmul,
     Neg,
     Abs,
@@ -35,6 +38,9 @@ enum class OpId {
     Log,
     Rsqrt,
     Tanh,
+    Sin,
+    Cos,
+    Reciprocal,
     Axpy,
     Minimum,
     Maximum,
@@ -43,9 +49,13 @@ enum class OpId {
     Sum,
     Mean,
     Max,
+    Min,
+    Prod,
     AxisSum,
     AxisMean,
     AxisMax,
+    AxisMin,
+    AxisProd,
     Softmax,
     Argmax
 };
@@ -71,6 +81,7 @@ struct OpArgs {
     float beta = 1.0f;  // Upper bound for clamp; unused by other operations.
     int axis = -1;      // Reduction/softmax axis; unused by other operations.
     bool keepdim = false;
+    bool transpose = false;
 };
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);
