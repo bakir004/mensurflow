@@ -169,6 +169,10 @@ links the harness and gives it the include paths for `src/` and `tests/reference
 - An AVX2 variant (intrinsics in their own file, compiled with `-mavx2 -mfma` for that file only,
   called only when `bench::avx2_supported()`) and an `omp simd` variant: the harness is ready for
   them; no kernel has one yet.
-- The `/Qvec-` flag for the scalar file on MSVC is untested.
-- Results in BENCHMARKS.md were taken before the scalar baseline and the min/max/cpu-wall columns
-  existed; they show sequential vs parallel only.
+- The scalar baseline does not work on MSVC. Tried with MSVC 19.51 (Visual Studio Build Tools
+  2026): `cl` ignores `/Qvec-` (`warning D9002: ignoring unknown option '/Qvec-'`), so `scalar.cpp`
+  is auto-vectorized and its rows match `sequential` (see Machine 2 in BENCHMARKS.md). MSVC needs
+  another way to turn auto-vectorization off for that file.
+- Results in BENCHMARKS.md for Machine 1, Machine 3 and the laptop's matrix multiplication were
+  taken before the scalar baseline and the min/max/cpu-wall columns existed; they show sequential
+  vs parallel only. Machine 2 uses the new format.
