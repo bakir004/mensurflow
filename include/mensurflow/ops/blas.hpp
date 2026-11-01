@@ -15,6 +15,11 @@ namespace mensurflow {
 // (a runtime_error) if the device has no kernel for the dtype.
 Tensor dot(const Tensor& a, const Tensor& b);
 
+// Matrix-vector product of a [M, K] and a [K] tensor, giving a new contiguous [M] tensor on the
+// same device. Both inputs must have the same dtype and device. An empty M gives an empty result;
+// K == 0 gives zeros. Only float32, and only on the CPU so far.
+Tensor matvec(const Tensor& a, const Tensor& x);
+
 // Matrix product of a [M, K] and a [K, N] tensor, giving a new contiguous [M, N] tensor on the same
 // device. Both inputs must have the same dtype and device. Transposed or sliced views are accepted
 // and made contiguous first. An empty M or N gives an empty result; K == 0 gives zeros.

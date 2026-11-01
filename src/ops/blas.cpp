@@ -63,6 +63,36 @@ Tensor dot(const Tensor& a, const Tensor& b) {
     return out;
 }
 
+Tensor matvec(const Tensor& a, const Tensor& x) {
+    require_matrix(a, "matvec", "a");
+    require_vector(x, "matvec", "x");
+    if (a.dtype() != x.dtype()) {
+        throw std::invalid_argument(std::string("matvec: dtypes differ (") + dtype_name(a.dtype()) +
+                                    " and " + dtype_name(x.dtype()) + ")");
+    }
+    if (a.device() != x.device()) {
+        throw std::invalid_argument("matvec: tensors are on " + to_string(a.device()) + " and " +
+                                    to_string(x.device()) + "; move one with Tensor::to()");
+    }
+    const std::int64_t m = a.size(0), k = a.size(1);
+    if (x.size(0) != k) {
+        throw std::invalid_argument("matvec: inner dimensions differ (" + to_string(a.shape()) +
+                                    " times " + to_string(x.shape()) + ")");
+    }
+    Tensor out = Tensor::empty({m}, a.dtype(), a.device());
+    if (m == 0) {
+        return out;
+    }
+    if (k == 0) {
+        const std::vector<std::byte> zeros(out.nbytes());
+        return Tensor::from_host(zeros.data(), {m}, a.dtype(), a.device());
+    }
+    const Tensor matrix = a.is_contiguous() ? a : a.contiguous();
+    const Tensor vector = x.strides()[0] == 1 ? x : x.contiguous();
+    detail::dispatch(detail::OpId::Matvec, {{matrix, vector}, {out}});
+    return out;
+}
+
 Tensor matmul(const Tensor& a, const Tensor& b) {
     require_matrix(a, "matmul", "a");
     require_matrix(b, "matmul", "b");

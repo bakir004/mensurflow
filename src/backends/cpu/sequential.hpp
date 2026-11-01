@@ -38,6 +38,9 @@ void sigmoid_f32(const float* x, float* out, std::int64_t n);
 // parallel dot_f32 does with one thread. n <= 0 gives 0.
 float dot_f32(const float* x, const float* y, std::int64_t n);
 
+// Row-major y[m] = A[m,k] * x[k], accumulated in double. k == 0 fills y with zeros.
+void matvec_f32(const float* a, const float* x, float* y, std::int64_t m, std::int64_t k);
+
 // Row-major C[m,n] = A[m,k] * B[k,n] in the plain i-k-j loop order: for each row of A, every
 // entry A[i,p] scales row p of B and is added into row i of C. C is overwritten, not accumulated
 // into, and must not overlap A or B. k == 0 fills C with zeros; m == 0 or n == 0 does nothing.

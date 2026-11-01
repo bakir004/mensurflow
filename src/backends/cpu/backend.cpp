@@ -78,6 +78,13 @@ void dot_kernel(const OpArgs& args, Stream&) {
         cpu::dot_f32(TensorAccess::data<float>(x), TensorAccess::data<float>(y), x.size(0));
 }
 
+void matvec_kernel(const OpArgs& args, Stream&) {
+    const Tensor& a = args.inputs[0];
+    const Tensor& x = args.inputs[1];
+    cpu::matvec_f32(TensorAccess::data<float>(a), TensorAccess::data<float>(x),
+                    TensorAccess::data<float>(args.outputs[0]), a.size(0), a.size(1));
+}
+
 // Ops hand kernels contiguous tensors of equal shape, so n is simply the output's element count.
 template <void (*Kernel)(const float*, const float*, float*, std::int64_t)>
 void binary_kernel(const OpArgs& args, Stream&) {
@@ -150,6 +157,7 @@ class CpuBackend final : public Backend {
     void register_kernels(Dispatcher& dispatcher) override {
         constexpr DeviceType cpu_type = DeviceType::CPU;
         dispatcher.register_kernel({OpId::Dot, cpu_type, DType::F32}, dot_kernel);
+        dispatcher.register_kernel({OpId::Matvec, cpu_type, DType::F32}, matvec_kernel);
         dispatcher.register_kernel({OpId::Matmul, cpu_type, DType::F32}, matmul_kernel);
         dispatcher.register_kernel({OpId::Add, cpu_type, DType::F32}, binary_kernel<cpu::add_f32>);
         dispatcher.register_kernel({OpId::Sub, cpu_type, DType::F32}, binary_kernel<cpu::sub_f32>);

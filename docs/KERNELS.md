@@ -43,6 +43,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|—|
 |`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
+|`matvec`|OpenMP, double accumulation per row|—|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full-tensor reductions|—|—|—|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
@@ -68,7 +69,7 @@ and small fully connected networks with externally supplied weights.
 ### Linear algebra
 
 * \[x] `dot(x, y)` — vector dot product.
-* \[ ] `matvec(A, x)` — matrix–vector multiplication; may initially use GEMM.
+* \[x] `matvec(A, x)` — matrix–vector multiplication (CPU, float32).
 * \[x] `matmul(A, B)` / GEMM — `\[M,K] × \[K,N] → \[M,N]`. Basic form done (CPU, float32); the
 optional `alpha`, `beta`, and transpose flags are not.
 * \[ ] Optional GEMM parameters: `alpha`, `beta`, and transpose flags, introduced
