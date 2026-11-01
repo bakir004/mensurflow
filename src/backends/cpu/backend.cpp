@@ -7,6 +7,7 @@
 #include "backends/cpu/matmul.hpp"
 #include "backends/cpu/parallel.hpp"
 #include "backends/cpu/reduction.hpp"
+#include "backends/cpu/softmax.hpp"
 #include "core/dispatcher.hpp"
 #include "core/registry.hpp"
 #include "core/tensor_access.hpp"
@@ -138,6 +139,14 @@ void max_kernel(const OpArgs& args, Stream&) {
         cpu::max_f32(TensorAccess::data<float>(args.inputs[0]), args.inputs[0].numel());
 }
 
+void softmax_kernel(const OpArgs& args, Stream&) {
+    const Tensor& input = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    const std::int64_t width = input.size(input.dim() - 1);
+    cpu::softmax_f32(TensorAccess::data<float>(input), TensorAccess::data<float>(out),
+                     input.numel() / width, width);
+}
+
 class CpuBackend final : public Backend {
   public:
     DeviceType type() const override { return DeviceType::CPU; }
@@ -177,6 +186,7 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::Sum, cpu_type, DType::F32}, sum_kernel);
         dispatcher.register_kernel({OpId::Mean, cpu_type, DType::F32}, mean_kernel);
         dispatcher.register_kernel({OpId::Max, cpu_type, DType::F32}, max_kernel);
+        dispatcher.register_kernel({OpId::Softmax, cpu_type, DType::F32}, softmax_kernel);
     }
 
   private:

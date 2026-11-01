@@ -124,6 +124,7 @@ out-of-place and inputs are not modified.
 - `dot`
 - `matvec`
 - `matmul`
+- `softmax`
 - `axpy`
 - `bias_add`
 
@@ -201,6 +202,7 @@ not silently redirect an operation to another device.
 | `dot` | Yes | Yes | Implemented, hardware validation pending | Implemented, hardware validation pending | No |
 | `matvec` | Yes | No | No | No | No |
 | `matmul` | Yes | No | No | No | No |
+| `softmax` | Yes | No | No | No | No |
 | Tensor transfers | Yes | Yes | Yes | Yes | No |
 
 GPU-specific capabilities depend on the SDK, driver, and hardware available at
@@ -231,6 +233,7 @@ kernel implementations:
 - `dot_benchmark`
 - `matvec_benchmark`
 - `matmul_benchmark`
+- `softmax_benchmark`
 - `cpu_parallel_benchmark`
 
 Build the benchmark targets with:

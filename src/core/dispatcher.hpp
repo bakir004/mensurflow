@@ -33,7 +33,8 @@ enum class OpId {
     BiasAdd,
     Sum,
     Mean,
-    Max
+    Max,
+    Softmax
 };
 
 const char* op_name(OpId op);
