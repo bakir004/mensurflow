@@ -45,6 +45,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
 |`matvec`|OpenMP, double accumulation per row|—|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full-tensor reductions|—|—|—|
+|`softmax`|OpenMP, stable last-axis implementation|—|—|—|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
 CUDA was tested on an RTX 3060; ROCm and Metal have never been built on real hardware. The
@@ -87,7 +88,8 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
 * \[ ] `softmax(x, axis)` — normalized exponentials; subtract the axis maximum
-before exponentiation. Implement last-axis softmax first.
+before exponentiation. Last-axis implementation done (CPU, float32); other axes are not yet
+supported.
 
 ### Tensor plumbing
 

@@ -45,6 +45,8 @@ const char* op_name(OpId op) {
         return "mean";
     case OpId::Max:
         return "max";
+    case OpId::Softmax:
+        return "softmax";
     }
     throw std::invalid_argument("invalid OpId");
 }

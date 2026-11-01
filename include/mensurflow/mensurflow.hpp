@@ -6,5 +6,6 @@
 #include "mensurflow/ops/blas.hpp"
 #include "mensurflow/ops/elementwise.hpp"
 #include "mensurflow/ops/reduction.hpp"
+#include "mensurflow/ops/softmax.hpp"
 #include "mensurflow/shape.hpp"
 #include "mensurflow/tensor.hpp"

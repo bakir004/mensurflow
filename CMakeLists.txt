@@ -42,6 +42,7 @@ add_library(mensurflow
     src/ops/blas.cpp
     src/ops/elementwise.cpp
     src/ops/reduction.cpp
+    src/ops/softmax.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/blas.cpp
     src/backends/cpu/elementwise.cpp
@@ -49,7 +50,9 @@ add_library(mensurflow
     src/backends/cpu/reduction.cpp
     src/backends/cpu/scalar.cpp
     src/backends/cpu/sequential.cpp
-    src/backends/cpu/sequential_reduction.cpp)
+    src/backends/cpu/sequential_reduction.cpp
+    src/backends/cpu/softmax.cpp
+    src/backends/cpu/sequential_softmax.cpp)
 # scalar.cpp is sequential.cpp compiled again with auto-vectorization off: the baseline that
 # separates what SIMD adds from what threads add in the benchmarks (see docs/BENCHMARKING.md).
 set_source_files_properties(src/backends/cpu/scalar.cpp PROPERTIES COMPILE_OPTIONS
@@ -153,6 +156,7 @@ mensurflow_add_test(sequential_test tests/ops/sequential_test.cpp)
 mensurflow_add_test(scalar_test tests/ops/scalar_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
+mensurflow_add_test(softmax_test tests/ops/softmax_test.cpp)
 mensurflow_add_test(reduction_test tests/ops/reduction_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
@@ -172,5 +176,6 @@ mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
 mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
 mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
+mensurflow_add_benchmark(softmax_benchmark benchmarks/blas/softmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
