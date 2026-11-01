@@ -55,7 +55,8 @@ SIMD) and `parallel` rows for 1, 2, 4, 8, 16, half the hardware threads (the phy
 SMT CPUs) and all hardware threads. The two speedup columns are the scalar or sequential median
 divided by that row's, so above 1x is faster. The `parallel` row with 1 thread shows what the
 parallel machinery costs when there is nothing to gain. On Windows with MinGW use the UCRT64
-toolchain (see BENCHMARKING.md).
+toolchain. **The exact commands for every toolchain, the quick start, and where to put your result
+are in [benchmarks/README.md](benchmarks/README.md).**
 
 Conditions to keep equal and to write down for every run:
 

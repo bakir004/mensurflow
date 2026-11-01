@@ -58,7 +58,8 @@ matmul_benchmark > matmul.txt
 
 ## Results
 
-*Paste summary tables, not the raw output. Use the same cell style as BENCHMARKS.md: `run 1 / run 2`,
+*Generate the tables with `docs/benchmarks/summarize_runs.awk` (commands in README.md, step 5) and paste
+them here. Paste summary tables, not the raw output. Use the same cell style as BENCHMARKS.md: `run 1 / run 2`,
 speedup = sequential time / parallel time. A good minimum: for every op, n = 1,000,000 (SIMD gain) and
 n = 100,000 and 10,000,000 (1, 8, and best thread count).*
 

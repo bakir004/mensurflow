@@ -169,6 +169,7 @@ links the harness and gives it the include paths for `src/` and `tests/reference
   not been checked on other machines, so say in the results if you used it.
 - The header block is part of the result: keep it when you paste the output.
 - Write the commit hash, compiler and version next to the table.
+- Exact build and run commands for each toolchain, and the result form: [benchmarks/README.md](benchmarks/README.md).
 - On Windows with MinGW, use the **UCRT64** toolchain (`C:\msys64\ucrt64`), not the older `mingw64`
   one: its `fmaf` is not fused, which breaks the `axpy` tests.
 
