@@ -5,14 +5,14 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # Enabled by default; respect local/global config and one-off git -c overrides.
-if enabled=$(git config --bool --get prs.formatOnCommit); then
+if enabled=$(git config --bool --get mensurflow.formatOnCommit); then
     if [[ "$enabled" == "false" ]]; then
         exit 0
     fi
 else
     status=$?
     if [[ "$status" -ne 1 ]]; then
-        echo "pre-commit: prs.formatOnCommit must be a Git boolean (true or false)." >&2
+        echo "pre-commit: mensurflow.formatOnCommit must be a Git boolean (true or false)." >&2
         exit "$status"
     fi
 fi
@@ -30,9 +30,9 @@ if [ "${#files[@]}" -eq 0 ]; then
     exit 0
 fi
 
-formatter="${PRS_CLANG_FORMAT:-clang-format}"
+formatter="${MENSURFLOW_CLANG_FORMAT:-clang-format}"
 if ! command -v "$formatter" >/dev/null 2>&1; then
-    echo "pre-commit: clang-format not found. Install it or set PRS_CLANG_FORMAT to its executable path." >&2
+    echo "pre-commit: clang-format not found. Install it or set MENSURFLOW_CLANG_FORMAT to its executable path." >&2
     exit 1
 fi
 

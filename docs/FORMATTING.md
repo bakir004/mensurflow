@@ -24,10 +24,10 @@ clang-format --version
 
 ## Enabling the hook
 
-After pulling the repo, run the build script once to set up the git hook:
+After pulling the repo, run the test script once to set up the git hook:
 
-- `build.sh` (Linux/macOS/Git Bash), or
-- `build.bat` (Windows)
+- `test.sh` (Linux/macOS/Git Bash), or
+- `test.bat` (Windows)
 
 Alternatively, enable the hook without building:
 
