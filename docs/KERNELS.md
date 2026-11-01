@@ -88,7 +88,7 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[x] `max(x)` — full-tensor maximum; empty tensors are invalid and NaNs propagate (CPU, float32).
 * \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
-* \[ ] `softmax(x, axis)` — normalized exponentials; subtract the axis maximum
+* \[x] `softmax(x, axis)` — normalized exponentials; subtract the axis maximum
 before exponentiation. Last-axis implementation done (CPU, float32); other axes are not yet
 supported.
 
@@ -96,21 +96,27 @@ supported.
 
 These are necessary API/runtime operations, even when they do not launch kernels.
 
-* \[ ] `constant`, `empty`, `zeros`, `ones`, `full`, `eye`, and `\*\_like`
-variants — construct tensors.
-* \[ ] `shape`, `size`, `rank`, and `identity` — metadata queries and
-pass-through.
-* \[ ] Host/device upload, download, and device-to-device copy where applicable.
-* \[ ] `reshape` and `flatten` — metadata-only when layout permits.
-* \[ ] `transpose` / `permute` — initially materialize contiguous output; views can
-follow once strides are supported.
-* \[ ] `contiguous` — copy a strided view into a packed row-major buffer.
+* \[x] `constant`, `empty`, `zeros`, `ones`, `full`, `eye`, and `\*\_like`
+variants — construct tensors. `f16` and `bf16` value construction remain unsupported.
+* \[x] `shape`, `size`, and `rank` — metadata queries. `identity` is not yet a
+separate operation.
+* \[x] Host/device upload, download, and device-to-device copy where applicable.
+* \[x] `reshape` and `flatten` — available through contiguous `view`.
+* \[x] `transpose` / `permute` — two-dimension transpose views are supported.
+* \[x] `contiguous` — copy a strided view into a packed row-major buffer.
 * \[x] `argmax(x, axis)` — last-axis integer predictions for classification; ties select the first
 index and the first NaN selects its index (CPU, float32 input, int64 output).
 
 **Acceptance demo:** run `XW + b`, then sigmoid for binary classification or
 softmax for multiclass classification. Run a two-layer ReLU network and compare
 with a reference. This supports inference, not training by itself.
+
+**Current project status:** the CPU dense-inference P0 is complete for the
+implemented float32 API, including tensor construction, matvec, matmul,
+reductions, softmax, and argmax. Optional GEMM parameters (`alpha`, `beta`, and
+transpose flags) remain intentionally deferred. The broader vendor-kernel P0
+table above is not a claim that every backend or every training primitive is
+complete.
 
 ## P1 — Broader numerical and classical ML support
 

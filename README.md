@@ -163,6 +163,8 @@ The current `Tensor` API includes:
 - Host transfer with `copy_to_host` and `to_vector`
 - Scalar reads with `item`
 - Views with `transpose`, `slice`, `expand`, `unsqueeze`, and `view`
+- Value constructors with `zeros`, `ones`, `full`, `constant`, `eye`, and
+  their `*_like` variants
 - Packing non-contiguous data with `contiguous`
 - Metadata queries for shape, strides, dtype, device, dimensions, and size
 
@@ -292,10 +294,9 @@ The detailed plans are:
 
 The next implementation milestones are:
 
-1. Complete remaining CPU P0 operations such as tensor constructors and dense
-   inference integration.
-2. Add operation/backend coverage testing.
+1. Add an end-to-end dense-inference example and coverage tests.
+2. Decide whether optional GEMM parameters (`alpha`, `beta`, and transpose
+   flags) are needed before backend work.
 3. Improve CPU GEMM and reduction performance.
 4. Integrate the Vulkan backend.
-5. Add graph execution.
-6. Add neural-network layers and autograd.
+5. Add graph execution, neural-network layers, and autograd.

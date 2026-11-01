@@ -47,6 +47,37 @@ void test_round_trip() {
     test::require(copied.to_vector<float>() == std::vector<float>{1, 2}, "from_vector copies");
 }
 
+void test_constructors() {
+    test::require(Tensor::zeros({2, 2}).to_vector<float>() ==
+                      std::vector<float>{0, 0, 0, 0},
+                  "zeros");
+    test::require(Tensor::ones({2, 2}).to_vector<float>() ==
+                      std::vector<float>{1, 1, 1, 1},
+                  "ones");
+    test::require(Tensor::constant({2, 2}, 2.5).to_vector<float>() ==
+                      std::vector<float>{2.5f, 2.5f, 2.5f, 2.5f},
+                  "constant");
+    test::require(Tensor::full({3}, 7, DType::I32).to_vector<std::int32_t>() ==
+                      std::vector<std::int32_t>{7, 7, 7},
+                  "integer full");
+    test::require(Tensor::eye(3).to_vector<float>() ==
+                      std::vector<float>{1, 0, 0, 0, 1, 0, 0, 0, 1},
+                  "eye");
+    const Tensor source = Tensor::from_vector(std::vector<float>{4, 5}, {2});
+    test::require(Tensor::zeros_like(source).to_vector<float>() ==
+                      std::vector<float>{0, 0},
+                  "zeros_like");
+    test::require(Tensor::ones_like(source).to_vector<float>() ==
+                      std::vector<float>{1, 1},
+                  "ones_like");
+    test::require(Tensor::full_like(source, 3).to_vector<float>() ==
+                      std::vector<float>{3, 3},
+                  "full_like");
+    test::require_throws<std::invalid_argument>([] { Tensor::eye(-1); }, "negative eye");
+    test::require_throws<std::invalid_argument>(
+        [] { Tensor::full({2}, 1.5, DType::I32); }, "fractional integer full");
+}
+
 void test_errors() {
     test::require_throws<std::invalid_argument>(
         [] { Tensor::from_vector(std::vector<float>{1, 2, 3}, {2, 2}); }, "size mismatch");
@@ -73,6 +104,7 @@ int main() {
     return test::run("tensor_test", [] {
         test_empty();
         test_round_trip();
+        test_constructors();
         test_errors();
     });
 }

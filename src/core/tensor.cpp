@@ -7,8 +7,89 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cmath>
+#include <limits>
 
 namespace mensurflow {
+
+namespace {
+
+void validate_fill_value(double value, DType dtype) {
+    if (!std::isfinite(value)) {
+        if (dtype != DType::F32) {
+            throw std::invalid_argument("full: non-finite values require f32 dtype");
+        }
+        return;
+    }
+    switch (dtype) {
+    case DType::F32:
+        if (value < -std::numeric_limits<float>::max() ||
+            value > std::numeric_limits<float>::max()) {
+            throw std::invalid_argument("full: value does not fit f32");
+        }
+        return;
+    case DType::I32:
+        if (std::trunc(value) != value || value < std::numeric_limits<std::int32_t>::min() ||
+            value > std::numeric_limits<std::int32_t>::max()) {
+            throw std::invalid_argument("full: value does not fit i32");
+        }
+        return;
+    case DType::I64:
+        if (std::trunc(value) != value || value < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
+            value > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+            throw std::invalid_argument("full: value does not fit i64");
+        }
+        return;
+    case DType::U8:
+        if (std::trunc(value) != value || value < 0 || value > std::numeric_limits<std::uint8_t>::max()) {
+            throw std::invalid_argument("full: value does not fit u8");
+        }
+        return;
+    case DType::Bool:
+        return;
+    case DType::F16:
+    case DType::BF16:
+        throw std::invalid_argument("full: f16 and bf16 construction is not supported yet");
+    }
+    throw std::invalid_argument("full: invalid dtype");
+}
+
+void write_fill(std::byte* data, std::size_t count, DType dtype, double value) {
+    switch (dtype) {
+    case DType::F32: {
+        const float converted = static_cast<float>(value);
+        auto* out = reinterpret_cast<float*>(data);
+        std::fill(out, out + count, converted);
+        return;
+    }
+    case DType::I32: {
+        const auto converted = static_cast<std::int32_t>(value);
+        auto* out = reinterpret_cast<std::int32_t*>(data);
+        std::fill(out, out + count, converted);
+        return;
+    }
+    case DType::I64: {
+        const auto converted = static_cast<std::int64_t>(value);
+        auto* out = reinterpret_cast<std::int64_t*>(data);
+        std::fill(out, out + count, converted);
+        return;
+    }
+    case DType::U8: {
+        const auto converted = static_cast<std::uint8_t>(value);
+        std::fill(data, data + count, static_cast<std::byte>(converted));
+        return;
+    }
+    case DType::Bool:
+        std::fill(data, data + count, value == 0 ? std::byte{0} : std::byte{1});
+        return;
+    case DType::F16:
+    case DType::BF16:
+        throw std::invalid_argument("full: f16 and bf16 construction is not supported yet");
+    }
+    throw std::invalid_argument("full: invalid dtype");
+}
+
+} // namespace
 
 Tensor::Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Shape shape,
                Strides strides, DType dtype)
@@ -21,6 +102,60 @@ Tensor Tensor::empty(Shape shape, DType dtype, Device device) {
     auto storage = std::make_shared<detail::Storage>(device, bytes);
     Strides strides = contiguous_strides(shape);
     return Tensor(std::move(storage), 0, std::move(shape), std::move(strides), dtype);
+}
+
+Tensor Tensor::full(Shape shape, double value, DType dtype, Device device) {
+    validate_shape(shape);
+    validate_fill_value(value, dtype);
+    const std::size_t count = static_cast<std::size_t>(mensurflow::numel(shape));
+    std::vector<std::byte> host(count * dtype_size(dtype));
+    write_fill(host.data(), count, dtype, value);
+    return from_host(host.data(), std::move(shape), dtype, device);
+}
+
+Tensor Tensor::constant(Shape shape, double value, DType dtype, Device device) {
+    return full(std::move(shape), value, dtype, device);
+}
+
+Tensor Tensor::zeros(Shape shape, DType dtype, Device device) {
+    validate_shape(shape);
+    std::vector<std::byte> host(
+        static_cast<std::size_t>(mensurflow::numel(shape)) * dtype_size(dtype));
+    return from_host(host.data(), std::move(shape), dtype, device);
+}
+
+Tensor Tensor::ones(Shape shape, DType dtype, Device device) {
+    return full(std::move(shape), 1.0, dtype, device);
+}
+
+Tensor Tensor::eye(std::int64_t n, DType dtype, Device device) {
+    if (n < 0) {
+        throw std::invalid_argument("eye: dimension must be non-negative");
+    }
+    validate_fill_value(1.0, dtype);
+    const std::size_t count = static_cast<std::size_t>(n) * static_cast<std::size_t>(n);
+    std::vector<std::byte> host(count * dtype_size(dtype));
+    write_fill(host.data(), count, dtype, 0.0);
+    for (std::int64_t i = 0; i < n; ++i) {
+        write_fill(host.data() + static_cast<std::size_t>(i * n + i) * dtype_size(dtype), 1,
+                   dtype, 1.0);
+    }
+    return from_host(host.data(), {n, n}, dtype, device);
+}
+
+Tensor Tensor::zeros_like(const Tensor& other) {
+    other.require_defined();
+    return zeros(other.shape_, other.dtype_, other.device());
+}
+
+Tensor Tensor::ones_like(const Tensor& other) {
+    other.require_defined();
+    return ones(other.shape_, other.dtype_, other.device());
+}
+
+Tensor Tensor::full_like(const Tensor& other, double value) {
+    other.require_defined();
+    return full(other.shape_, value, other.dtype_, other.device());
 }
 
 Tensor Tensor::from_host(const void* data, Shape shape, DType dtype, Device device) {

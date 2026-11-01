@@ -30,6 +30,17 @@ class Tensor {
     // unavailable.
     static Tensor empty(Shape shape, DType dtype = DType::F32, Device device = {});
 
+    static Tensor constant(Shape shape, double value, DType dtype = DType::F32,
+                           Device device = {});
+    static Tensor zeros(Shape shape, DType dtype = DType::F32, Device device = {});
+    static Tensor ones(Shape shape, DType dtype = DType::F32, Device device = {});
+    static Tensor full(Shape shape, double value, DType dtype = DType::F32, Device device = {});
+    static Tensor eye(std::int64_t n, DType dtype = DType::F32, Device device = {});
+
+    static Tensor zeros_like(const Tensor& other);
+    static Tensor ones_like(const Tensor& other);
+    static Tensor full_like(const Tensor& other, double value);
+
     // Copies numel(shape) * dtype_size(dtype) bytes from contiguous host memory.
     static Tensor from_host(const void* data, Shape shape, DType dtype, Device device = {});
 
