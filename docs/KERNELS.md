@@ -43,6 +43,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|—|
 |`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
+|`sum`, `mean`, `max`|OpenMP, float32; full-tensor reductions|—|—|—|
 |`matmul`|blocked, rows split across threads|—|—|—|
 
 CUDA was tested on an RTX 3060; ROCm and Metal have never been built on real hardware. The
@@ -79,9 +80,9 @@ rectangular matrices and dimensions not divisible by tile sizes.
 
 ### Reductions and activations
 
-* \[ ] `sum(x, axis, keepdim)` — summation.
-* \[ ] `mean(x, axis, keepdim)` — average.
-* \[ ] `max(x, axis, keepdim)` — maximum values.
+* \[x] `sum(x)` — full-tensor summation; an empty tensor returns zero (CPU, float32).
+* \[x] `mean(x)` — full-tensor average; empty tensors are invalid (CPU, float32).
+* \[x] `max(x)` — full-tensor maximum; empty tensors are invalid and NaNs propagate (CPU, float32).
 * \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
 * \[ ] `softmax(x, axis)` — normalized exponentials; subtract the axis maximum
@@ -462,4 +463,3 @@ optimized plan dispatches one supported fused implementation.
 **Recommended course-project target:** P0, the P1 operations needed for losses and
 benchmarks, and a well-tested CPU/GPU execution path with autotuning. Add P2 only
 if training is an agreed goal; P3, P4, and P5 are optional expansions.
-

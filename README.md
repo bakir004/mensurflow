@@ -126,6 +126,12 @@ out-of-place and inputs are not modified.
 - `axpy`
 - `bias_add`
 
+### Reductions
+
+- `sum` — full-tensor sum; an empty tensor returns zero
+- `mean` — full-tensor arithmetic mean; empty tensors are invalid
+- `max` — full-tensor maximum; empty tensors are invalid
+
 ### Elementwise operations
 
 - `add`
@@ -277,7 +283,7 @@ The detailed plans are:
 
 The next implementation milestones are:
 
-1. Complete CPU P0 operations such as reductions, softmax, and matrix-vector
+1. Complete remaining CPU P0 operations such as softmax and matrix-vector
    multiplication.
 2. Add operation/backend coverage testing.
 3. Improve CPU GEMM and reduction performance.

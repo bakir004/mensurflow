@@ -29,7 +29,10 @@ enum class OpId {
     Exp,
     Sigmoid,
     Axpy,
-    BiasAdd
+    BiasAdd,
+    Sum,
+    Mean,
+    Max
 };
 
 const char* op_name(OpId op);
