@@ -18,6 +18,8 @@ namespace mensurflow {
 namespace detail {
 struct Storage;
 struct TensorAccess;
+struct AutogradState;
+struct AutogradAccess;
 } // namespace detail
 
 class Tensor {
@@ -88,16 +90,15 @@ class Tensor {
     // Marks this tensor as a differentiable leaf for the future reverse-mode autograd graph.
     // Autograd currently supports float32 tensors only.
     void set_requires_grad(bool requires_grad = true);
-    bool requires_grad() const { return requires_grad_; }
+    bool requires_grad() const;
 
     // Returns the accumulated gradient, or an undefined tensor when no gradient has been
     // accumulated. Gradients are always float32 tensors with the same shape and device.
     Tensor grad() const;
-    bool has_grad() const { return grad_ != nullptr; }
+    bool has_grad() const;
     void zero_grad();
 
-    // Starts reverse-mode automatic differentiation from a scalar output. Operation graph
-    // construction and backward rules are added in the next autograd step.
+    // Starts reverse-mode automatic differentiation from a scalar output.
     void backward() const;
 
     // Writes numel() elements in row-major order to dst, following strides for views.
@@ -140,6 +141,7 @@ class Tensor {
 
   private:
     friend struct detail::TensorAccess;
+    friend struct detail::AutogradAccess;
 
     Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Shape shape,
            Strides strides, DType dtype);
@@ -152,8 +154,7 @@ class Tensor {
     Shape shape_;
     Strides strides_;
     DType dtype_ = DType::F32;
-    bool requires_grad_ = false;
-    std::shared_ptr<Tensor> grad_;
+    std::shared_ptr<detail::AutogradState> autograd_;
 };
 
 } // namespace mensurflow

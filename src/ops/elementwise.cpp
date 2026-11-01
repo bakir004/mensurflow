@@ -4,6 +4,7 @@
 #include "mensurflow/ops/elementwise.hpp"
 
 #include "core/dispatcher.hpp"
+#include "core/autograd.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -19,6 +20,26 @@ Tensor unary_op(detail::OpId op, const Tensor& x) {
     const Tensor input = x.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
     detail::dispatch(op, {{input}, {out}});
+    if (x.requires_grad()) {
+        if (op == detail::OpId::Neg) {
+            detail::AutogradAccess::record(
+                out, {x}, [x](const Tensor& gradient) {
+                    detail::autograd::NoGradGuard guard;
+                    detail::autograd::propagate(x, neg(gradient));
+                });
+        } else if (op == detail::OpId::Relu) {
+            detail::AutogradAccess::record(
+                out, {x}, [x](const Tensor& gradient) {
+                    const auto input = x.to_vector<float>();
+                    auto values = gradient.to_vector<float>();
+                    for (std::size_t i = 0; i < values.size(); ++i) {
+                        values[i] = input[i] > 0.0f ? values[i] : 0.0f;
+                    }
+                    detail::autograd::propagate(
+                        x, Tensor::from_vector(values, x.shape(), x.device()));
+                });
+        }
+    }
     return out;
 }
 
@@ -63,6 +84,24 @@ Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha 
     const Tensor y = packed(b);
     Tensor out = Tensor::empty(shape, a.dtype(), a.device());
     detail::dispatch(op, {{x, y}, {out}, alpha});
+    if (a.requires_grad() || b.requires_grad()) {
+        if (a.shape() != b.shape()) {
+            throw std::logic_error("autograd: broadcasted gradients are not implemented yet");
+        }
+        if (op == detail::OpId::Add || op == detail::OpId::Mul) {
+            detail::AutogradAccess::record(
+                out, {a, b}, [a, b, op](const Tensor& gradient) {
+                    detail::autograd::NoGradGuard guard;
+                    if (op == detail::OpId::Add) {
+                        detail::autograd::propagate(a, gradient);
+                        detail::autograd::propagate(b, gradient);
+                    } else {
+                        detail::autograd::propagate(a, mul(gradient, b));
+                        detail::autograd::propagate(b, mul(gradient, a));
+                    }
+                });
+        }
+    }
     return out;
 }
 

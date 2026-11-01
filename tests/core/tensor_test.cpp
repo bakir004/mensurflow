@@ -1,5 +1,5 @@
 // Tests Tensor creation, metadata, host round trips, and error handling on the CPU.
-#include "mensurflow/tensor.hpp"
+#include "mensurflow/mensurflow.hpp"
 #include "test_util.hpp"
 
 #include <cstdint>
@@ -111,8 +111,8 @@ void test_autograd_contract() {
 
     Tensor scalar = Tensor::from_vector(std::vector<float>{2}, {});
     scalar.set_requires_grad();
-    test::require_throws<std::logic_error>(
-        [&] { scalar.backward(); }, "backward requires a graph implementation");
+    scalar.backward();
+    test::require(scalar.grad().item<float>() == 1.0f, "scalar backward seed");
 
     x.zero_grad();
     test::require(!x.has_grad(), "zero_grad is safe without an accumulated gradient");
@@ -124,6 +124,27 @@ void test_autograd_contract() {
         [&] { ints.set_requires_grad(); }, "autograd only supports f32");
 }
 
+void test_autograd_operations() {
+    Tensor x = Tensor::from_vector(std::vector<float>{2, -3}, {2});
+    Tensor y = Tensor::from_vector(std::vector<float>{4, 5}, {2});
+    x.set_requires_grad();
+    y.set_requires_grad();
+
+    Tensor loss = sum(relu(add(mul(x, y), x)));
+    loss.backward();
+
+    test::require(x.grad().to_vector<float>() == std::vector<float>{5, 0},
+                  "composed gradient for x");
+    test::require(y.grad().to_vector<float>() == std::vector<float>{2, 0},
+                  "composed gradient for y");
+
+    x.zero_grad();
+    y.zero_grad();
+    test::require(!x.grad().to_vector<float>().empty(), "zero_grad keeps gradient storage");
+    test::require(x.grad().to_vector<float>() == std::vector<float>{0, 0},
+                  "zero_grad clears gradient");
+}
+
 } // namespace
 
 int main() {
@@ -133,5 +154,6 @@ int main() {
         test_constructors();
         test_errors();
         test_autograd_contract();
+        test_autograd_operations();
     });
 }

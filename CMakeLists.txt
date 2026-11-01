@@ -38,6 +38,7 @@ add_library(mensurflow
     src/core/registry.cpp
     src/core/shape.cpp
     src/core/storage.cpp
+    src/core/autograd.cpp
     src/core/tensor.cpp
     src/ops/blas.cpp
     src/ops/elementwise.cpp

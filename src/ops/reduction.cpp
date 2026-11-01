@@ -1,6 +1,7 @@
 #include "mensurflow/ops/reduction.hpp"
 
 #include "core/dispatcher.hpp"
+#include "core/autograd.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -21,6 +22,14 @@ Tensor reduce(detail::OpId op, const Tensor& x, bool allow_empty) {
     const Tensor input = x.contiguous();
     Tensor out = Tensor::empty({}, x.dtype(), x.device());
     detail::dispatch(op, {{input}, {out}});
+    if (op == detail::OpId::Sum && x.requires_grad()) {
+        detail::AutogradAccess::record(
+            out, {x}, [x](const Tensor& gradient) {
+                detail::autograd::NoGradGuard guard;
+                detail::autograd::propagate(
+                    x, Tensor::full(x.shape(), gradient.item<float>(), DType::F32, x.device()));
+            });
+    }
     return out;
 }
 

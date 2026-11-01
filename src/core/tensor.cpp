@@ -4,6 +4,7 @@
 #include "mensurflow/tensor.hpp"
 
 #include "core/storage.hpp"
+#include "core/autograd.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -94,7 +95,8 @@ void write_fill(std::byte* data, std::size_t count, DType dtype, double value) {
 Tensor::Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Shape shape,
                Strides strides, DType dtype)
     : storage_(std::move(storage)), offset_(offset), shape_(std::move(shape)),
-      strides_(std::move(strides)), dtype_(dtype) {}
+      strides_(std::move(strides)), dtype_(dtype),
+      autograd_(std::make_shared<detail::AutogradState>()) {}
 
 Tensor Tensor::empty(Shape shape, DType dtype, Device device) {
     validate_shape(shape);
@@ -202,33 +204,38 @@ void Tensor::set_requires_grad(bool requires_grad) {
     if (requires_grad && dtype_ != DType::F32) {
         throw std::invalid_argument("set_requires_grad: only f32 tensors support autograd");
     }
-    requires_grad_ = requires_grad;
-    if (!requires_grad_) {
-        grad_.reset();
+    autograd_->requires_grad = requires_grad;
+    autograd_->node.reset();
+    if (!requires_grad) {
+        autograd_->grad.reset();
     }
+}
+
+bool Tensor::requires_grad() const {
+    require_defined();
+    return autograd_->requires_grad;
 }
 
 Tensor Tensor::grad() const {
     require_defined();
-    return grad_ == nullptr ? Tensor{} : *grad_;
+    return autograd_->grad == nullptr ? Tensor{} : *autograd_->grad;
+}
+
+bool Tensor::has_grad() const {
+    require_defined();
+    return autograd_->grad != nullptr;
 }
 
 void Tensor::zero_grad() {
     require_defined();
-    if (grad_ != nullptr) {
-        grad_ = std::make_shared<Tensor>(Tensor::zeros(shape_, DType::F32, device()));
+    if (autograd_->grad != nullptr) {
+        autograd_->grad = std::make_shared<Tensor>(Tensor::zeros(shape_, DType::F32, device()));
     }
 }
 
 void Tensor::backward() const {
     require_defined();
-    if (!requires_grad_) {
-        throw std::logic_error("backward: tensor does not require gradients");
-    }
-    if (numel() != 1) {
-        throw std::invalid_argument("backward: implicit gradient requires a scalar tensor");
-    }
-    throw std::logic_error("backward: autograd graph construction is not implemented yet");
+    detail::autograd::backward(*this);
 }
 
 void Tensor::copy_to_host(void* dst) const {
@@ -286,7 +293,7 @@ void Tensor::copy_to_host(void* dst) const {
 
 Tensor Tensor::make_view(std::int64_t offset, Shape shape, Strides strides) const {
     Tensor view(storage_, offset, std::move(shape), std::move(strides), dtype_);
-    view.requires_grad_ = requires_grad_;
+    view.autograd_ = autograd_;
     return view;
 }
 
