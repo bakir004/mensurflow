@@ -1,6 +1,7 @@
-# Benchmark result: <your name>, <machine nickname>, <YYYY-MM-DD>
+# Benchmark result: <your name>, <CPU>, <YYYY-MM-DD>
 
-Copy this file to `<yourname>-<machine>-<YYYY-MM-DD>.md` and fill in every field. Delete the
+Copy this file to `<yourname>-<cpu>-<YYYY-MM-DD>.md` (your name, the CPU as a short lowercase name
+such as `i7-10510u` or `ryzen9-5900x`, then the date) and fill in every field. Delete the
 instructions in italics. See [README.md](README.md).
 
 ## Who and when
@@ -9,7 +10,7 @@ instructions in italics. See [README.md](README.md).
 |---|---|
 | Name | |
 | Date | YYYY-MM-DD |
-| Machine nickname | (laptop, desktop, ...) |
+| Machine type | (laptop, desktop, ...) |
 
 ## Machine
 

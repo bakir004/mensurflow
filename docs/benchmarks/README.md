@@ -13,11 +13,15 @@ by side and nobody edits the same big file at the same time.
 1. Build and run the benchmarks as described in [BENCHMARKING.md](../BENCHMARKING.md): Release build,
    no `MENSURFLOW_NATIVE`, plugged in, High performance, other programs closed, a 3-minute pause
    before each run, and run `cpu_parallel_benchmark` **twice**.
-2. Copy [`TEMPLATE.md`](TEMPLATE.md) to `<yourname>-<machine>-<YYYY-MM-DD>.md`, for example
-   `aldin-nitro-2026-11-03.md`. One file per machine and day.
+2. Copy [`TEMPLATE.md`](TEMPLATE.md) to `<yourname>-<cpu>-<YYYY-MM-DD>.md`: your name, then the CPU
+   in a short lowercase form (the model without the brand, spaces replaced by hyphens), then the date.
+   For example `asja-i7-10510u-2026-11-01.md` or `asja-ryzen9-5900x-2026-11-01.md`. One file per
+   person, CPU, and day.
 3. Fill in every field of the form: who and when, the machine, the build, the conditions, what you ran,
    the results, and how stable the two runs were. Leave nothing blank; write `unknown` if you could not
-   find out. A filled-in example: [`asja-laptop-2026-11-01.md`](asja-laptop-2026-11-01.md).
+   find out. Filled-in examples: [`asja-i7-10510u-2026-11-01.md`](asja-i7-10510u-2026-11-01.md) (a
+   laptop) and [`asja-ryzen9-5900x-2026-11-01.md`](asja-ryzen9-5900x-2026-11-01.md) (a desktop with an
+   NVIDIA GPU).
 4. Paste your two runs into files and compare them to measure the noise:
 
    ```
