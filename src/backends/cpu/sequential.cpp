@@ -1,15 +1,23 @@
 // Sequential CPU kernels: the baseline for measuring what parallelism buys.
+//
+// MENSURFLOW_SEQ_NS is the namespace these kernels are defined in: `sequential` here. scalar.cpp
+// includes this whole file a second time with it set to `scalar`, compiled without
+// auto-vectorization, to get a baseline that shows what SIMD adds (see scalar.hpp). So write
+// kernels here as usual, with no explicit namespace of their own.
 #include "backends/cpu/sequential.hpp"
 
 #include <cmath>
 #include <stdexcept>
 
-namespace mensurflow::cpu::sequential {
+#ifndef MENSURFLOW_SEQ_NS
+#define MENSURFLOW_SEQ_NS sequential
+#endif
+
+namespace mensurflow::cpu::MENSURFLOW_SEQ_NS {
 
 namespace {
 
-template <typename Op>
-void unary(const float* x, float* out, std::int64_t n, Op op) {
+template <typename Op> void unary(const float* x, float* out, std::int64_t n, Op op) {
     if (n < 0) {
         throw std::invalid_argument("elementwise: negative length");
     }
@@ -156,4 +164,4 @@ void matmul_f32(const float* a, const float* b, float* c, std::int64_t m, std::i
     }
 }
 
-} // namespace mensurflow::cpu::sequential
+} // namespace mensurflow::cpu::MENSURFLOW_SEQ_NS

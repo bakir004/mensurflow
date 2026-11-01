@@ -5,13 +5,24 @@ Results from the float32 CPU kernels (`add`, `sub`, `mul`, `div`, `neg`, `abs`,
 so the numbers can be compared. Keep the build and run conditions below the same on every machine,
 otherwise the comparison is not fair.
 
+**How the benchmarks are written, and how to add one: [BENCHMARKING.md](BENCHMARKING.md).** All of
+them share one harness (`benchmarks/bench.hpp`), so the tables look the same whoever ran them.
+
 Code:
 - parallel: `src/backends/cpu/parallel.hpp` (`parallel_for`, `parallel_sum`),
-  `src/backends/cpu/elementwise.cpp`, `src/backends/cpu/blas.cpp`.
-- sequential: `src/backends/cpu/sequential.cpp`, plain loops with no OpenMP. This is the baseline.
+  `src/backends/cpu/elementwise.cpp`, `src/backends/cpu/blas.cpp`, `src/backends/cpu/matmul.cpp`.
+- sequential: `src/backends/cpu/sequential.cpp`, plain loops with no OpenMP and no threads.
+- scalar: the same loops compiled without auto-vectorization (`src/backends/cpu/scalar.cpp`), the
+  baseline that separates what SIMD adds from what threads add.
 
-Benchmarks: `benchmarks/cpu_parallel_benchmark.cpp` (sequential vs parallel, kernels called
-directly), `benchmarks/blas/dot_benchmark.cpp` (through the public `mensurflow::dot`).
+Benchmarks (`cpu_parallel_benchmark`, `matmul_benchmark`, `dot_benchmark`, `elementwise_benchmark`):
+the first two compare scalar, sequential and parallel on the CPU; the last two compare devices
+through the public API. Which one answers what is listed in BENCHMARKING.md.
+
+> **Format change.** Newer runs print a `scalar` row, `min` and `max` columns, a second speedup
+> column (`vs scalar` next to `vs seq`) and a `cpu/wall` column. Results below that were measured
+> with the earlier format show sequential vs parallel only, with the sequential row as the
+> baseline; they are still valid for that comparison but have no scalar numbers.
 Tests cover CPU kernels, sequential agreement, and the public API in
 `tests/ops/elementwise_test.cpp`, `tests/ops/sequential_test.cpp`, and
 `tests/ops/elementwise_ops_test.cpp`.
@@ -33,13 +44,16 @@ Run (the executable is in `build-bench` for Makefiles, `build-bench\Release` for
 
 ```
 cpu_parallel_benchmark > cpu_parallel_<machine>.txt
+matmul_benchmark > matmul_<machine>.txt
 dot_benchmark > dot_<machine>.txt
 ```
 
-Each size prints a `sequential` row (the plain loop) and `parallel` rows for 1, 2, 4, 8, 16, half
-the hardware threads (the physical core count on SMT CPUs) and all hardware threads. The speedup
-column is always sequential time / that row's time. The `parallel` row with 1 thread shows what the
-parallel machinery costs when there is nothing to gain.
+Each size prints a `scalar` row (no SIMD), a `sequential` row (the same loop with the compiler's
+SIMD) and `parallel` rows for 1, 2, 4, 8, 16, half the hardware threads (the physical core count on
+SMT CPUs) and all hardware threads. The two speedup columns are the scalar or sequential median
+divided by that row's, so above 1x is faster. The `parallel` row with 1 thread shows what the
+parallel machinery costs when there is nothing to gain. On Windows with MinGW use the UCRT64
+toolchain (see BENCHMARKING.md).
 
 Conditions to keep equal and to write down for every run:
 
