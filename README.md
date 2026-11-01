@@ -1,319 +1,286 @@
-# PRS: CPU/CUDA/Metal/OpenCL operations
+# Mensurflow
 
-<!-- Project guide: setup, API contracts, source navigation, and measured workloads.
-     Every source/configuration file also documents its own role in this setup. -->
+Mensurflow is a C++17 tensor and numerical-kernel library.
 
-Float32 **AXPY**, `y[i] = alpha * x[i] + y[i]`, and rectangular **matrix multiplication**,
-`C[M,N] = A[M,K] * B[K,N]`, share one API for CPU, NVIDIA CUDA, Apple Metal, and OpenCL (AMD, Intel, and NVIDIA GPUs).
-This is a starting kernel library, not a graph engine. Autotuning is not implemented yet.
+It provides a common `Tensor` API, device selection, backend dispatch, CPU
+kernels, and optional CUDA, ROCm, and Metal integrations. Vulkan is planned but
+is not yet implemented.
 
-## Build and run
+## Current status
 
-Run `./build.sh` on Linux/macOS or `build.bat` on Windows. These scripts configure
-`build-auto` in Release mode, build in parallel, run the complete CTest correctness
-suite, and run both benchmarks with automatic backend detection. They can be invoked
-from any working directory and stop on errors. Windows needs CMake and a supported
-MSVC C++ toolchain (for example, an x64 Visual Studio Developer Command Prompt);
-CUDA is optional. When OpenCL is enabled and no development package is installed,
-CMake automatically downloads and builds the Khronos headers and ICD loader during
-the first configure, so internet access is required for that configure. Without a
-usable GPU backend, the benchmarks and tests still run using CPU and report skipped
-GPU tests.
+| Area | Status |
+|---|---|
+| Tensor API | Implemented |
+| CPU backend | Implemented |
+| CUDA backend | Optional; partial |
+| ROCm backend | Optional; partial and hardware validation pending |
+| Metal backend | Optional; partial and hardware validation pending |
+| Vulkan backend | Planned |
+| Graph runtime | Planned |
+| Autograd and training | Planned |
+| Mixed precision | Planned |
+
+The current implementation is primarily a float32 tensor library. GPU support
+varies by operation and backend.
+
+## Requirements
+
+- CMake 3.20 or newer
+- A C++17 compiler
+- OpenMP is optional
+- CUDA Toolkit is optional
+- ROCm and rocBLAS are optional
+- Metal and MPSGraph are optional and available only on macOS
 
 ## Build and test
 
-Requires CMake >= 3.18 and a C++17 compiler. For GPU execution, install the NVIDIA
-CUDA Toolkit (including `nvcc`) and a compatible NVIDIA driver on your NVIDIA
-machine. Modern macOS does not support CUDA; use the Metal backend on your M3
-MacBook Pro instead. Metal is enabled by default on macOS and needs Apple's
-Command Line Tools (`xcode-select --install`). The Metal shader is compiled at
-runtime, so no standalone `metal` compiler or full Xcode installation is needed.
+### Windows
 
-```sh
-cd PRS
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+Use an x64 Visual Studio Developer Command Prompt:
+
+```powershell
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --config Release
+ctest --test-dir build-release -C Release --output-on-failure
 ```
 
-CMake disables the NVIDIA backend if it cannot find a CUDA compiler; Metal can
-still run on macOS. OpenCL is enabled by default and uses an installed development
-package when available, otherwise the Khronos dependencies are fetched automatically.
-To force CPU-only, add
-`-DPRS_ENABLE_CUDA=OFF -DPRS_ENABLE_METAL=OFF -DPRS_ENABLE_OPENCL=OFF`. If needed, specify your GPU architecture
-with e.g. `-DCMAKE_CUDA_ARCHITECTURES=86` (replace 86 with your GPU's compute
-capability without the decimal). OpenMP is optional; without it CPU execution
-uses a serial loop. With it, large vectors use multiple CPU threads.
+### Linux and macOS
 
-The test prints a small example (`12 24 36`) and checks empty vectors, block
-boundaries, larger inputs, aliasing, zero alpha, and size errors. CUDA and OpenCL
-tests are explicitly skipped if their backend or device is unavailable; a skipped
-test does not verify that backend. Run on an NVIDIA machine and check for
-`CUDA tests passed`, or on an OpenCL-capable machine and check for `OpenCL tests
-passed` and `OpenCL matmul tests passed`. On your Mac, the same test suite runs on
-Metal and prints `Metal tests passed`.
+```sh
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --config Release
+ctest --test-dir build-release --config Release --output-on-failure
+```
 
-## Standalone OpenMP example
+For a deterministic CPU-only build:
 
-See [`openmp/README.md`](openmp/README.md) for a CPU dot-product benchmark comparing
-scalar, SIMD-only, threaded SIMD, an unrolled variant, and optional vendor BLAS.
-It builds independently of the GPU library and includes team setup instructions.
+```powershell
+cmake -S . -B build-cpu `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DMENSURFLOW_CUDA=OFF `
+  -DMENSURFLOW_ROCM=OFF `
+  -DMENSURFLOW_METAL=OFF
+```
 
-## Standalone Vulkan Compute example
+The available CMake options are:
 
-See [`vulkan/README.md`](vulkan/README.md) for tiled GPU matrix multiplication,
-Vulkan SDK installation, and running on macOS through MoltenVK's Metal translation.
-This example builds independently and is not yet integrated into the library API.
+| Option | Values | Default |
+|---|---|---|
+| `MENSURFLOW_CUDA` | `AUTO`, `ON`, `OFF` | `AUTO` |
+| `MENSURFLOW_ROCM` | `AUTO`, `ON`, `OFF` | `AUTO` |
+| `MENSURFLOW_METAL` | `AUTO`, `ON`, `OFF` | `AUTO` |
+| `MENSURFLOW_OPENMP` | `ON`, `OFF` | `ON` |
+| `MENSURFLOW_NATIVE` | `ON`, `OFF` | `OFF` |
+
+`AUTO` enables a backend when its development SDK is found. `ON` requires the
+backend SDK and fails configuration when it is unavailable. `OFF` disables the
+backend.
+
+OpenMP parallelizes suitable CPU kernels. `MENSURFLOW_NATIVE=ON` enables
+machine-specific compiler optimizations and should not be used for portable
+builds.
+
+## Public API
+
+Include the umbrella header:
+
+```cpp
+#include "mensurflow/mensurflow.hpp"
+```
+
+Example:
+
+```cpp
+#include "mensurflow/mensurflow.hpp"
+
+#include <iostream>
+
+int main() {
+    using namespace mensurflow;
+
+    const auto x = Tensor::from_vector<float>({1.0f, 2.0f, 3.0f}, {3});
+    const auto y = Tensor::from_vector<float>({10.0f, 20.0f, 30.0f}, {3});
+    const Tensor result = add(x, y);
+
+    for (float value : result.to_vector<float>()) {
+        std::cout << value << ' ';
+    }
+}
+```
+
+Expected output:
+
+```text
+11 22 33
+```
+
+Operations run on the device where their input tensors reside. Results are
+out-of-place and inputs are not modified.
+
+## Supported operations
+
+### BLAS-style operations
+
+- `dot`
+- `matmul`
+- `axpy`
+- `bias_add`
+
+### Elementwise operations
+
+- `add`
+- `sub`
+- `mul`
+- `div`
+- `neg`
+- `abs`
+- `square`
+- `relu`
+- `sqrt`
+- `exp`
+- `sigmoid`
+
+`matmul` currently has a CPU implementation only. Unsupported backend and
+operation combinations throw `NotImplemented`; they do not silently fall back
+to another device.
+
+## Tensor operations
+
+The current `Tensor` API includes:
+
+- Construction with `Tensor::empty` and `Tensor::from_host`
+- Typed construction with `Tensor::from_vector`
+- Device transfer with `Tensor::to`
+- Host transfer with `copy_to_host` and `to_vector`
+- Scalar reads with `item`
+- Views with `transpose`, `slice`, `expand`, `unsqueeze`, and `view`
+- Packing non-contiguous data with `contiguous`
+- Metadata queries for shape, strides, dtype, device, dimensions, and size
+
+Views share storage and do not copy data. Operations that require contiguous
+inputs create packed copies internally.
+
+## Devices and backend selection
+
+```cpp
+auto selected = default_device();
+auto devices = list_devices();
+
+Tensor x = Tensor::empty({1024}, DType::F32, selected);
+```
+
+`Device` values use a device type and index, for example `cpu`, `cuda:0`, or
+`rocm:1`. `default_device()` uses the first available backend according to the
+library's selection policy. CPU is always available.
+
+The `MENSURFLOW_DEVICE` environment variable overrides automatic selection:
+
+```text
+MENSURFLOW_DEVICE=cpu
+MENSURFLOW_DEVICE=cuda:0
+MENSURFLOW_DEVICE=rocm:0
+MENSURFLOW_DEVICE=metal:0
+```
+
+An explicitly selected unavailable device produces an error. The library does
+not silently redirect an operation to another device.
+
+## Backend coverage
+
+| Operation family | CPU | CUDA | ROCm | Metal | Vulkan |
+|---|---:|---:|---:|---:|---:|
+| Basic elementwise arithmetic | Yes | Partial | Partial | Partial | No |
+| Unary elementwise operations | Yes | No | No | No | No |
+| `dot` | Yes | Yes | Implemented, hardware validation pending | Implemented, hardware validation pending | No |
+| `matmul` | Yes | No | No | No | No |
+| Tensor transfers | Yes | Yes | Yes | Yes | No |
+
+GPU-specific capabilities depend on the SDK, driver, and hardware available at
+runtime.
+
+## Testing
+
+Run the complete configured test suite with:
+
+```powershell
+ctest --test-dir build-release -C Release --output-on-failure
+```
+
+CPU tests run on every supported build. GPU-specific tests run only when the
+corresponding backend and hardware are available. A skipped GPU test does not
+count as GPU correctness evidence.
+
+The GitHub Actions workflow in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs CPU-only Release
+configure, build, and CTest checks on Ubuntu and Windows.
+
+## Benchmarks
+
+Benchmarks are built with the project and measure the current tensor and CPU
+kernel implementations:
+
+- `elementwise_benchmark`
+- `dot_benchmark`
+- `matmul_benchmark`
+- `cpu_parallel_benchmark`
+
+Build the benchmark targets with:
+
+```powershell
+cmake --build build-release --config Release
+```
+
+Benchmark results and instructions are documented in
+[`docs/benchmarks/README.md`](docs/benchmarks/README.md).
 
 ## Formatting
 
-Install `clang-format`, then configure and format the project:
+The project uses `.clang-format` for C++, CUDA, and Objective-C++ sources.
+Configure and build the formatting target when `clang-format` is available:
 
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target format
+```powershell
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target format
 ```
 
-The optional `format` target applies `.clang-format` to all C++ headers/sources,
-CUDA files, and Objective-C++ Metal wrappers. Embedded Metal shaders are preserved.
-Editors can use the same config for format-on-save. Use the same clang-format
-version across the team for identical results.
+The tracked pre-commit hook can be enabled with:
 
-If clang-format is not on PATH, configure with
-`-DPRS_CLANG_FORMAT=/path/to/clang-format`. It is only required for formatting.
-
-### Pre-commit formatting
-
-`build.sh` and `build.bat` automatically enable the repository's tracked Git hook
-for Git clones before building. Existing custom `core.hooksPath` settings are
-preserved with a notice; source archives skip installation. Alternatively, enable
-the hook manually from the repository root:
-
-```sh
+```powershell
 git config --local core.hooksPath .githooks
 ```
 
-On Linux/macOS or Git for Windows, the hook runs clang-format on staged C/C++, CUDA,
-and Objective-C/Objective-C++ files using `.clang-format`, then stages only the
-formatting changes so they are included in the commit. Documentation-only commits
-need no formatter. Review the resulting commit diff as usual.
+The hook formats staged source files. Documentation-only changes do not require
+formatting.
 
-Formatting on commit is enabled by default. Disable or re-enable it for this clone:
-
-```sh
-git config --local prs.formatOnCommit false  # disable
-git config --local prs.formatOnCommit true   # re-enable
-```
-
-Skip formatting for a single commit without disabling other hooks:
-
-```sh
-git -c prs.formatOnCommit=false commit -m "Your message"
-```
-
-This setting only controls the Git hook, not VS Code format-on-save. Running the
-build scripts again preserves this preference.
-
-Install `clang-format` on PATH, or set the `PRS_CLANG_FORMAT` environment variable
-to its executable path. Use the same version across the team. The CMake
-`-DPRS_CLANG_FORMAT=...` setting does not configure this hook.
-
-If a file needs formatting but also has unstaged edits, the hook stops without
-changing files. Stage or stash those edits and retry; it never automatically
-stages unrelated working-tree changes. Unstaged `.clang-format` changes must also
-be staged or discarded before committing source files. Existing custom hooks must
-be integrated manually before changing `core.hooksPath`.
-
-VS Code formats C++ files with clangd and CUDA files with the C/C++ extension
-(`ms-vscode.cpptools`), following the shared `.vscode/settings.json`. Both use the
-shared clang-format rules. The C/C++ extension includes clang-format. Files save automatically when you switch files or move
-focus out of the editor; Ctrl+S (Cmd+S on macOS) also works. Objective-C++ `.mm`
-files use the clangd extension and require an
-installed clangd server; accept that extension's installation prompt if needed.
-
-## Use
-
-```cpp
-#include "prs/ops.hpp"
-
-std::vector<float> x{1, 2, 3};
-std::vector<float> y{10, 20, 30};
-prs::axpy(2.0f, x, y, prs::Backend::CPU); // y = {12, 24, 36}
-
-if (prs::metal_available()) {
-    y = {10, 20, 30};
-    prs::axpy(2.0f, x, y, prs::Backend::Metal); // Mac GPU
-}
-
-if (prs::cuda_available()) {
-    y = {10, 20, 30};
-    prs::axpy(2.0f, x, y, prs::Backend::CUDA); // same result
-}
-
-if (prs::opencl_available()) {
-    y = {10, 20, 30};
-    prs::axpy(2.0f, x, y, prs::Backend::OpenCL); // AMD, Intel, or NVIDIA GPU
-}
-
-// Row-major A[2,3] * B[3,2] = C[2,2]. C must be sized before the call.
-std::vector<float> a{1, 2, 3, 4, 5, 6};
-std::vector<float> b{7, 8, 9, 10, 11, 12};
-std::vector<float> c(4);
-prs::matmul(a, b, c, 2, 2, 3); // default Auto; c = {58, 64, 139, 154}
-```
-
-`Backend::Auto` prefers available CUDA, then Metal, then OpenCL, otherwise CPU. Explicit GPU
-requests throw if unavailable; there is no silent fallback. `axpy` retains its
-CPU default for compatibility; pass `Backend::Auto` for automatic selection.
-`resolve_backend()` and `backend_available()` expose selection and availability.
-The original `prs/axpy.hpp` remains a compatibility include.
-
-Both operations are synchronous and use host vectors. AXPY allows x/y aliasing;
-matmul allows C to alias A/B by computing into a temporary. Matrices are tightly
-packed row-major: A has M*K elements, B K*N, C M*N. K=0 fills C with zeros;
-M=0 or N=0 requires an empty C. Exact input/output sizes and dimension/byte
-overflow are checked before dispatch. Invalid sizes throw `std::invalid_argument`,
-overflow throws `std::overflow_error`, and GPU failures throw `std::runtime_error`.
-An explicit unavailable backend is rejected even for an empty operation.
-
-Link the `prs` CMake target from your executable with
-`target_link_libraries(your_program PRIVATE prs)`.
-
-## Implementation
+## Project layout
 
 ```text
-include/prs/
-  backend.hpp                 # Backend enum, availability, Auto selection
-  ops.hpp                     # Public AXPY and matmul API
-  axpy.hpp                    # Backward-compatible include
-src/
-  ops.cpp                     # Validation and dispatch
-  backend.cpp                 # Availability and backend selection
-  backends/
-    interface.hpp             # BackendInterface: available(), axpy(), matmul()
-    cpu/{backend,axpy,matmul}.cpp
-    cuda/{backend,axpy,matmul}.cu
-    cuda/utils.cuh            # Shared CUDA errors and allocation ownership
-    metal/{backend,axpy,matmul}.mm
-    metal/utils.hpp           # Cached device/queue, pipeline and buffer helpers
-    opencl/{backend,axpy,matmul}.cpp
-    opencl/utils.hpp          # Device discovery, cached context/queue, kernel and buffer helpers
-benchmarks/{axpy,matmul}_benchmark.cpp
-tests/{axpy,matmul}_test.cpp
-.clang-format                # Shared C++/CUDA/Objective-C++ formatting
-.vscode/settings.json        # Automatic formatting when saving source files in VS Code
-CMakeLists.txt               # Library, backend, executable, and test configuration
-build.sh / build.bat         # Release benchmark shortcuts for POSIX / Windows
-.gitignore                   # Generated builds and local metadata
-README.md                    # Setup, API contracts, source map, and performance notes
+include/mensurflow/       Public headers
+src/core/                 Tensor, device, shape, storage, and dispatcher
+src/ops/                  Validation and public operation dispatch
+src/backends/cpu/         CPU implementations
+src/backends/cuda/        CUDA backend
+src/backends/rocm/        ROCm backend
+src/backends/metal/       Metal backend
+tests/                    Correctness tests
+benchmarks/               Performance benchmarks
+docs/plan/                Architecture and future roadmap
 ```
 
-Each backend implements the same internal interface. Metal caches device/queue
-and operation pipelines, uses shared buffers, and waits before returning host
-results. The CPU matmul implementation is a serial cache-friendly i-k-j loop;
-CUDA and Metal use rectangular 16x16 shared-memory tiled kernels.
-- CUDA uses 256 threads/block and a grid-stride loop with bounds checking.
-- Calls are synchronous: `y` contains results when the call returns.
-- Explicit GPU requests throw on an unavailable backend/device; no silent fallback.
+## Roadmap
 
-GPU calls currently allocate and copy on every invocation. This makes usage easy
-but may be slower than CPU for small inputs. A future performance-oriented API
-could retain tensors on the GPU, reuse allocations, and autotune block sizes.
+The detailed plans are:
 
-## AMD GPUs (OpenCL)
+- [`docs/plan/ARCHITECTURE.md`](docs/plan/ARCHITECTURE.md)
+- [`docs/plan/KERNELS_ROADMAP.md`](docs/plan/KERNELS_ROADMAP.md)
+- [`docs/plan/VULKAN_DESIGN.md`](docs/plan/VULKAN_DESIGN.md)
 
-AMD's ROCm/HIP does not officially support RDNA1 cards, so the
-AMD path uses OpenCL, which their drivers provide. The backend needs an OpenCL runtime (driver), the Khronos headers, and the ICD loader library at build time. CMake uses an installed development package when available; otherwise it downloads and builds the Khronos headers and ICD loader automatically during configuration. The first configure requires internet access.
+The next implementation milestones are:
 
-```sh
-# Debian/Ubuntu: Mesa's OpenCL driver, the ICD loader, headers, and clinfo for checking.
-sudo apt install mesa-opencl-icd ocl-icd-opencl-dev opencl-headers clinfo
-RUSTICL_ENABLE=radeonsi clinfo -l      # must list "AMD Radeon RX 5700"
-export RUSTICL_ENABLE=radeonsi         # needed by Mesa's rusticl driver
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build --output-on-failure -V
-```
-
-On Windows, install the current AMD Adrenalin driver (it includes the OpenCL runtime), then configure normally. If no OpenCL development package is installed, CMake downloads the Khronos headers and loader automatically:
-
-```powershell
-cmake -S . -B build-opencl -DPRS_ENABLE_CUDA=OFF -DPRS_ENABLE_METAL=OFF -DPRS_ENABLE_OPENCL=ON
-cmake --build build-opencl --config Release
-ctest --test-dir build-opencl -C Release --output-on-failure -V
-```
-
-Verify that the tests print `OpenCL tests passed`, not a skip. Only GPU devices count: software runtimes such as PoCL are ignored unless `PRS_OPENCL_ALLOW_CPU=1` is set. That setting runs the OpenCL kernels on the CPU, which tests the backend without a GPU but says nothing about speed. The OpenCL kernels use the same tiled 16x16 algorithm as CUDA and Metal and have the same per-call allocation and copy overhead.
-
-## CPU vs. GPU benchmark
-
-After a Release build, run `./build/axpy_benchmark`. It compares 1,024 and
-16,777,216 elements using 11 trials, alternating backend order, with correctness
-checks outside timing. Small-vector trials average 100 calls to reduce timer
-noise; large-vector trials use one call. The reported time is the median trial
-per-call time. Three warmup calls exclude first-use shader compilation.
-
-Example measured on Apple M3 Pro (CPU serial loop, no OpenMP):
-
-| Elements | CPU time | Metal time | Result |
-|---|---:|---:|---|
-| 1,024 | 0.000058 ms | 0.120322 ms | CPU faster |
-| 16,777,216 | 1.803334 ms | 17.506208 ms | CPU about 9.7x faster |
-
-These are **end-to-end API timings**, not isolated GPU kernel timings. The GPU
-path allocates buffers, copies both inputs, submits work, waits, and copies the
-output on every call. For this low-arithmetic-intensity operation, that overhead
-outweighs GPU compute benefits even at the larger size. Shared Apple Silicon
-memory does not eliminate the explicit copies in this implementation. Results
-vary with system load; they do not imply that CPUs always outperform GPUs.
-
-## A workload where the GPU wins: matrix multiplication
-
-Run `./build/matmul_benchmark` after a Release build. This backend-independent
-benchmark calls the public library API, using a serial C++ i-k-j CPU baseline
-and an automatically selected backend. It checks a 17x23 output with K=19 to
-exercise rectangular partial tiles, plus 64x64 and 1024x1024 square cases.
-On CPU-only systems it compares two CPU runs. All results are validated outside
-timing, after warmup and every timed trial. Tests additionally cover empty/zero-K
-matrices, aliases, invalid sizes, overflow, and each available backend.
-
-### NVIDIA RTX 3060 on Arch Linux
-
-The NVIDIA driver alone is not enough to build CUDA code; install the toolkit
-and its supported host compiler first (the current Arch package uses GCC 15):
-
-```sh
-sudo pacman -S cuda gcc15
-cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release
-cmake --build build-cuda -j
-ctest --test-dir build-cuda --output-on-failure -V
-cmake --build build-cuda --target run_benchmarks
-```
-
-CMake finds `nvcc` on PATH or in standard toolkit locations, detects local NVIDIA
-compute capabilities using `nvidia-smi`, and selects the versioned host GCC
-required by Arch's CUDA package. Explicit compiler/architecture settings override
-auto-detection; use `CMAKE_CUDA_ARCHITECTURES` when building for another machine.
-On macOS the default backend is Metal. Without a CUDA compiler, CPU targets still
-build and both benchmarks fall back to CPU. Detection does not install drivers
-or the toolkit. Use a fresh build directory after installing a toolkit if an old
-configuration cached CUDA as unavailable.
-
-Verify that the tests print `CUDA tests passed`, not a CUDA skip. Both benchmarks
-include allocations, host/device transfers, and synchronization in GPU timings;
-AXPY may remain faster on the CPU because it does little computation per byte.
-The matrix benchmark uses a custom CUDA kernel, not cuBLAS or tensor cores.
-
-Historical standalone implementation measured on Apple M3 Pro (median of five calls after warmup):
-
-| Square matrix size | CPU | Metal GPU | GPU speedup |
-|---|---:|---:|---:|
-| 64 x 64 | 0.019 ms | 0.535 ms | 0.035x (CPU wins) |
-| 1024 x 1024 | 69.862 ms | 6.611 ms | **10.568x** |
-
-GPU timings include buffer allocations, input copies, execution, synchronization,
-and output copy; shader compilation is excluded. Results are checked against
-CPU output outside timing. Matrix multiplication does O(N^3) arithmetic on
-O(N^2) input/output data, giving the GPU much more useful work per byte than AXPY.
-This compares our custom implementations, **not** optimized CPU BLAS such as
-Apple Accelerate, which may substantially change the comparison.
+1. Complete CPU P0 operations such as reductions, softmax, and matrix-vector
+   multiplication.
+2. Add operation/backend coverage testing.
+3. Improve CPU GEMM and reduction performance.
+4. Integrate the Vulkan backend.
+5. Add graph execution.
+6. Add neural-network layers and autograd.
