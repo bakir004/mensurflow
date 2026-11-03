@@ -6,7 +6,7 @@ the hardware and sends each op to the best available implementation:
 | Hardware              | Primary backend                          | Fallback chain           |
 |-----------------------|------------------------------------------|--------------------------|
 | NVIDIA GPU            | CUDA + cuBLAS / cuBLASLt (+ cuDNN, opt.) | Vulkan → CPU             |
-| AMD GPU               | HIP + rocBLAS / hipBLASLt (+ MIOpen)     | Vulkan → CPU             |
+| AMD GPU               | **Vulkan** (our own kernels)             | CPU                      |
 | Apple Silicon         | Metal + MPS / MPSGraph                   | Vulkan (MoltenVK) → CPU  |
 | Intel / ARM / Qualcomm / anything else with a Vulkan driver | **Vulkan** (our own kernels) | CPU |
 | No GPU                | CPU (own kernels + optional OpenBLAS / Accelerate) | —              |
@@ -32,9 +32,9 @@ libraries do well and fall back per op (see "Per-op fallback" below).
  │  Dispatcher: (op, backend, dtype) → kernel function pointer  │
  ├──────────────────────────────────────────────────────────────┤
  │  Runtime: Device, Stream, Allocator, Buffer, Event           │  per backend
- ├────────┬────────┬────────┬─────────┬─────────────────────────┤
- │  CPU   │  CUDA  │  ROCm  │  Metal  │  Vulkan                 │
- └────────┴────────┴────────┴─────────┴─────────────────────────┘
+ ├────────┬────────┬─────────┬──────────────────────────────────┤
+ │  CPU   │  CUDA  │  Metal  │  Vulkan                          │
+ └────────┴────────┴─────────┴──────────────────────────────────┘
 ```
 
 Rules:
@@ -56,7 +56,7 @@ hundreds of ops). The library must move to **device-resident tensors**:
 ```cpp
 namespace mensurflow {
 
-enum class DeviceType { CPU, CUDA, ROCm, Metal, Vulkan };
+enum class DeviceType { CPU, CUDA, Metal, Vulkan };
 enum class DType { F32, F16, BF16, I32, I64, U8, Bool };
 
 struct Device {                     // value type, cheap to copy
@@ -106,7 +106,7 @@ current tests and benchmarks keep working.
 ### Execution model
 
 - **Eager + asynchronous.** Each op records work into the device's current
-  `Stream` (CUDA stream / HIP stream / `MTLCommandBuffer` / Vulkan command buffer)
+  `Stream` (CUDA stream / `MTLCommandBuffer` / Vulkan command buffer)
   and returns. Only `copy_to_host`, `synchronize`, or reading a scalar blocks.
 - Later (phase 3+), add an optional **graph mode** (`mensurflow::Graph g; g.capture(...)`)
   that maps to CUDA Graphs / MPSGraph / pre-recorded Vulkan command buffers and
@@ -121,12 +121,11 @@ Detection order inside `default_device()`:
 
 1. `MENSURFLOW_DEVICE` environment variable overrides everything (`cuda:0`, `vulkan:1`, `cpu`).
 2. CUDA plugin loaded and `cudaGetDeviceCount() > 0` → CUDA.
-3. ROCm plugin loaded and `hipGetDeviceCount() > 0` → ROCm.
-4. Apple platform and `MTLCreateSystemDefaultDevice() != nil` → Metal.
-5. Vulkan loader present and a physical device with a compute queue exists → Vulkan.
+3. Apple platform and `MTLCreateSystemDefaultDevice() != nil` → Metal.
+4. Vulkan loader present and a physical device with a compute queue exists → Vulkan.
    Prefer `VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU`, then integrated, never `CPU`
    (llvmpipe/SwiftShader).
-6. CPU.
+5. CPU.
 
 Vulkan also gives us a free hardware inventory: `VkPhysicalDeviceProperties::vendorID`
 (`0x10DE` NVIDIA, `0x1002` AMD, `0x8086` Intel, `0x106B` Apple, `0x13B5` ARM,
@@ -208,7 +207,6 @@ fails CI if the Vulkan or CPU column has holes.
 mensurflow/
 ├── CMakeLists.txt                  # top-level: options, add_subdirectory(...)
 ├── cmake/
-│   ├── FindROCm.cmake
 │   ├── CompileShaders.cmake        # glslc/slangc → SPIR-V → embedded C++ arrays
 │   └── Sanitizers.cmake
 ├── include/mensurflow/             # PUBLIC API — no vendor headers allowed
@@ -260,11 +258,6 @@ mensurflow/
 │       │   ├── backend.cu          # device, stream, caching allocator
 │       │   ├── cublas.cu           # gemm/gemv/... → cuBLAS / cuBLASLt
 │       │   └── kernels/            # .cu for ops cuBLAS lacks (softmax, norms, ...)
-│       │
-│       ├── rocm/
-│       │   ├── backend.hip
-│       │   ├── rocblas.hip         # → rocBLAS / hipBLASLt
-│       │   └── kernels/            # HIP ports; most CUDA kernels hipify 1:1
 │       │
 │       ├── metal/
 │       │   ├── backend.mm
@@ -371,7 +364,7 @@ never touches the `Backend` class.
 | Phase | Deliverable |
 |---|---|
 | 0 | Move Vulkan prototype into `src/backends/vulkan` with RAII core; `Tensor` + `Device` + dispatcher; legacy API on top. |
-| 1 | P0 kernels (see KERNELS_ROADMAP.md) on CPU + Vulkan; CUDA/Metal/ROCm through vendor BLAS for GEMM. Train an MLP on MNIST on every backend. |
+| 1 | P0 kernels (see KERNELS_ROADMAP.md) on CPU + Vulkan; CUDA/Metal through vendor BLAS for GEMM. Train an MLP on MNIST on every backend. |
 | 2 | P1 kernels, autograd, `nn` modules, Adam. Small CNN. F16 on Vulkan. |
 | 3 | P2: attention (flash), conv fast paths, cooperative-matrix GEMM, graph capture + fusion. Tiny transformer. |
 | 4 | P3: LAPACK-style solvers, quantization, multi-GPU. |

@@ -5,11 +5,10 @@ ranked so we build what matters first:
 
 - **cuBLAS / cuBLASLt** (NVIDIA): BLAS L1–L3, batched/strided GEMM, GEMM with fused epilogues
 - **cuDNN** (NVIDIA): conv, pooling, normalization, softmax, activations, attention, RNN
-- **rocBLAS / hipBLASLt / MIOpen** (AMD): the same list as cuBLAS / cuBLASLt / cuDNN
 - **MPS / MPSGraph** (Apple): matrix multiply, conv, pooling, norms, reductions, gather/scatter, random, plus a graph compiler that fuses ops
 - **oneMKL / oneDNN** (Intel / CPU), **OpenBLAS / BLIS / Accelerate** (CPU): BLAS + LAPACK + DNN primitives
-- **cuSOLVER / rocSOLVER / LAPACK**: factorizations and solvers
-- **cuRAND / rocRAND**: random number generation
+- **cuSOLVER / LAPACK**: factorizations and solvers
+- **cuRAND**: random number generation
 
 ### How to read the tables
 
@@ -42,7 +41,7 @@ writes it by hand (including PyTorch).
 
 | Kernel | Op | Nec. | Diff. | Vendor | Notes |
 |---|---|---|---|---|---|
-| `axpy` | y = αx + y | P0 | ★☆☆☆☆ | cuBLAS, rocBLAS, MPS(graph), BLAS | Already done. |
+| `axpy` | y = αx + y | P0 | ★☆☆☆☆ | cuBLAS, MPS(graph), BLAS | Already done. |
 | `scal` | x = αx | P0 | ★☆☆☆☆ | all BLAS | Same shader as elementwise mul-by-scalar. |
 | `copy` | y = x | P0 | ★☆☆☆☆ | all BLAS | Use `vkCmdCopyBuffer` when contiguous; strided copy kernel otherwise. |
 | `dot` | xᵀy | P0 | ★★☆☆☆ | all BLAS | First reduction kernel. Subgroup reduce → shared → atomics or second pass. |
@@ -69,8 +68,8 @@ writes it by hand (including PyTorch).
 |---|---|---|---|---|---|
 | `gemm` naive/tiled | C = αop(A)op(B) + βC | P0 | ★★★☆☆ | all BLAS, MPS | Have a 16×16 shared tile version. Add α, β, transposes (NN, NT, TN, TT). |
 | `gemm` register-blocked | same | P1 | ★★★★☆ | — | Each thread computes a 4×4/8×8 micro-tile, vec4 loads, double-buffered shared memory. Target: ≥50% of cuBLAS on the same GPU. |
-| `gemm_batched` / `gemm_strided_batched` | C[i] = A[i]B[i] | P1 | ★★☆☆☆ | cuBLAS, rocBLAS, MPS | Use `gl_WorkGroupID.z` for batch. Needed for attention and batched matmul with broadcasting. |
-| `gemm` + epilogue | C = act(AB + bias) | P2 | ★★★☆☆ | cuBLASLt, hipBLASLt, MPSGraph | Fuse bias, ReLU/GELU, residual add into the store. Big win for Linear layers. |
+| `gemm_batched` / `gemm_strided_batched` | C[i] = A[i]B[i] | P1 | ★★☆☆☆ | cuBLAS, MPS | Use `gl_WorkGroupID.z` for batch. Needed for attention and batched matmul with broadcasting. |
+| `gemm` + epilogue | C = act(AB + bias) | P2 | ★★★☆☆ | cuBLASLt, MPSGraph | Fuse bias, ReLU/GELU, residual add into the store. Big win for Linear layers. |
 | `gemm` cooperative-matrix | same, F16/BF16 → F32 | P2 | ★★★★★ | — | `VK_KHR_cooperative_matrix` (tensor cores / WMMA / Intel XMX). Fallback to register-blocked when unsupported. |
 | `gemm` split-K | same, small M,N large K | P2 | ★★★☆☆ | cuBLAS (internal) | Partial sums + reduction. Needed for weight-gradient shapes. |
 | `syrk`, `herk`, `syr2k` | C = αAAᵀ + βC | P3 | ★★★☆☆ | all BLAS | GEMM that writes only one triangle. |
@@ -88,8 +87,8 @@ storage buffer or push constants, and have a fast path for contiguous same-shape
 |---|---|---|---|---|---|
 | Binary arithmetic | add, sub, mul, div, pow, max, min | P0 | ★★☆☆☆ (★★★ with broadcasting) | MPSGraph, cuDNN (partially) | Broadcasting index math is the hard part — write it once in `common/indexing.glsl`. |
 | Unary math | neg, abs, exp, log, sqrt, rsqrt, sin, cos, tanh, sigmoid, reciprocal | P0 | ★☆☆☆☆ | MPSGraph | |
-| Activations | relu, leaky_relu, gelu (erf + tanh approx), silu/swish, elu, softplus | P0 (relu) / P1 | ★☆☆☆☆ | cuDNN, MIOpen, MPSGraph | |
-| Activation backward | relu', gelu', silu', sigmoid', tanh' | P0 / P1 | ★☆☆☆☆ | cuDNN, MIOpen | |
+| Activations | relu, leaky_relu, gelu (erf + tanh approx), silu/swish, elu, softplus | P0 (relu) / P1 | ★☆☆☆☆ | cuDNN, MPSGraph | |
+| Activation backward | relu', gelu', silu', sigmoid', tanh' | P0 / P1 | ★☆☆☆☆ | cuDNN | |
 | Comparison | eq, ne, lt, le, gt, ge → Bool | P1 | ★☆☆☆☆ | MPSGraph | |
 | `where` / select | out = c ? a : b | P1 | ★☆☆☆☆ | MPSGraph | Masking in attention. |
 | `clamp` | | P1 | ★☆☆☆☆ | MPSGraph | |
@@ -113,22 +112,22 @@ storage buffer or push constants, and have a fast path for contiguous same-shape
 
 | Kernel | Nec. | Diff. | Vendor | Notes |
 |---|---|---|---|---|
-| `softmax` / `log_softmax` (fwd + bwd) | P0 | ★★☆☆☆ | cuDNN, MIOpen, MPS | Numerically stable (subtract max). One workgroup per row; online softmax (single pass for max+sum) as an upgrade. |
+| `softmax` / `log_softmax` (fwd + bwd) | P0 | ★★☆☆☆ | cuDNN, MPS | Numerically stable (subtract max). One workgroup per row; online softmax (single pass for max+sum) as an upgrade. |
 | `cross_entropy` (fused log-softmax + NLL, fwd + bwd) | P0 | ★★☆☆☆ | — | Fusing avoids materializing probabilities. Gradient is `softmax − one_hot`. |
 | `mse_loss` (fwd + bwd) | P0 | ★☆☆☆☆ | — | Elementwise + reduction. |
 | `bias_add` / bias grad | P0 | ★☆☆☆☆ | cuDNN | Gradient is an axis reduction. |
-| `layer_norm` (fwd + bwd) | P1 | ★★★☆☆ | cuDNN (v9), MIOpen, MPSGraph | Welford mean/var per row; backward needs saved mean/rstd and two reductions. |
+| `layer_norm` (fwd + bwd) | P1 | ★★★☆☆ | cuDNN (v9), MPSGraph | Welford mean/var per row; backward needs saved mean/rstd and two reductions. |
 | `rms_norm` (fwd + bwd) | P1 | ★★☆☆☆ | — | Simpler LayerNorm; used by modern LLMs. |
-| `batch_norm` (train + eval, fwd + bwd) | P1 | ★★★☆☆ | cuDNN, MIOpen, MPS | Reduction over N,H,W per channel; running statistics update. |
-| `group_norm` | P2 | ★★★☆☆ | MIOpen, MPSGraph | |
+| `batch_norm` (train + eval, fwd + bwd) | P1 | ★★★☆☆ | cuDNN, MPS | Reduction over N,H,W per channel; running statistics update. |
+| `group_norm` | P2 | ★★★☆☆ | MPSGraph | |
 | `dropout` (fwd + bwd) | P1 | ★★☆☆☆ | cuDNN | Needs the RNG below; store mask or regenerate from seed+offset. |
-| `conv2d` via im2col + GEMM (fwd) | P1 | ★★★☆☆ | cuDNN, MIOpen, MPS | Easiest correct conv. Memory hungry. |
-| `conv2d` backward (data + weight) | P1 | ★★★★☆ | cuDNN, MIOpen, MPS | col2im with atomics or transposed-conv formulation. |
+| `conv2d` via im2col + GEMM (fwd) | P1 | ★★★☆☆ | cuDNN, MPS | Easiest correct conv. Memory hungry. |
+| `conv2d` backward (data + weight) | P1 | ★★★★☆ | cuDNN, MPS | col2im with atomics or transposed-conv formulation. |
 | `conv2d` implicit GEMM (no im2col buffer) | P2 | ★★★★☆ | cuDNN | Index on the fly inside the GEMM tile loader. |
-| `conv2d` direct / depthwise | P2 | ★★★☆☆ | cuDNN, MIOpen | Depthwise is memory-bound and does badly as GEMM. |
-| `conv2d` Winograd F(2×2,3×3) | P3 | ★★★★★ | cuDNN, MIOpen | 3×3 fast path. |
-| `conv1d`, `conv3d`, `conv_transpose2d` | P2 / P3 | ★★★☆☆ | cuDNN, MIOpen, MPS | Reuse the im2col machinery. |
-| `max_pool2d` / `avg_pool2d` (fwd + bwd) | P1 | ★★☆☆☆ | cuDNN, MIOpen, MPS | Max pool backward needs saved indices. |
+| `conv2d` direct / depthwise | P2 | ★★★☆☆ | cuDNN | Depthwise is memory-bound and does badly as GEMM. |
+| `conv2d` Winograd F(2×2,3×3) | P3 | ★★★★★ | cuDNN | 3×3 fast path. |
+| `conv1d`, `conv3d`, `conv_transpose2d` | P2 / P3 | ★★★☆☆ | cuDNN, MPS | Reuse the im2col machinery. |
+| `max_pool2d` / `avg_pool2d` (fwd + bwd) | P1 | ★★☆☆☆ | cuDNN, MPS | Max pool backward needs saved indices. |
 | `adaptive_avg_pool2d` | P2 | ★★☆☆☆ | MPSGraph | Global pooling in CNN heads. |
 | `upsample` (nearest, bilinear) | P2 | ★★☆☆☆ | MPSGraph | |
 | `embedding` (fwd + bwd) | P1 | ★★☆☆☆ | — | Forward is gather; backward is scatter-add (atomics on F32; F16 needs CAS loop or sort). |
@@ -136,7 +135,7 @@ storage buffer or push constants, and have a fast path for contiguous same-shape
 | FlashAttention (fused, tiled, online softmax) fwd | P2 | ★★★★★ | cuDNN SDPA, MPSGraph SDPA | Main transformer speed-up; O(N) memory. |
 | FlashAttention bwd | P3 | ★★★★★ | cuDNN SDPA | |
 | Rotary embeddings (RoPE) | P2 | ★★☆☆☆ | — | Elementwise with index-dependent angles. |
-| RNN / LSTM / GRU cells | P3 | ★★★☆☆ | cuDNN, MIOpen, MPS | Compose from GEMM + pointwise first. |
+| RNN / LSTM / GRU cells | P3 | ★★★☆☆ | cuDNN, MPS | Compose from GEMM + pointwise first. |
 
 ## 7. Optimizers (fused, in-place)
 
@@ -164,7 +163,7 @@ storage buffer or push constants, and have a fast path for contiguous same-shape
 
 | Kernel | Nec. | Diff. | Vendor | Notes |
 |---|---|---|---|---|
-| Philox4x32-10 counter-based RNG | P1 | ★★☆☆☆ | cuRAND, rocRAND, MPSGraph | Counter-based → stateless, reproducible across backends. Implement once in a `.glsl` include. Needs 32×32→64 multiply (`umulExtended`). |
+| Philox4x32-10 counter-based RNG | P1 | ★★☆☆☆ | cuRAND, MPSGraph | Counter-based → stateless, reproducible across backends. Implement once in a `.glsl` include. Needs 32×32→64 multiply (`umulExtended`). |
 | `uniform`, `normal` (Box–Muller), `bernoulli` | P1 | ★☆☆☆☆ | same | Weight init (Kaiming/Xavier) and dropout. |
 
 Aim for **bit-identical** random streams across CPU/Vulkan/CUDA for the same
@@ -176,18 +175,18 @@ seed — makes cross-backend testing much easier.
 |---|---|---|---|---|
 | F16/BF16 storage + F32 accumulate for all P0/P1 ops | P2 | ★★☆☆☆ | all | Requires `storageBuffer16BitAccess`; arithmetic in F16 needs `shaderFloat16`. |
 | Loss scaling (check inf/nan, scale/unscale) | P2 | ★★☆☆☆ | — | |
-| INT8 GEMM (dp4a / integer dot product) | P3 | ★★★★☆ | cuBLASLt, hipBLASLt | `VK_KHR_shader_integer_dot_product`. |
+| INT8 GEMM (dp4a / integer dot product) | P3 | ★★★★☆ | cuBLASLt | `VK_KHR_shader_integer_dot_product`. |
 | 4-bit weight dequant-GEMM (Q4 blocks) | P3 | ★★★★☆ | — | llama.cpp-style inference. |
 
 ## 11. Dense linear algebra (LAPACK subset)
 
 | Kernel | Nec. | Diff. | Vendor | Notes |
 |---|---|---|---|---|
-| `potrf` Cholesky | P3 | ★★★★☆ | cuSOLVER, rocSOLVER, MPS | Blocked: potrf on diagonal block + trsm + syrk. |
-| `getrf` LU with partial pivoting | P3 | ★★★★☆ | cuSOLVER, rocSOLVER, MPS | |
+| `potrf` Cholesky | P3 | ★★★★☆ | cuSOLVER, MPS | Blocked: potrf on diagonal block + trsm + syrk. |
+| `getrf` LU with partial pivoting | P3 | ★★★★☆ | cuSOLVER, MPS | |
 | `getrs`, `potrs` solves | P3 | ★★★☆☆ | same | trsm-based. |
-| `geqrf` QR (Householder) | P3 | ★★★★☆ | cuSOLVER, rocSOLVER | |
-| `gesvd`, `syevd` | P3 | ★★★★★ | cuSOLVER, rocSOLVER | Do on CPU (LAPACK) and copy, unless the course demands it. |
+| `geqrf` QR (Householder) | P3 | ★★★★☆ | cuSOLVER | |
+| `gesvd`, `syevd` | P3 | ★★★★★ | cuSOLVER | Do on CPU (LAPACK) and copy, unless the course demands it. |
 | matrix inverse | P3 | ★★★☆☆ | same | getrf + getri. |
 
 ## 12. Sparse (optional)
@@ -251,15 +250,15 @@ registration and backend-specific performance work remain separate.
 
 ## Per-backend coverage strategy
 
-| Category | CPU | CUDA | ROCm | Metal | Vulkan |
-|---|---|---|---|---|---|
-| BLAS L1–L3 | own kernels, optional OpenBLAS/Accelerate | cuBLAS/cuBLASLt | rocBLAS/hipBLASLt | MPS / MPSGraph | **own** |
-| Conv / pool / norms | own | cuDNN (optional) or own | MIOpen (optional) or own | MPS / MPSGraph | **own** |
-| Elementwise / reductions | own (OpenMP + SIMD) | own `.cu` | hipified `.cu` | MPSGraph or `.metal` | **own** |
-| Softmax / losses / optimizers | own | own `.cu` | hipified | `.metal` | **own** |
-| Attention | own (naive) | cuDNN SDPA or own | own | MPSGraph SDPA | **own** |
-| RNG | own Philox | own Philox (not cuRAND, for bit-identical results) | same | own | **own** |
-| LAPACK | LAPACK | cuSOLVER | rocSOLVER | MPS / CPU | CPU fallback |
+| Category | CPU | CUDA | Metal | Vulkan |
+|---|---|---|---|---|
+| BLAS L1–L3 | own kernels, optional OpenBLAS/Accelerate | cuBLAS/cuBLASLt | MPS / MPSGraph | **own** |
+| Conv / pool / norms | own | cuDNN (optional) or own | MPS / MPSGraph | **own** |
+| Elementwise / reductions | own (OpenMP + SIMD) | own `.cu` | MPSGraph or `.metal` | **own** |
+| Softmax / losses / optimizers | own | own `.cu` | `.metal` | **own** |
+| Attention | own (naive) | cuDNN SDPA or own | MPSGraph SDPA | **own** |
+| RNG | own Philox | own Philox (not cuRAND, for bit-identical results) | own | **own** |
+| LAPACK | LAPACK | cuSOLVER | MPS / CPU | CPU fallback |
 
 The CPU column is also the **reference implementation** for tests: keep a
 naive, obviously-correct F64 version of every op in `tests/reference/`,

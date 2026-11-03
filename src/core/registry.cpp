@@ -19,9 +19,6 @@ Registry::Registry() {
 #ifdef MENSURFLOW_HAS_CUDA
     try_register(register_cuda_backend);
 #endif
-#ifdef MENSURFLOW_HAS_ROCM
-    try_register(register_rocm_backend);
-#endif
 #ifdef MENSURFLOW_HAS_METAL
     try_register(register_metal_backend);
 #endif

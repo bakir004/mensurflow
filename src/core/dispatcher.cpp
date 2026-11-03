@@ -129,7 +129,7 @@ Device execution_device(Execution execution, Device data_device) {
         if (data_device.type != DeviceType::CPU) {
             return data_device;
         }
-        for (DeviceType type : {DeviceType::CUDA, DeviceType::ROCm, DeviceType::Metal}) {
+        for (DeviceType type : {DeviceType::CUDA, DeviceType::Metal}) {
             if (Registry::instance().find(type) != nullptr) {
                 return {type, 0};
             }

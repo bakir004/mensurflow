@@ -1,4 +1,4 @@
-// Internal interface every backend (CPU, CUDA, ROCm, Metal, later Vulkan) implements. Nothing above
+// Internal interface every backend (CPU, CUDA, Metal, later Vulkan) implements. Nothing above
 // the dispatcher includes a vendor header: backends hide their runtime behind these classes.
 #pragma once
 
@@ -19,7 +19,7 @@ class Buffer {
 
     virtual std::size_t size() const = 0;
 
-    // The backend's own handle: a plain pointer for CPU/CUDA/ROCm, the MTLBuffer for Metal.
+    // The backend's own handle: a plain pointer for CPU/CUDA, the MTLBuffer for Metal.
     // Null for a zero-byte buffer. Only that backend's kernels interpret it.
     virtual void* native() const = 0;
 

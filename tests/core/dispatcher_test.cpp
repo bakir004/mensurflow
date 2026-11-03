@@ -37,11 +37,11 @@ void test_table() {
 
 void test_message_names_the_missing_kernel() {
     try {
-        Dispatcher().lookup({OpId::Dot, DeviceType::ROCm, DType::BF16});
+        Dispatcher().lookup({OpId::Dot, DeviceType::Vulkan, DType::BF16});
     } catch (const NotImplemented& e) {
         const std::string text = e.what();
         test::require(text.find("dot") != std::string::npos &&
-                          text.find("rocm") != std::string::npos &&
+                          text.find("vulkan") != std::string::npos &&
                           text.find("bf16") != std::string::npos,
                       "message names op, device, and dtype: " + text);
         return;

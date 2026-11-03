@@ -37,20 +37,20 @@ each is one loop that OpenMP parallelizes through `MENSURFLOW_PARALLEL_FOR`, exc
 `max` and `min`, which have separate sequential and parallel versions.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
-|Operation|CPU|CUDA|ROCm|Metal|
-|-|-|-|-|-|
-|`add`, `sub`, `mul`|OpenMP, with broadcasting|cuBLAS (copy + axpy, `sdgmm`)|same, untested|MPSGraph, untested|
-|`div`|OpenMP, with broadcasting|—|—|MPSGraph, untested|
-|`neg`, `abs`, `square`, `relu`|OpenMP, float32; tensor views supported|—|—|—|
-|`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|—|
-|`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|—|
-|`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
-|`matvec`|OpenMP, double accumulation per row|—|—|—|
-|`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|—|
-|`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|—|
-|`matmul`|blocked, rows split across threads; CPU autograd backward|—|—|—|
+|Operation|CPU|CUDA|Metal|
+|-|-|-|-|
+|`add`, `sub`, `mul`|OpenMP, with broadcasting|cuBLAS (copy + axpy, `sdgmm`)|MPSGraph, untested|
+|`div`|OpenMP, with broadcasting|—|MPSGraph, untested|
+|`neg`, `abs`, `square`, `relu`|OpenMP, float32; tensor views supported|—|—|
+|`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|
+|`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|
+|`dot`|OpenMP, double accumulation|`cublasSdot`|MPSGraph, untested|
+|`matvec`|OpenMP, double accumulation per row|—|—|
+|`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
+|`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
+|`matmul`|blocked, rows split across threads; CPU autograd backward|—|—|
 
-CUDA was tested on an RTX 3060; ROCm and Metal have never been built on real hardware. The
+CUDA was tested on an RTX 3060; Metal has never been built on real hardware. The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
 exists only in git history.
 

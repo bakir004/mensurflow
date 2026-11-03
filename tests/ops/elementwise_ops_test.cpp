@@ -52,7 +52,7 @@ const UnaryOp unary_ops[] = {
     {detail::OpId::Exp, "exp", mensurflow::exp, reference::exp, 4e-7f},
     {detail::OpId::Sigmoid, "sigmoid", sigmoid, reference::sigmoid, 4e-7f}};
 
-// Some vendor backends cannot express every op (cuBLAS and rocBLAS have no elementwise divide).
+// Some vendor backends cannot express every op (cuBLAS has no elementwise divide).
 // Those ops must fail with NotImplemented rather than crash or return garbage; they are not
 // checked for values.
 template <typename Operation> bool supported(const Operation& op, Device device) {

@@ -9,7 +9,7 @@
 
 namespace mensurflow {
 
-enum class DeviceType { CPU, CUDA, ROCm, Metal, Vulkan };
+enum class DeviceType { CPU, CUDA, Metal, Vulkan };
 
 // Value type, cheap to copy. index selects one GPU among several of the same type.
 struct Device {
@@ -39,7 +39,7 @@ bool device_available(Device device);
 
 // The device to use when the caller does not choose one. MENSURFLOW_DEVICE ("cuda:0", "cpu")
 // overrides everything and throws if it names an unavailable device. Otherwise the first of
-// CUDA, ROCm, Metal, Vulkan, then CPU that is available. Explicit choices never fall back.
+// CUDA, Metal, Vulkan, then CPU that is available. Explicit choices never fall back.
 Device default_device();
 
 } // namespace mensurflow

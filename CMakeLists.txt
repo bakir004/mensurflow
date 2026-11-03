@@ -23,9 +23,8 @@ option(MENSURFLOW_NATIVE "Compile for this machine's CPU (not portable to other 
 # (configure fails without it), OFF skips it. A built backend is still dropped at run time if
 # the machine has no matching device, so one binary works on machines with and without a GPU.
 set(MENSURFLOW_CUDA AUTO CACHE STRING "CUDA + cuBLAS backend: AUTO, ON or OFF")
-set(MENSURFLOW_ROCM AUTO CACHE STRING "ROCm + rocBLAS backend: AUTO, ON or OFF")
 set(MENSURFLOW_METAL AUTO CACHE STRING "Metal + MPSGraph backend: AUTO, ON or OFF (macOS only)")
-foreach(backend CUDA ROCM METAL)
+foreach(backend CUDA METAL)
     set_property(CACHE MENSURFLOW_${backend} PROPERTY STRINGS AUTO ON OFF)
 endforeach()
 
@@ -82,22 +81,6 @@ if(NOT MENSURFLOW_CUDA STREQUAL "OFF")
         message(FATAL_ERROR "MENSURFLOW_CUDA=ON but the CUDA Toolkit was not found")
     else()
         message(STATUS "CUDA backend: disabled (CUDA Toolkit not found)")
-    endif()
-endif()
-
-# ROCm: HIP runtime and rocBLAS, also from plain C++.
-if(NOT MENSURFLOW_ROCM STREQUAL "OFF")
-    find_package(hip CONFIG QUIET)
-    find_package(rocblas CONFIG QUIET)
-    if(hip_FOUND AND rocblas_FOUND)
-        target_sources(mensurflow PRIVATE src/backends/rocm/backend.cpp)
-        target_link_libraries(mensurflow PRIVATE hip::host roc::rocblas)
-        target_compile_definitions(mensurflow PRIVATE MENSURFLOW_HAS_ROCM=1)
-        message(STATUS "ROCm backend: enabled")
-    elseif(MENSURFLOW_ROCM STREQUAL "ON")
-        message(FATAL_ERROR "MENSURFLOW_ROCM=ON but HIP or rocBLAS was not found")
-    else()
-        message(STATUS "ROCm backend: disabled (HIP or rocBLAS not found)")
     endif()
 endif()
 

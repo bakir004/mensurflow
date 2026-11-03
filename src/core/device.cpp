@@ -8,8 +8,8 @@ namespace mensurflow {
 
 namespace {
 
-constexpr DeviceType all_types[] = {DeviceType::CPU, DeviceType::CUDA, DeviceType::ROCm,
-                                    DeviceType::Metal, DeviceType::Vulkan};
+constexpr DeviceType all_types[] = {DeviceType::CPU, DeviceType::CUDA, DeviceType::Metal,
+                                    DeviceType::Vulkan};
 
 std::string lowercase(std::string_view text) {
     std::string out(text);
@@ -27,8 +27,6 @@ const char* device_type_name(DeviceType type) {
         return "cpu";
     case DeviceType::CUDA:
         return "cuda";
-    case DeviceType::ROCm:
-        return "rocm";
     case DeviceType::Metal:
         return "metal";
     case DeviceType::Vulkan:

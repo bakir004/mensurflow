@@ -3,7 +3,7 @@
 Mensurflow is a C++17 tensor and numerical-kernel library.
 
 It provides a common `Tensor` API, device selection, backend dispatch, CPU
-kernels, and optional CUDA, ROCm, and Metal integrations. Vulkan is planned but
+kernels, and optional CUDA and Metal integrations. Vulkan is planned but
 is not yet implemented.
 
 ## Current status
@@ -13,7 +13,6 @@ is not yet implemented.
 | Tensor API | Implemented |
 | CPU backend | Implemented |
 | CUDA backend | Optional; partial |
-| ROCm backend | Optional; partial and hardware validation pending |
 | Metal backend | Optional; partial and hardware validation pending |
 | Vulkan backend | Planned |
 | Graph runtime | Partial; CPU reverse-mode autograd |
@@ -29,7 +28,6 @@ varies by operation and backend.
 - A C++17 compiler
 - OpenMP is optional
 - CUDA Toolkit is optional
-- ROCm and rocBLAS are optional
 - Metal and MPSGraph are optional and available only on macOS
 
 ## Build and test
@@ -58,7 +56,6 @@ For a deterministic CPU-only build:
 cmake -S . -B build-cpu `
   -DCMAKE_BUILD_TYPE=Release `
   -DMENSURFLOW_CUDA=OFF `
-  -DMENSURFLOW_ROCM=OFF `
   -DMENSURFLOW_METAL=OFF
 ```
 
@@ -67,7 +64,6 @@ The available CMake options are:
 | Option | Values | Default |
 |---|---|---|
 | `MENSURFLOW_CUDA` | `AUTO`, `ON`, `OFF` | `AUTO` |
-| `MENSURFLOW_ROCM` | `AUTO`, `ON`, `OFF` | `AUTO` |
 | `MENSURFLOW_METAL` | `AUTO`, `ON`, `OFF` | `AUTO` |
 | `MENSURFLOW_OPENMP` | `ON`, `OFF` | `ON` |
 | `MENSURFLOW_NATIVE` | `ON`, `OFF` | `OFF` |
@@ -127,7 +123,7 @@ Tensor r = dot(x, y, Execution::GPU); // CPU, GPU, or Auto (the default)
 
 - `Execution::CPU` runs on the CPU.
 - `Execution::GPU` runs on the GPU the inputs live on, otherwise the first
-  available CUDA, ROCm, or Metal device.
+  available CUDA or Metal device.
 - `Execution::Auto` lets the library choose; for now it always chooses the CPU.
 
 If an operation runs away from its data, the inputs are copied over and the
@@ -213,7 +209,7 @@ Tensor x = Tensor::empty({1024}, DType::F32, selected);
 ```
 
 `Device` values use a device type and index, for example `cpu`, `cuda:0`, or
-`rocm:1`. `default_device()` uses the first available backend according to the
+`metal:0`. `default_device()` uses the first available backend according to the
 library's selection policy. CPU is always available.
 
 The `MENSURFLOW_DEVICE` environment variable overrides automatic selection:
@@ -221,7 +217,6 @@ The `MENSURFLOW_DEVICE` environment variable overrides automatic selection:
 ```text
 MENSURFLOW_DEVICE=cpu
 MENSURFLOW_DEVICE=cuda:0
-MENSURFLOW_DEVICE=rocm:0
 MENSURFLOW_DEVICE=metal:0
 ```
 
@@ -230,15 +225,15 @@ not silently redirect an operation to another device.
 
 ## Backend coverage
 
-| Operation family | CPU | CUDA | ROCm | Metal | Vulkan |
-|---|---:|---:|---:|---:|---:|
-| Basic elementwise arithmetic | Yes | Partial | Partial | Partial | No |
-| Unary elementwise operations | Yes | No | No | No | No |
-| `dot` | Yes | Yes | Implemented, hardware validation pending | Implemented, hardware validation pending | No |
-| `matvec` | Yes | No | No | No | No |
-| `matmul` | Yes | No | No | No | No |
-| `argmax` | Yes | No | No | No | No |
-| Tensor transfers | Yes | Yes | Yes | Yes | No |
+| Operation family | CPU | CUDA | Metal | Vulkan |
+|---|---:|---:|---:|---:|
+| Basic elementwise arithmetic | Yes | Partial | Partial | No |
+| Unary elementwise operations | Yes | No | No | No |
+| `dot` | Yes | Yes | Implemented, hardware validation pending | No |
+| `matvec` | Yes | No | No | No |
+| `matmul` | Yes | No | No | No |
+| `argmax` | Yes | No | No | No |
+| Tensor transfers | Yes | Yes | Yes | No |
 
 GPU-specific capabilities depend on the SDK, driver, and hardware available at
 runtime.
@@ -318,7 +313,6 @@ src/core/                 Tensor, device, shape, storage, and dispatcher
 src/ops/                  Validation and public operation dispatch
 src/backends/cpu/         CPU implementations
 src/backends/cuda/        CUDA backend
-src/backends/rocm/        ROCm backend
 src/backends/metal/       Metal backend
 tests/                    Correctness tests
 benchmarks/               Performance benchmarks

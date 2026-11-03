@@ -107,7 +107,7 @@ class Dispatcher {
 };
 
 // The device an op runs on, given the caller's choice and the device its inputs live on:
-// CPU -> cpu:0; GPU -> data_device if it is a GPU, else the first available CUDA, ROCm or Metal
+// CPU -> cpu:0; GPU -> data_device if it is a GPU, else the first available CUDA or Metal
 // device (runtime_error if there is none); Auto -> cpu:0 for now. This is the one place a future
 // auto-tuner would decide.
 Device execution_device(Execution execution, Device data_device);

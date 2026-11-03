@@ -1,10 +1,9 @@
 # Mensurflow ML/BLAS Library — Design Plan
 
 A C++ library for tensors, BLAS and ML ops that detects the user's hardware
-and runs on the best backend: cuBLAS on NVIDIA, rocBLAS on AMD,
-MPS/MPSGraph on Apple, our own kernels on CPU — with **Vulkan compute as the
-portable GPU fallback** (Intel, ARM, Qualcomm, or any vendor without its
-runtime installed).
+and runs on the best backend: cuBLAS on NVIDIA, MPS/MPSGraph on Apple, our own
+kernels on CPU — with **Vulkan compute as the portable GPU backend** (AMD, Intel,
+ARM, Qualcomm, or any vendor without its runtime installed).
 
 | Document | Contents |
 |---|---|

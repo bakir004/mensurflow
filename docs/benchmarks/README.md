@@ -49,8 +49,8 @@ DLLs in `ucrt64\bin`.
 
 **Linux and macOS** (not tested by us yet; tell us what you had to change):
 ```
-cmake -S . -B bench -DCMAKE_BUILD_TYPE=Release -DMENSURFLOW_CUDA=OFF -DMENSURFLOW_ROCM=OFF \
-      -DMENSURFLOW_METAL=OFF -DMENSURFLOW_NATIVE=OFF
+cmake -S . -B bench -DCMAKE_BUILD_TYPE=Release -DMENSURFLOW_CUDA=OFF -DMENSURFLOW_METAL=OFF \
+      -DMENSURFLOW_NATIVE=OFF
 cmake --build bench -j 8
 ctest --test-dir bench
 ```

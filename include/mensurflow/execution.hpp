@@ -2,7 +2,7 @@
 //
 //   Execution::CPU   run on the CPU.
 //   Execution::GPU   run on a GPU: the one the inputs already live on, otherwise the first
-//                    available of CUDA, ROCm and Metal. Throws runtime_error if there is none.
+//                    available of CUDA and Metal. Throws runtime_error if there is none.
 //   Execution::Auto  let the library choose. For now it always chooses the CPU.
 //
 // Where an op runs is independent of where its data lives. If they differ, the inputs are copied

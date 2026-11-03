@@ -27,7 +27,6 @@ jobs:
           cmake -S . -B build-ci
           -DCMAKE_BUILD_TYPE=Release
           -DMENSURFLOW_CUDA=OFF
-          -DMENSURFLOW_ROCM=OFF
           -DMENSURFLOW_METAL=OFF
 
       - name: Build

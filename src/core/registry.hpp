@@ -43,7 +43,6 @@ class Registry {
 // compiled in are never referenced.
 void register_cpu_backend(Registry& registry);
 void register_cuda_backend(Registry& registry);
-void register_rocm_backend(Registry& registry);
 void register_metal_backend(Registry& registry);
 
 } // namespace mensurflow::detail

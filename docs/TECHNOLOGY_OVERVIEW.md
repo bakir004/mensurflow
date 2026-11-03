@@ -31,12 +31,11 @@ OpenMP helps **parallelize our code**; BLAS libraries provide **operations alrea
 | Hardware | Programming platform | Ready-made math libraries |
 |---|---|---|
 | NVIDIA | **CUDA** | **cuBLAS**, cuDNN |
-| AMD | **ROCm / HIP** | **rocBLAS**, MIOpen |
 | Apple | **Metal** | **MPS**, MPSGraph |
-| Multiple GPU vendors | **Vulkan Compute** | Less standardized ML/math ecosystem |
+| Multiple GPU vendors (AMD, Intel, ARM, ...) | **Vulkan Compute** | Less standardized ML/math ecosystem |
 
-- **CUDA, HIP, Metal, Vulkan Compute:** let us write and execute GPU kernels.
-- **cuBLAS, rocBLAS, MPS:** save us from writing certain kernels ourselves.
+- **CUDA, Metal, Vulkan Compute:** let us write and execute GPU kernels.
+- **cuBLAS, MPS:** save us from writing certain kernels ourselves.
 - **Vulkan Compute:** cross-vendor GPU programming, not a universal CPU/GPU/accelerator runtime. On Mac, it typically goes through MoltenVK.
 
 **BLAS** is a family of standard linear algebra operations, not one particular library.

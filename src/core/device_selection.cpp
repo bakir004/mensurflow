@@ -31,8 +31,7 @@ Device default_device() {
     }
     // Vendor libraries first, CPU last. This only checks that a device exists, not that it is
     // faster for a given op.
-    for (DeviceType type :
-         {DeviceType::CUDA, DeviceType::ROCm, DeviceType::Metal, DeviceType::Vulkan}) {
+    for (DeviceType type : {DeviceType::CUDA, DeviceType::Metal, DeviceType::Vulkan}) {
         if (device_available({type, 0})) {
             return {type, 0};
         }
