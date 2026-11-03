@@ -21,7 +21,7 @@ using mensurflow::Tensor;
 
 namespace {
 
-using Binary = Tensor (*)(const Tensor&, const Tensor&);
+using Binary = Tensor (*)(const Tensor&, const Tensor&, mensurflow::Execution);
 using Reference = void (*)(const float*, const float*, float*, std::int64_t);
 
 struct Op {
@@ -63,10 +63,14 @@ int main() {
             for (Device device : devices) {
                 const Tensor ta = Tensor::from_vector(a, {n}, device);
                 const Tensor tb = Tensor::from_vector(b, {n}, device);
+                // Run on the device that holds the data, so each row times that device.
+                const mensurflow::Execution on = device.type == DeviceType::CPU
+                                                     ? mensurflow::Execution::CPU
+                                                     : mensurflow::Execution::GPU;
 
                 // The CPU must match the reference exactly; a vendor library may differ in the
                 // last bit.
-                const std::vector<float> got = op.apply(ta, tb).to_vector<float>();
+                const std::vector<float> got = op.apply(ta, tb, on).to_vector<float>();
                 const std::string what =
                     mensurflow::to_string(device) + " " + op.name + " n=" + std::to_string(n);
                 if (device.type == DeviceType::CPU) {
@@ -76,7 +80,7 @@ int main() {
                 }
 
                 double result = 0.0;
-                auto run = [&] { result = op.apply(ta, tb).slice(0, 0, 1).item<float>(); };
+                auto run = [&] { result = op.apply(ta, tb, on).slice(0, 0, 1).item<float>(); };
                 const bench::Sample sample = bench::measure(config, run, [&] { return result; });
                 if (device == Device{DeviceType::CPU, 0}) {
                     cpu_sample = sample;

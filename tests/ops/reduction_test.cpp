@@ -1,6 +1,5 @@
-#include "backends/cpu/parallel.hpp"
-#include "backends/cpu/reduction.hpp"
-#include "backends/cpu/sequential_reduction.hpp"
+#include "backends/cpu/ops/reduction/reduction.hpp"
+#include "backends/cpu/threads.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/reduction.hpp"
 #include "test_util.hpp"
@@ -12,7 +11,6 @@
 
 using namespace mensurflow;
 namespace cpu = mensurflow::cpu;
-namespace sequential = mensurflow::cpu::sequential;
 
 namespace {
 
@@ -100,27 +98,25 @@ void test_special_values(Device device) {
 void test_kernels() {
     const auto values = make_input(100003);
     const auto n = static_cast<std::int64_t>(values.size());
-    test::require(test::close_f32(cpu::sum_f32(values.data(), n),
-                                  sequential::sum_f32(values.data(), n), 2e-4f),
-                  "parallel and sequential sum");
-    test::require(test::close_f32(cpu::mean_f32(values.data(), n),
-                                  sequential::mean_f32(values.data(), n), 2e-4f),
-                  "parallel and sequential mean");
-    test::require(
-        test::close_f32(cpu::max_f32(values.data(), n), sequential::max_f32(values.data(), n)),
-        "parallel and sequential max");
+    test::require(test::close_f32(cpu::max_f32_parallel(values.data(), n),
+                                  cpu::max_f32_sequential(values.data(), n)),
+                  "parallel and sequential max");
 }
 
 void test_thread_stability() {
     const int original_threads = cpu::max_threads();
     const auto values = make_input(100003);
     const auto n = static_cast<std::int64_t>(values.size());
-    const float expected = sequential::sum_f32(values.data(), n);
+    cpu::set_max_threads(1);
+    const float expected = cpu::sum_f32(values.data(), n);
+    const float expected_mean = cpu::mean_f32(values.data(), n);
 
     for (int threads : {1, original_threads}) {
         cpu::set_max_threads(threads);
         const float first = cpu::sum_f32(values.data(), n);
         const float second = cpu::sum_f32(values.data(), n);
+        test::require(test::close_f32(cpu::mean_f32(values.data(), n), expected_mean, 2e-4f),
+                      "mean remains within tolerance across thread counts");
         test::require(test::close_f32(first, expected, 2e-4f),
                       "sum remains within tolerance across thread counts");
         test::require(test::close_f32(second, first, 2e-4f),

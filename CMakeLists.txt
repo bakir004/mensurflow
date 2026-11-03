@@ -35,6 +35,7 @@ add_library(mensurflow
     src/core/device.cpp
     src/core/device_selection.cpp
     src/core/dispatcher.cpp
+    src/core/execution.cpp
     src/core/registry.cpp
     src/core/shape.cpp
     src/core/storage.cpp
@@ -43,25 +44,10 @@ add_library(mensurflow
     src/ops/blas.cpp
     src/ops/elementwise.cpp
     src/ops/reduction.cpp
-    src/ops/softmax.cpp
-    src/ops/loss.cpp
-    src/optim.cpp
     src/backends/cpu/backend.cpp
-    src/backends/cpu/blas.cpp
-    src/backends/cpu/argmax.cpp
-    src/backends/cpu/elementwise.cpp
-    src/backends/cpu/matmul.cpp
-    src/backends/cpu/reduction.cpp
-    src/backends/cpu/scalar.cpp
-    src/backends/cpu/sequential.cpp
-    src/backends/cpu/sequential_reduction.cpp
-    src/backends/cpu/sequential_argmax.cpp
-    src/backends/cpu/softmax.cpp
-    src/backends/cpu/sequential_softmax.cpp)
-# scalar.cpp is sequential.cpp compiled again with auto-vectorization off: the baseline that
-# separates what SIMD adds from what threads add in the benchmarks (see docs/BENCHMARKING.md).
-set_source_files_properties(src/backends/cpu/scalar.cpp PROPERTIES COMPILE_OPTIONS
-    "$<$<CXX_COMPILER_ID:GNU>:-fno-tree-vectorize>;$<$<CXX_COMPILER_ID:Clang,AppleClang>:-fno-vectorize>;$<$<CXX_COMPILER_ID:Clang,AppleClang>:-fno-slp-vectorize>;$<$<CXX_COMPILER_ID:MSVC>:/Qvec->")
+    src/backends/cpu/ops/blas/blas.cpp
+    src/backends/cpu/ops/elementwise/elementwise.cpp
+    src/backends/cpu/ops/reduction/reduction.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -74,7 +60,7 @@ if(NOT MSVC)
     endif()
 endif()
 
-# OpenMP is optional: without it parallel_for runs serially and everything still builds.
+# OpenMP is optional: without it the CPU backend runs the sequential kernels.
 if(MENSURFLOW_OPENMP)
     find_package(OpenMP COMPONENTS CXX)
 endif()
@@ -157,11 +143,9 @@ mensurflow_add_test(transfer_test tests/core/transfer_test.cpp)
 mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
-mensurflow_add_test(sequential_test tests/ops/sequential_test.cpp)
-mensurflow_add_test(scalar_test tests/ops/scalar_test.cpp)
+mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
-mensurflow_add_test(softmax_test tests/ops/softmax_test.cpp)
 mensurflow_add_test(argmax_test tests/ops/argmax_test.cpp)
 mensurflow_add_test(reduction_test tests/ops/reduction_test.cpp)
 mensurflow_add_test(p0_extended_test tests/ops/p0_extended_test.cpp)
@@ -183,7 +167,6 @@ mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
 mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
 mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
-mensurflow_add_benchmark(softmax_benchmark benchmarks/blas/softmax_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)

@@ -34,12 +34,13 @@ void check_close(float got, const reference::DotResult& want, const std::string&
 }
 
 void test_matches_reference(Device device) {
+    const Execution on = test::execution_on(device);
     const std::string where = " on " + to_string(device);
     for (std::int64_t n : {1, 2, 15, 16, 17, 1000, 32768, 32769, 100003, (1 << 20) + 7}) {
         const auto a = make_input(n, 1);
         const auto b = make_input(n, 2);
         const Tensor result =
-            dot(Tensor::from_vector(a, {n}, device), Tensor::from_vector(b, {n}, device));
+            dot(Tensor::from_vector(a, {n}, device), Tensor::from_vector(b, {n}, device), on);
         test::require(result.dim() == 0 && result.dtype() == DType::F32, "scalar f32 result");
         test::require(result.device() == device, "result stays on the input device");
         check_close(result.item<float>(), reference::dot(a.data(), b.data(), n),
@@ -48,28 +49,35 @@ void test_matches_reference(Device device) {
 }
 
 void test_known_values(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor a = Tensor::from_vector(std::vector<float>{1, 2, 3}, {3}, device);
     const Tensor b = Tensor::from_vector(std::vector<float>{4, -5, 6}, {3}, device);
-    test::require(dot(a, b).item<float>() == 12.0f, "1*4 + 2*-5 + 3*6 = 12");
-    test::require(dot(a, a).item<float>() == 14.0f, "a . a");
+    test::require(dot(a, b, on).item<float>() == 12.0f, "1*4 + 2*-5 + 3*6 = 12");
+    test::require(dot(a, a, on).item<float>() == 14.0f, "a . a");
 }
 
 void test_empty(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor none = Tensor::empty({0}, DType::F32, device);
-    const Tensor result = dot(none, none);
+    const Tensor result = dot(none, none, on);
     test::require(result.dim() == 0 && result.item<float>() == 0.0f, "empty dot is 0");
-    test::require(asum(none).item<float>() == 0.0f, "empty asum is 0");
-    test::require(nrm2(none).item<float>() == 0.0f, "empty nrm2 is 0");
+    test::require(asum(none, on).item<float>() == 0.0f, "empty asum is 0");
+    test::require(nrm2(none, on).item<float>() == 0.0f, "empty nrm2 is 0");
 }
 
+// scal, asum and nrm2 only have CPU kernels. On a GPU device this runs them on the CPU anyway, which
+// checks that the inputs are copied over and the results come back to the GPU.
 void test_level_one(Device device) {
+    const Execution on = Execution::CPU;
     const Tensor x = Tensor::from_vector(std::vector<float>{-3, 4, -12}, {3}, device);
-    test::require(scal(2.0f, x).to_vector<float>() == std::vector<float>{-6, 8, -24}, "scal");
-    test::require(asum(x).item<float>() == 19.0f, "asum");
-    test::require(nrm2(x).item<float>() == 13.0f, "nrm2");
+    test::require(scal(2.0f, x, on).device() == device, "scal result stays on the input device");
+    test::require(scal(2.0f, x, on).to_vector<float>() == std::vector<float>{-6, 8, -24}, "scal");
+    test::require(asum(x, on).item<float>() == 19.0f, "asum");
+    test::require(nrm2(x, on).item<float>() == 13.0f, "nrm2");
 }
 
 void test_views(Device device) {
+    const Execution on = test::execution_on(device);
     const std::int64_t n = 1001;
     const auto a = make_input(n, 3);
     const auto b = make_input(n, 4);
@@ -82,12 +90,12 @@ void test_views(Device device) {
         ea.push_back(a[static_cast<std::size_t>(i)]);
         eb.push_back(b[static_cast<std::size_t>(i)]);
     }
-    check_close(dot(ta.slice(0, 0, n, 2), tb.slice(0, 0, n, 2)).item<float>(),
+    check_close(dot(ta.slice(0, 0, n, 2), tb.slice(0, 0, n, 2), on).item<float>(),
                 reference::dot(ea.data(), eb.data(), static_cast<std::int64_t>(ea.size())),
                 "strided slice");
 
     // A contiguous slice that starts partway into the allocation (non-zero offset).
-    check_close(dot(ta.slice(0, 100, 900), tb.slice(0, 100, 900)).item<float>(),
+    check_close(dot(ta.slice(0, 100, 900), tb.slice(0, 100, 900), on).item<float>(),
                 reference::dot(a.data() + 100, b.data() + 100, 800), "offset slice");
 
     // A broadcast scalar (stride 0): sum of 3 * b[i].
@@ -101,32 +109,35 @@ void test_views(Device device) {
     for (float x : b) {
         want.magnitude += std::abs(3.0 * x);
     }
-    check_close(dot(three, tb).item<float>(), want, "expanded scalar");
+    check_close(dot(three, tb, on).item<float>(), want, "expanded scalar");
 }
 
 void test_errors(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor v3 = Tensor::from_vector(std::vector<float>{1, 2, 3}, {3}, device);
     const Tensor v4 = Tensor::from_vector(std::vector<float>{1, 2, 3, 4}, {4}, device);
     const Tensor m = Tensor::from_vector(std::vector<float>{1, 2, 3, 4}, {2, 2}, device);
     const Tensor ints = Tensor::from_vector(std::vector<std::int32_t>{1, 2, 3}, {3}, device);
 
-    test::require_throws<std::invalid_argument>([&] { dot(v3, v4); }, "length mismatch");
-    test::require_throws<std::invalid_argument>([&] { dot(m, m); }, "2-D input");
-    test::require_throws<std::invalid_argument>([&] { dot(Tensor(), v3); }, "undefined input");
-    test::require_throws<std::invalid_argument>([&] { dot(v3, ints); }, "dtype mismatch");
+    test::require_throws<std::invalid_argument>([&] { dot(v3, v4, on); }, "length mismatch");
+    test::require_throws<std::invalid_argument>([&] { dot(m, m, on); }, "2-D input");
+    test::require_throws<std::invalid_argument>([&] { dot(Tensor(), v3, on); }, "undefined input");
+    test::require_throws<std::invalid_argument>([&] { dot(v3, ints, on); }, "dtype mismatch");
     // No int32 kernel exists on any backend yet; the failure must name the op, not crash.
-    test::require_throws<std::runtime_error>([&] { dot(ints, ints); }, "unsupported dtype");
+    test::require_throws<std::runtime_error>([&] { dot(ints, ints, on); }, "unsupported dtype");
 }
 
 void test_mixed_devices() {
+    const Execution on = test::execution_on(list_devices().back());
     const auto devices = list_devices();
     if (devices.size() < 2) {
         return; // Needs a GPU build.
     }
     const Tensor on_cpu = Tensor::from_vector(std::vector<float>{1, 2}, {2}, devices[0]);
     const Tensor elsewhere = on_cpu.to(devices[1]);
-    test::require_throws<std::invalid_argument>([&] { dot(on_cpu, elsewhere); }, "mixed devices");
-    test::require(dot(elsewhere, elsewhere).item<float>() == 5.0f, "moved tensor works");
+    test::require_throws<std::invalid_argument>([&] { dot(on_cpu, elsewhere, on); },
+                                                "mixed devices");
+    test::require(dot(elsewhere, elsewhere, on).item<float>() == 5.0f, "moved tensor works");
 }
 
 } // namespace

@@ -1,6 +1,5 @@
-#include "backends/cpu/argmax.hpp"
-#include "backends/cpu/parallel.hpp"
-#include "backends/cpu/sequential_argmax.hpp"
+#include "backends/cpu/ops/reduction/reduction.hpp"
+#include "backends/cpu/threads.hpp"
 #include "core/registry.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "test_util.hpp"
@@ -29,15 +28,12 @@ void require_indices(const std::vector<std::int64_t>& got, const std::vector<std
 void test_kernels() {
     const std::vector<float> input = {1, 5, 5, 2, -1, 4, 3, 4, 0, 0, 0, -2};
     std::vector<std::int64_t> expected = {1, 2, 1, 0};
-    std::vector<std::int64_t> sequential(expected.size());
-    cpu::sequential::argmax_f32(input.data(), sequential.data(), 4, 3);
-    require_indices(sequential, expected, "sequential argmax");
     const int original = cpu::max_threads();
     for (int threads : {1, original}) {
         cpu::set_max_threads(threads);
-        std::vector<std::int64_t> parallel(expected.size());
-        cpu::argmax_f32(input.data(), parallel.data(), 4, 3);
-        require_indices(parallel, expected, "parallel argmax");
+        std::vector<std::int64_t> got(expected.size());
+        cpu::argmax_f32(input.data(), got.data(), 4, 3);
+        require_indices(got, expected, "argmax threads=" + std::to_string(threads));
     }
     cpu::set_max_threads(original);
 }
@@ -48,10 +44,6 @@ void test_edges() {
     std::int64_t output[2] = {};
     cpu::argmax_f32(values, output, 2, 3);
     test::require(output[0] == 1 && output[1] == 0, "first NaN wins within each row");
-    test::require_throws<std::invalid_argument>([&] { cpu::argmax_f32(values, output, 2, 0); },
-                                                "empty axis");
-    test::require_throws<std::invalid_argument>([&] { cpu::argmax_f32(nullptr, output, 1, 3); },
-                                                "null input");
 }
 
 bool supported(Device device) {
@@ -60,8 +52,9 @@ bool supported(Device device) {
 }
 
 void test_public(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor input = Tensor::from_vector(std::vector<float>{1, 9, 3, 7, 7, 2}, {2, 3}, device);
-    const Tensor result = argmax(input);
+    const Tensor result = argmax(input, -1, on);
     test::require(result.dtype() == DType::I64 && result.shape() == (Shape{2}),
                   "argmax output dtype and shape");
     require_indices(result.to_vector<std::int64_t>(), {1, 0}, "public argmax");
@@ -69,12 +62,13 @@ void test_public(Device device) {
     const Tensor stored =
         Tensor::from_vector(std::vector<float>{1, 9, 3, 7, 7, 2, 8, 4}, {2, 4}, device);
     const Tensor view = stored.slice(1, 0, 4, 2);
-    require_indices(argmax(view, 1).to_vector<std::int64_t>(), {1, 1}, "strided argmax");
+    require_indices(argmax(view, 1, on).to_vector<std::int64_t>(), {1, 1}, "strided argmax");
 
-    test::require_throws<std::invalid_argument>([&] { argmax(input, 0); }, "non-last axis");
+    test::require_throws<std::invalid_argument>([&] { argmax(input, 0, on); }, "non-last axis");
     test::require_throws<std::invalid_argument>(
-        [&] { argmax(Tensor::empty({2, 0}, DType::F32, device)); }, "empty axis");
-    test::require_throws<std::invalid_argument>([&] { argmax(Tensor()); }, "undefined input");
+        [&] { argmax(Tensor::empty({2, 0}, DType::F32, device), -1, on); }, "empty axis");
+    test::require_throws<std::invalid_argument>([&] { argmax(Tensor(), -1, on); },
+                                                "undefined input");
 }
 
 } // namespace
@@ -88,7 +82,10 @@ int main() {
                 test_public(device);
             } else {
                 test::require_throws<detail::NotImplemented>(
-                    [&] { argmax(Tensor::empty({2, 2}, DType::F32, device)); },
+                    [&] {
+                        argmax(Tensor::empty({2, 2}, DType::F32, device), -1,
+                               test::execution_on(device));
+                    },
                     "unsupported argmax");
             }
         }

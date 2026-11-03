@@ -1,6 +1,9 @@
 // Minimal test helpers: each test is a plain executable that returns non-zero on failure.
 #pragma once
 
+#include "mensurflow/device.hpp"
+#include "mensurflow/execution.hpp"
+
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -60,6 +63,13 @@ template <typename E, typename Fn> void require_throws(Fn&& fn, const std::strin
         return;
     }
     throw std::runtime_error("expected exception: " + message);
+}
+
+// The Execution that runs an op on `device` itself, so a test on a GPU device exercises that
+// GPU's kernels instead of the CPU's (Execution::Auto would choose the CPU).
+inline mensurflow::Execution execution_on(mensurflow::Device device) {
+    return device.type == mensurflow::DeviceType::CPU ? mensurflow::Execution::CPU
+                                                      : mensurflow::Execution::GPU;
 }
 
 template <typename Fn> int run(const char* name, Fn&& body) {

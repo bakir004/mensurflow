@@ -15,13 +15,13 @@ namespace mensurflow {
 
 namespace {
 
-Tensor unary_op(detail::OpId op, const Tensor& x) {
+Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution) {
     if (!x.defined()) {
         throw std::invalid_argument(std::string(detail::op_name(op)) + ": undefined tensor");
     }
     const Tensor input = x.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
-    detail::dispatch(op, {{input}, {out}});
+    detail::dispatch(op, {{input}, {out}}, execution);
     if (x.requires_grad()) {
         detail::AutogradAccess::record(out, {x}, [x, op](const Tensor& gradient) {
             const auto input = x.to_vector<float>();
@@ -99,7 +99,8 @@ void require_compatible(const Tensor& a, const Tensor& b, const std::string& nam
     }
 }
 
-Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha = 1.0f) {
+Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha,
+                 Execution execution) {
     const std::string name = detail::op_name(op);
     require_compatible(a, b, name);
     Shape shape;
@@ -112,7 +113,7 @@ Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha 
         Tensor out = Tensor::empty(shape, a.dtype(), a.device());
         if (op == detail::OpId::Axpy) {
             // New operations check kernel support even when there is no work to launch.
-            detail::dispatch(op, {{a, b}, {out}, alpha});
+            detail::dispatch(op, {{a, b}, {out}, alpha}, execution);
         }
         return out;
     }
@@ -125,7 +126,7 @@ Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha 
     const Tensor x = packed(a);
     const Tensor y = packed(b);
     Tensor out = Tensor::empty(shape, a.dtype(), a.device());
-    detail::dispatch(op, {{x, y}, {out}, alpha});
+    detail::dispatch(op, {{x, y}, {out}, alpha}, execution);
     if (a.requires_grad() || b.requires_grad()) {
         detail::AutogradAccess::record(out, {a, b}, [a, b, op, alpha](const Tensor& gradient) {
             detail::autograd::NoGradGuard guard;
@@ -167,21 +168,31 @@ Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha 
 
 } // namespace
 
-Tensor add(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Add, a, b); }
-
-Tensor sub(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Sub, a, b); }
-
-Tensor mul(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Mul, a, b); }
-
-Tensor div(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Div, a, b); }
-
-Tensor pow(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Pow, a, b); }
-
-Tensor axpy(float alpha, const Tensor& x, const Tensor& y) {
-    return binary_op(detail::OpId::Axpy, x, y, alpha);
+Tensor add(const Tensor& a, const Tensor& b, Execution execution) {
+    return binary_op(detail::OpId::Add, a, b, 1.0f, execution);
 }
 
-Tensor bias_add(const Tensor& x, const Tensor& bias) {
+Tensor sub(const Tensor& a, const Tensor& b, Execution execution) {
+    return binary_op(detail::OpId::Sub, a, b, 1.0f, execution);
+}
+
+Tensor mul(const Tensor& a, const Tensor& b, Execution execution) {
+    return binary_op(detail::OpId::Mul, a, b, 1.0f, execution);
+}
+
+Tensor div(const Tensor& a, const Tensor& b, Execution execution) {
+    return binary_op(detail::OpId::Div, a, b, 1.0f, execution);
+}
+
+Tensor pow(const Tensor& a, const Tensor& b, Execution execution) {
+    return binary_op(detail::OpId::Pow, a, b, 1.0f, execution);
+}
+
+Tensor axpy(float alpha, const Tensor& x, const Tensor& y, Execution execution) {
+    return binary_op(detail::OpId::Axpy, x, y, alpha, execution);
+}
+
+Tensor bias_add(const Tensor& x, const Tensor& bias, Execution execution) {
     require_compatible(x, bias, "bias_add");
     if (x.dim() != 2 || bias.dim() != 1) {
         throw std::invalid_argument("bias_add: expected [batch, features] and [features], got " +
@@ -193,7 +204,7 @@ Tensor bias_add(const Tensor& x, const Tensor& bias) {
     const Tensor input = x.contiguous();
     const Tensor packed_bias = bias.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
-    detail::dispatch(detail::OpId::BiasAdd, {{input, packed_bias}, {out}});
+    detail::dispatch(detail::OpId::BiasAdd, {{input, packed_bias}, {out}}, execution);
     if (x.requires_grad() || bias.requires_grad()) {
         detail::AutogradAccess::record(out, {x, bias}, [x, bias](const Tensor& gradient) {
             detail::autograd::NoGradGuard guard;
@@ -217,37 +228,67 @@ Tensor bias_add(const Tensor& x, const Tensor& bias) {
     return out;
 }
 
-Tensor neg(const Tensor& x) { return unary_op(detail::OpId::Neg, x); }
+Tensor neg(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Neg, x, execution);
+}
 
-Tensor abs(const Tensor& x) { return unary_op(detail::OpId::Abs, x); }
+Tensor abs(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Abs, x, execution);
+}
 
-Tensor square(const Tensor& x) { return unary_op(detail::OpId::Square, x); }
+Tensor square(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Square, x, execution);
+}
 
-Tensor relu(const Tensor& x) { return unary_op(detail::OpId::Relu, x); }
+Tensor relu(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Relu, x, execution);
+}
 
-Tensor sqrt(const Tensor& x) { return unary_op(detail::OpId::Sqrt, x); }
+Tensor sqrt(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Sqrt, x, execution);
+}
 
-Tensor exp(const Tensor& x) { return unary_op(detail::OpId::Exp, x); }
+Tensor exp(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Exp, x, execution);
+}
 
-Tensor sigmoid(const Tensor& x) { return unary_op(detail::OpId::Sigmoid, x); }
+Tensor sigmoid(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Sigmoid, x, execution);
+}
 
-Tensor log(const Tensor& x) { return unary_op(detail::OpId::Log, x); }
+Tensor log(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Log, x, execution);
+}
 
-Tensor rsqrt(const Tensor& x) { return unary_op(detail::OpId::Rsqrt, x); }
+Tensor rsqrt(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Rsqrt, x, execution);
+}
 
-Tensor tanh(const Tensor& x) { return unary_op(detail::OpId::Tanh, x); }
+Tensor tanh(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Tanh, x, execution);
+}
 
-Tensor sin(const Tensor& x) { return unary_op(detail::OpId::Sin, x); }
+Tensor sin(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Sin, x, execution);
+}
 
-Tensor cos(const Tensor& x) { return unary_op(detail::OpId::Cos, x); }
+Tensor cos(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Cos, x, execution);
+}
 
-Tensor reciprocal(const Tensor& x) { return unary_op(detail::OpId::Reciprocal, x); }
+Tensor reciprocal(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Reciprocal, x, execution);
+}
 
-Tensor minimum(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Minimum, a, b); }
+Tensor minimum(const Tensor& a, const Tensor& b, Execution execution) {
+    return binary_op(detail::OpId::Minimum, a, b, 1.0f, execution);
+}
 
-Tensor maximum(const Tensor& a, const Tensor& b) { return binary_op(detail::OpId::Maximum, a, b); }
+Tensor maximum(const Tensor& a, const Tensor& b, Execution execution) {
+    return binary_op(detail::OpId::Maximum, a, b, 1.0f, execution);
+}
 
-Tensor clamp(const Tensor& x, float lower, float upper) {
+Tensor clamp(const Tensor& x, float lower, float upper, Execution execution) {
     if (lower > upper) {
         throw std::invalid_argument("clamp: lower bound must not exceed upper bound");
     }
@@ -259,7 +300,7 @@ Tensor clamp(const Tensor& x, float lower, float upper) {
     detail::OpArgs args{{input}, {out}};
     args.alpha = lower;
     args.beta = upper;
-    detail::dispatch(detail::OpId::Clamp, args);
+    detail::dispatch(detail::OpId::Clamp, args, execution);
     return out;
 }
 

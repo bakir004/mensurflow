@@ -4,34 +4,33 @@ Every benchmark in this repository uses the same harness (`benchmarks/bench.hpp`
 way, and prints the same table, so numbers written by different people on different machines can be
 put next to each other. This page is the rulebook. Results live in [BENCHMARKS.md](BENCHMARKS.md).
 
-## The three implementations we compare
+## One thread vs many
 
-For every CPU kernel we compare up to three versions of the same computation:
+CPU kernels live in `src/backends/cpu/ops/<group>/` (`blas`, `elementwise`, `reduction`). Almost
+every kernel is a single loop marked with `MENSURFLOW_PARALLEL_FOR` (`src/backends/cpu/threads.hpp`):
+in an OpenMP build it becomes `#pragma omp parallel for`, otherwise nothing. So for these kernels
+the benchmarks compare the same function on different thread counts:
 
-| impl | What it is | Where it comes from |
-|---|---|---|
-| `scalar` | the plain loop, **compiled without auto-vectorization** (one element at a time) | `src/backends/cpu/scalar.cpp` |
-| `sequential` | the same loop with whatever SIMD the compiler finds, no threads | `src/backends/cpu/sequential.cpp` |
-| `parallel` | the parallel kernel (`parallel_for` / `parallel_sum`) with N threads | `elementwise.cpp`, `blas.cpp`, `matmul.cpp`, ... |
+| impl | What it is |
+|---|---|
+| `sequential` | the kernel on one thread (`cpu::set_max_threads(1)`) |
+| `parallel` | the same kernel on N threads |
 
-Keeping the three apart answers two different questions: how much SIMD helps (`scalar` to
-`sequential`) and how much threads help (`sequential` to `parallel`). The table has a speedup column for each:
-`vs scalar` and `vs seq` (the baseline's median time divided by this row's, so above 1x is faster).
+`matmul`, `max` and `min` are the exceptions: their parallel algorithm differs from the plain loop,
+so they have two functions, `<op>_f32_sequential` and `<op>_f32_parallel`, and the benchmark times
+both.
 
-`scalar.cpp` is not separate code to maintain. It includes `sequential.cpp` a second time, in the
-namespace `scalar`, with per-file compiler flags that turn auto-vectorization off (`-fno-tree-vectorize`
-on GCC, `-fno-vectorize` on Clang, `/Qvec-` on MSVC; see `CMakeLists.txt`; the MSVC flag has not been
-tried yet). Results are identical to the sequential ones, and `tests/ops/scalar_test.cpp` checks that.
+The table's `vs seq` column is the sequential median time divided by this row's, so above 1x means
+the threads made it faster.
 
 ## Which benchmark answers what
 
 | Executable | Question | Source |
 |---|---|---|
-| `cpu_parallel_benchmark` | scalar vs sequential vs parallel for every elementwise op and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
+| `cpu_parallel_benchmark` | sequential vs parallel for every elementwise op and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
 | `matmul_benchmark` | the same for matrix multiplication, in GFLOP/s | `benchmarks/blas/matmul_benchmark.cpp` |
 | `matvec_benchmark` | sequential vs parallel matrix-vector multiplication across thread counts | `benchmarks/blas/matvec_benchmark.cpp` |
-| `softmax_benchmark` | sequential vs parallel last-axis softmax across thread counts | `benchmarks/blas/softmax_benchmark.cpp` |
 | `argmax_benchmark` | sequential vs parallel last-axis argmax across thread counts | `benchmarks/blas/argmax_benchmark.cpp` |
 | `dot_benchmark` | `dot` on every device, the cost of one API call, API vs direct kernel | `benchmarks/blas/dot_benchmark.cpp` |
 | `elementwise_benchmark` | `add` and `mul` on every device through the public API | `benchmarks/elementwise_benchmark.cpp` |
@@ -46,38 +45,37 @@ and print a row. This is a complete small one (the real ones are `cpu_parallel_b
 
 ```cpp
 #include "bench.hpp"
-#include "backends/cpu/elementwise.hpp"
-#include "backends/cpu/scalar.hpp"
-#include "backends/cpu/sequential.hpp"
+#include "backends/cpu/ops/elementwise/elementwise.hpp"
+#include "backends/cpu/threads.hpp"
 
 namespace cpu = mensurflow::cpu;
 
 int main() {
     const bench::Config config;                       // 1 warm-up, median of 9 samples
+    const int threads = cpu::max_threads();
     bench::print_header("add on the CPU (float32)", config);
-    bench::Table table("GB/s");                       // the unit of the rate column
+    bench::Table table("GB/s", 1e9, "vs seq", "");    // rate unit, scale, speedup column
     table.section("add");
 
     for (std::int64_t n : {1000, 100000, 10000000}) {
         const auto len = static_cast<std::size_t>(n);
-        bench::Arrays arrays(len, 3);                 // 3 arrays, staggered (see rules)
-        float *a = arrays[0], *b = arrays[1], *out = arrays[2];
+        bench::Arrays arrays(len, 4);                 // 4 arrays, staggered (see rules)
+        float *a = arrays[0], *b = arrays[1], *out = arrays[2], *expected = arrays[3];
         bench::fill_a(a, len);
         bench::fill_b(b, len);
         const double bytes = 12.0 * n;                // 2 reads + 1 write of 4 bytes
 
-        auto run_seq = [&] { cpu::sequential::add_f32(a, b, out, n); };
-        auto observe = [&] { return bench::checksum(out, len); };
-        run_seq();                                     // reference result, to check the others against
-        std::vector<float> expected(out, out + len);
-
-        auto run_scalar = [&] { cpu::scalar::add_f32(a, b, out, n); };
-        run_scalar();
-        bench::check_bits(expected.data(), out, len, "scalar add");      // BEFORE timing
-        const auto scalar = bench::measure(config, run_scalar, observe);
-        const auto seq = bench::measure(config, run_seq, observe);
-        table.row(std::to_string(n), "scalar", "-", scalar, bytes, &scalar, &seq);
-        table.row(std::to_string(n), "sequential", "-", seq, bytes, &scalar, &seq);
+        auto run_seq = [&] { cpu::add_f32(a, b, expected, n); };
+        auto run_par = [&] { cpu::add_f32(a, b, out, n); };
+        cpu::set_max_threads(1);
+        run_seq();                                    // reference result, on one thread
+        const auto seq = bench::measure(config, run_seq, [&] { return bench::checksum(expected, len); });
+        cpu::set_max_threads(threads);
+        run_par();
+        bench::check_bits(expected, out, len, "parallel add");          // BEFORE timing
+        const auto par = bench::measure(config, run_par, [&] { return bench::checksum(out, len); });
+        table.row(std::to_string(n), "sequential", "-", seq, bytes, &seq);
+        table.row(std::to_string(n), "parallel", std::to_string(threads), par, bytes, &seq);
         table.blank();
     }
 }
@@ -135,15 +133,14 @@ links the harness and gives it the include paths for `src/` and `tests/reference
 ## Reading the table
 
 ```
-         n         impl  threads   median ms      min ms      max ms       GB/s  vs scalar     vs seq  cpu/wall
-   1000000       scalar        -      1.2969      1.2664      1.3313      6.169      1.00x      0.99x         -
-   1000000   sequential        -      1.2786      1.2200      1.3931      6.257      1.01x      1.00x         -
-   1000000     parallel        8      0.2834      0.2769      0.2996     28.232      4.58x      4.51x         -
+         n         impl  threads   median ms      min ms      max ms       GB/s     vs seq  cpu/wall
+   1000000   sequential        -      1.2786      1.2200      1.3931      6.257      1.00x         -
+   1000000     parallel        8      0.2834      0.2769      0.2996     28.232      4.51x         -
 ```
 
 - `median ms`, `min ms`, `max ms`: wall-clock time per call over the samples.
 - rate (`GB/s` here): work divided by the median time.
-- `vs scalar`, `vs seq`: that baseline's median time divided by this row's. 4.58x means 4.58 times faster.
+- `vs seq`: the sequential median time divided by this row's. 4.51x means 4.51 times faster.
 - `cpu/wall`: process CPU time over wall time across all samples. About 1 for one busy thread, near N
   for N busy threads, lower if threads sit idle. It is `-` when the run was too short for the OS CPU
   clock to give a meaningful ratio (Windows advances it in ticks of about 15 ms; the harness needs
@@ -151,12 +148,14 @@ links the harness and gives it the include paths for `src/` and `tests/reference
 
 ## Adding a kernel to the comparison
 
-1. Write the sequential kernel in `src/backends/cpu/sequential.{hpp,cpp}` as usual. It automatically
-   gets a scalar twin in namespace `scalar`.
-2. Copy its declaration into `src/backends/cpu/scalar.hpp`.
-3. Add the parallel kernel, tests (`tests/ops/`), and a row for it in `cpu_parallel_benchmark.cpp`
-   (an entry in the `ops` list; unary and `axpy`-like signatures have adapter templates there).
-4. Run it twice, plugged in, and add the table to [BENCHMARKS.md](BENCHMARKS.md) with your machine.
+1. Add `<op>_f32` to the group's file in `src/backends/cpu/ops/<group>/` (declaration in the
+   `.hpp`, the loop in the `.cpp`, with `MENSURFLOW_PARALLEL_FOR(if (...))` on the line before it),
+   and an adapter plus registration in `src/backends/cpu/backend.cpp`. Only if the parallel
+   algorithm has to differ from the plain loop, write `<op>_f32_sequential` and `<op>_f32_parallel`
+   instead, as `matmul`, `max` and `min` do.
+2. Add tests (`tests/ops/`), and a row for it in `cpu_parallel_benchmark.cpp` (an entry in the
+   `ops` list; unary and `axpy`-like signatures have adapter templates there).
+3. Run it twice, plugged in, and add the table to [BENCHMARKS.md](BENCHMARKS.md) with your machine.
 
 ## Before you report numbers
 
@@ -182,10 +181,5 @@ links the harness and gives it the include paths for `src/` and `tests/reference
 - An AVX2 variant (intrinsics in their own file, compiled with `-mavx2 -mfma` for that file only,
   called only when `bench::avx2_supported()`) and an `omp simd` variant: the harness is ready for
   them; no kernel has one yet.
-- The scalar baseline does not work on MSVC. Tried with MSVC 19.51 (Visual Studio Build Tools
-  2026): `cl` ignores `/Qvec-` (`warning D9002: ignoring unknown option '/Qvec-'`), so `scalar.cpp`
-  is auto-vectorized and its rows match `sequential` (see Machine 2 in BENCHMARKS.md). MSVC needs
-  another way to turn auto-vectorization off for that file.
-- Results in BENCHMARKS.md for Machine 1, Machine 3 and the laptop's matrix multiplication were
-  taken before the scalar baseline and the min/max/cpu-wall columns existed; they show sequential
-  vs parallel only. Machine 2 uses the new format.
+- Results in BENCHMARKS.md were taken with the earlier kernel layout (`parallel_for` helpers, and a
+  `scalar` no-SIMD baseline that has since been removed); its file paths refer to that layout.

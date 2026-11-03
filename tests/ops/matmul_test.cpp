@@ -1,9 +1,8 @@
 // Tests matrix multiplication: the sequential and parallel CPU kernels against a float64 reference
 // (including sizes that are not multiples of the block sizes, and several thread counts), and
 // mensurflow::matmul through the public API on every device.
-#include "backends/cpu/matmul.hpp"
-#include "backends/cpu/parallel.hpp"
-#include "backends/cpu/sequential.hpp"
+#include "backends/cpu/ops/blas/blas.hpp"
+#include "backends/cpu/threads.hpp"
 #include "core/registry.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/blas.hpp"
@@ -68,13 +67,13 @@ void test_kernels() {
 
         // Start from garbage so a kernel that accumulates instead of overwriting is caught.
         std::vector<float> sequential(static_cast<std::size_t>(s.m * s.n), 123.0f);
-        cpu::sequential::matmul_f32(a.data(), b.data(), sequential.data(), s.m, s.n, s.k);
+        cpu::matmul_f32_sequential(a.data(), b.data(), sequential.data(), s.m, s.n, s.k);
         check_against_reference(sequential, a, b, s.m, s.n, s.k, "sequential " + size);
 
         for (int threads : {1, 2, 3, original_threads}) {
             cpu::set_max_threads(threads);
             std::vector<float> parallel(sequential.size(), 123.0f);
-            cpu::matmul_f32(a.data(), b.data(), parallel.data(), s.m, s.n, s.k);
+            cpu::matmul_f32_parallel(a.data(), b.data(), parallel.data(), s.m, s.n, s.k);
             check_against_reference(parallel, a, b, s.m, s.n, s.k,
                                     "parallel " + size + " threads=" + std::to_string(threads));
         }
@@ -83,26 +82,16 @@ void test_kernels() {
 }
 
 void test_kernel_edges() {
-    float x = 1.0f;
     float out[4] = {9, 9, 9, 9};
     // k == 0: the product of an m x 0 and a 0 x n matrix is an m x n matrix of zeros.
-    cpu::matmul_f32(nullptr, nullptr, out, 2, 2, 0);
+    cpu::matmul_f32_parallel(nullptr, nullptr, out, 2, 2, 0);
     test::require(out[0] == 0 && out[1] == 0 && out[2] == 0 && out[3] == 0, "k == 0 gives zeros");
     out[0] = 9;
-    cpu::sequential::matmul_f32(nullptr, nullptr, out, 2, 2, 0);
+    cpu::matmul_f32_sequential(nullptr, nullptr, out, 2, 2, 0);
     test::require(out[0] == 0, "sequential k == 0 gives zeros");
     // m == 0 or n == 0: nothing to do, nothing touched.
-    cpu::matmul_f32(nullptr, nullptr, nullptr, 0, 3, 3);
-    cpu::matmul_f32(nullptr, nullptr, nullptr, 3, 0, 3);
-
-    test::require_throws<std::invalid_argument>([&] { cpu::matmul_f32(&x, &x, &x, -1, 1, 1); },
-                                                "negative m");
-    test::require_throws<std::invalid_argument>([&] { cpu::matmul_f32(nullptr, &x, &x, 1, 1, 1); },
-                                                "null a");
-    test::require_throws<std::invalid_argument>([&] { cpu::matmul_f32(&x, &x, nullptr, 1, 1, 1); },
-                                                "null c");
-    test::require_throws<std::invalid_argument>(
-        [&] { cpu::sequential::matmul_f32(&x, nullptr, &x, 1, 1, 1); }, "sequential null b");
+    cpu::matmul_f32_parallel(nullptr, nullptr, nullptr, 0, 3, 3);
+    cpu::matmul_f32_parallel(nullptr, nullptr, nullptr, 3, 0, 3);
 }
 
 bool supported(Device device) {
@@ -111,9 +100,10 @@ bool supported(Device device) {
 }
 
 void test_known_values(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor a = Tensor::from_vector(std::vector<float>{1, 2, 3, 4, 5, 6}, {2, 3}, device);
     const Tensor b = Tensor::from_vector(std::vector<float>{7, 8, 9, 10, 11, 12}, {3, 2}, device);
-    const Tensor c = matmul(a, b);
+    const Tensor c = matmul(a, b, on);
     test::require(c.shape() == (Shape{2, 2}) && c.dtype() == DType::F32 && c.device() == device,
                   "shape, dtype and device of the result");
     test::require(c.is_contiguous(), "result is contiguous");
@@ -128,16 +118,17 @@ void test_known_values(Device device) {
         eye[static_cast<std::size_t>(i * k + i)] = 1.0f;
     }
     const Tensor id = matmul(Tensor::from_vector(values, {m, k}, device),
-                             Tensor::from_vector(eye, {k, k}, device));
+                             Tensor::from_vector(eye, {k, k}, device), on);
     test::require(id.to_vector<float>() == values, "A x I == A");
 }
 
 void test_sizes(Device device) {
+    const Execution on = test::execution_on(device);
     for (const Shape3& s : shapes) {
         const auto a = make_input(s.m * s.k, 4);
         const auto b = make_input(s.k * s.n, 5);
         const Tensor c = matmul(Tensor::from_vector(a, {s.m, s.k}, device),
-                                Tensor::from_vector(b, {s.k, s.n}, device));
+                                Tensor::from_vector(b, {s.k, s.n}, device), on);
         check_against_reference(c.to_vector<float>(), a, b, s.m, s.n, s.k,
                                 "matmul " + std::to_string(s.m) + "x" + std::to_string(s.n) + "x" +
                                     std::to_string(s.k));
@@ -145,6 +136,7 @@ void test_sizes(Device device) {
 }
 
 void test_views(Device device) {
+    const Execution on = test::execution_on(device);
     const std::int64_t m = 6, k = 5, n = 4;
     const auto a = make_input(m * k, 6);
     const auto b = make_input(k * n, 7);
@@ -165,49 +157,53 @@ void test_views(Device device) {
     const Tensor ta = Tensor::from_vector(a_stored, {k, m}, device).transpose(0, 1);
     const Tensor tb = Tensor::from_vector(b_stored, {n, k}, device).transpose(0, 1);
     test::require(!ta.is_contiguous() && !tb.is_contiguous(), "inputs are strided views");
-    check_against_reference(matmul(ta, tb).to_vector<float>(), a, b, m, n, k, "transposed inputs");
+    check_against_reference(matmul(ta, tb, on).to_vector<float>(), a, b, m, n, k,
+                            "transposed inputs");
 
     // Rows 1..4 of a larger matrix: contiguous, but starting partway into the allocation.
     const Tensor big = Tensor::from_vector(make_input(8 * k, 8), {8, k}, device);
     const auto rows = big.slice(0, 1, 5).to_vector<float>();
-    const Tensor sliced = matmul(big.slice(0, 1, 5), Tensor::from_vector(b, {k, n}, device));
+    const Tensor sliced = matmul(big.slice(0, 1, 5), Tensor::from_vector(b, {k, n}, device), on);
     check_against_reference(sliced.to_vector<float>(), rows, b, 4, n, k, "sliced rows");
 }
 
 void test_empty(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor none_k = matmul(Tensor::empty({3, 0}, DType::F32, device),
-                                 Tensor::empty({0, 4}, DType::F32, device));
+                                 Tensor::empty({0, 4}, DType::F32, device), on);
     test::require(none_k.shape() == (Shape{3, 4}), "k == 0 shape");
     const auto zeros = none_k.to_vector<float>();
     test::require(zeros == std::vector<float>(12, 0.0f), "k == 0 gives zeros");
 
     const Tensor none_m = matmul(Tensor::empty({0, 5}, DType::F32, device),
-                                 Tensor::empty({5, 2}, DType::F32, device));
+                                 Tensor::empty({5, 2}, DType::F32, device), on);
     test::require(none_m.shape() == (Shape{0, 2}) && none_m.numel() == 0, "m == 0");
     const Tensor none_n = matmul(Tensor::empty({2, 5}, DType::F32, device),
-                                 Tensor::empty({5, 0}, DType::F32, device));
+                                 Tensor::empty({5, 0}, DType::F32, device), on);
     test::require(none_n.shape() == (Shape{2, 0}) && none_n.numel() == 0, "n == 0");
 }
 
 void test_errors(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor m23 = Tensor::from_vector(std::vector<float>{1, 2, 3, 4, 5, 6}, {2, 3}, device);
     const Tensor m32 = Tensor::from_vector(std::vector<float>{1, 2, 3, 4, 5, 6}, {3, 2}, device);
     const Tensor vec = Tensor::from_vector(std::vector<float>{1, 2, 3}, {3}, device);
     const Tensor ints =
         Tensor::from_vector(std::vector<std::int32_t>{1, 2, 3, 4, 5, 6}, {2, 3}, device);
-    test::require_throws<std::invalid_argument>([&] { matmul(m23, m23); }, "inner mismatch");
-    test::require_throws<std::invalid_argument>([&] { matmul(vec, m32); }, "1-D left");
-    test::require_throws<std::invalid_argument>([&] { matmul(m23, vec); }, "1-D right");
-    test::require_throws<std::invalid_argument>([&] { matmul(Tensor(), m32); }, "undefined");
-    test::require_throws<std::invalid_argument>([&] { matmul(ints, m32); }, "dtype mismatch");
+    test::require_throws<std::invalid_argument>([&] { matmul(m23, m23, on); }, "inner mismatch");
+    test::require_throws<std::invalid_argument>([&] { matmul(vec, m32, on); }, "1-D left");
+    test::require_throws<std::invalid_argument>([&] { matmul(m23, vec, on); }, "1-D right");
+    test::require_throws<std::invalid_argument>([&] { matmul(Tensor(), m32, on); }, "undefined");
+    test::require_throws<std::invalid_argument>([&] { matmul(ints, m32, on); }, "dtype mismatch");
     // No int32 kernel exists on any backend yet; the failure must be a clear error.
-    test::require_throws<std::runtime_error>([&] { matmul(ints, ints.transpose(0, 1)); },
+    test::require_throws<std::runtime_error>([&] { matmul(ints, ints.transpose(0, 1), on); },
                                              "unsupported dtype");
 }
 
 void test_unsupported(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor a = Tensor::from_vector(std::vector<float>{1, 2, 3, 4}, {2, 2}, device);
-    test::require_throws<detail::NotImplemented>([&] { matmul(a, a); },
+    test::require_throws<detail::NotImplemented>([&] { matmul(a, a, on); },
                                                  "matmul without a kernel on " + to_string(device));
 }
 

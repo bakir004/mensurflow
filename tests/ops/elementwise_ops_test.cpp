@@ -20,7 +20,7 @@ using namespace mensurflow;
 namespace {
 
 using Shape64 = std::vector<std::int64_t>;
-using TensorOp = Tensor (*)(const Tensor&, const Tensor&);
+using TensorOp = Tensor (*)(const Tensor&, const Tensor&, Execution);
 using FloatOp = float (*)(float, float);
 
 struct Op {
@@ -38,7 +38,7 @@ const Op ops[] = {{detail::OpId::Add, "add", add, [](float x, float y) { return 
 struct UnaryOp {
     detail::OpId id;
     const char* name;
-    Tensor (*apply)(const Tensor&);
+    Tensor (*apply)(const Tensor&, Execution);
     void (*reference)(const float*, float*, std::int64_t);
     float reference_tolerance = 0.0f;
 };
@@ -61,15 +61,17 @@ template <typename Operation> bool supported(const Operation& op, Device device)
 }
 
 void check_unsupported(const Op& op, Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor x = Tensor::from_vector(std::vector<float>{1, 2}, {2}, device);
-    test::require_throws<detail::NotImplemented>([&] { op.apply(x, x); },
+    test::require_throws<detail::NotImplemented>([&] { op.apply(x, x, on); },
                                                  std::string(op.name) + " without a kernel");
 }
 
 void check_unsupported(const UnaryOp& op, Device device) {
+    const Execution on = test::execution_on(device);
     for (const Shape& shape : {Shape{2}, Shape{0}}) {
         const Tensor x = Tensor::empty(shape, DType::F32, device);
-        test::require_throws<detail::NotImplemented>([&] { op.apply(x); },
+        test::require_throws<detail::NotImplemented>([&] { op.apply(x, on); },
                                                      std::string(op.name) + " without a kernel");
     }
 }
@@ -112,10 +114,11 @@ bool close_enough(float got, float want, bool exact) {
 // Runs `op` on tensors built from (a, a_shape) and (b, b_shape) and checks every element.
 void check_case(const Op& op, Device device, const std::vector<float>& a, const Shape64& a_shape,
                 const std::vector<float>& b, const Shape64& b_shape, const std::string& what) {
+    const Execution on = test::execution_on(device);
     const std::string where = std::string(op.name) + " " + what + " on " + to_string(device);
     const Tensor ta = Tensor::from_vector(a, a_shape, device);
     const Tensor tb = Tensor::from_vector(b, b_shape, device);
-    const Tensor out = op.apply(ta, tb);
+    const Tensor out = op.apply(ta, tb, on);
     const auto want = reference::broadcast_binary(a, a_shape, b, b_shape, op.expected);
 
     test::require(out.shape() == want.shape, where + ": shape " + to_string(out.shape()));
@@ -164,6 +167,7 @@ void test_shapes(Device device) {
 }
 
 void test_views(Device device) {
+    const Execution on = test::execution_on(device);
     // transpose gives a non-contiguous input; slices give a step and a non-zero offset.
     const auto a = make_input(24, 3);
     const auto b = make_input(24, 4);
@@ -173,7 +177,7 @@ void test_views(Device device) {
         if (!supported(op, device)) {
             continue;
         }
-        const Tensor out = op.apply(ta, tb.transpose(0, 1)); // {4,6} with a {4,6} view
+        const Tensor out = op.apply(ta, tb.transpose(0, 1), on); // {4,6} with a {4,6} view
         const auto got = out.to_vector<float>();
         for (std::int64_t i = 0; i < 4; ++i) {
             for (std::int64_t j = 0; j < 6; ++j) {
@@ -184,9 +188,9 @@ void test_views(Device device) {
                               std::string(op.name) + " transposed view on " + to_string(device));
             }
         }
-        const Tensor every_other = op.apply(ta.slice(1, 0, 6, 2), ta.slice(1, 1, 6, 2));
+        const Tensor every_other = op.apply(ta.slice(1, 0, 6, 2), ta.slice(1, 1, 6, 2), on);
         test::require(every_other.shape() == (Shape{4, 3}), "strided slice shape");
-        const Tensor offset = op.apply(ta.slice(0, 1, 3), tb.transpose(0, 1).slice(0, 1, 3));
+        const Tensor offset = op.apply(ta.slice(0, 1, 3), tb.transpose(0, 1).slice(0, 1, 3), on);
         test::require(offset.shape() == (Shape{2, 6}), "offset slice shape");
     }
 }
@@ -197,11 +201,12 @@ bool same_bits(const std::vector<float>& a, const std::vector<float>& b) {
 }
 
 void check_unary_case(const UnaryOp& op, const Tensor& input, const std::string& what) {
+    const Execution on = test::execution_on(input.device());
     const std::string where = std::string(op.name) + " " + what;
     const auto before = input.to_vector<float>();
     std::vector<float> want(before.size());
     op.reference(before.data(), want.data(), input.numel());
-    const Tensor out = op.apply(input);
+    const Tensor out = op.apply(input, on);
     test::require(out.shape() == input.shape(), where + ": shape");
     test::require(out.dtype() == input.dtype() && out.device() == input.device(),
                   where + ": dtype/device");
@@ -309,27 +314,30 @@ void check_scaled_output(const Tensor& x, const Tensor& y, const Tensor& out, co
 }
 
 void check_axpy_case(float alpha, const Tensor& x, const Tensor& y) {
+    const Execution on = test::execution_on(x.device());
     const auto before_x = x.to_vector<float>(), before_y = y.to_vector<float>();
     const auto want = reference::broadcast_binary(
         before_x, x.shape(), before_y, y.shape(),
         [alpha](float a, float b) { return reference::axpy_value(alpha, a, b); });
-    check_scaled_output(x, y, axpy(alpha, x, y), want.shape, want.values);
+    check_scaled_output(x, y, axpy(alpha, x, y, on), want.shape, want.values);
     test::require(same_bits(before_x, x.to_vector<float>()) &&
                       same_bits(before_y, y.to_vector<float>()),
                   "axpy preserves both inputs");
 }
 
 void check_bias_case(const Tensor& x, const Tensor& bias) {
+    const Execution on = test::execution_on(x.device());
     const auto before_x = x.to_vector<float>(), before_bias = bias.to_vector<float>();
     std::vector<float> want(before_x.size());
     reference::bias_add(before_x.data(), before_bias.data(), want.data(), x.numel(), x.size(1));
-    check_scaled_output(x, bias, bias_add(x, bias), x.shape(), want);
+    check_scaled_output(x, bias, bias_add(x, bias, on), x.shape(), want);
     test::require(same_bits(before_x, x.to_vector<float>()) &&
                       same_bits(before_bias, bias.to_vector<float>()),
                   "bias_add preserves inputs");
 }
 
 void test_axpy_and_bias(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor matrix = Tensor::from_vector(make_input(12, 20), {3, 4}, device);
     const Tensor vector = Tensor::from_vector(make_input(8, 21), {8}, device);
     const Tensor bias = vector.slice(0, 0, 8, 2); // noncontiguous [4] bias
@@ -350,7 +358,7 @@ void test_axpy_and_bias(Device device) {
     } else {
         for (const Shape& shape : {Shape{3, 4}, Shape{0, 4}}) {
             const Tensor x = Tensor::empty(shape, DType::F32, device);
-            test::require_throws<detail::NotImplemented>([&] { axpy(2, x, bias); },
+            test::require_throws<detail::NotImplemented>([&] { axpy(2, x, bias, on); },
                                                          "axpy without a kernel, including empty");
         }
     }
@@ -373,39 +381,40 @@ void test_axpy_and_bias(Device device) {
         for (const Shape& shape : {Shape{3, 4}, Shape{0, 4}, Shape{3, 0}}) {
             const Tensor x = Tensor::empty(shape, DType::F32, device);
             const Tensor b = Tensor::empty({shape[1]}, DType::F32, device);
-            test::require_throws<detail::NotImplemented>([&] { bias_add(x, b); },
+            test::require_throws<detail::NotImplemented>([&] { bias_add(x, b, on); },
                                                          "bias_add missing kernel, even if empty");
         }
     }
     const Tensor ints = Tensor::empty({3, 4}, DType::I32, device);
     const Tensor int_bias = Tensor::empty({4}, DType::I32, device);
-    test::require_throws<std::invalid_argument>([&] { axpy(2, Tensor{}, bias); },
+    test::require_throws<std::invalid_argument>([&] { axpy(2, Tensor{}, bias, on); },
                                                 "axpy undefined x");
-    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, Tensor{}); },
+    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, Tensor{}, on); },
                                                 "axpy undefined y");
-    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, vector); },
+    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, vector, on); },
                                                 "axpy bad broadcast");
-    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, int_bias); },
+    test::require_throws<std::invalid_argument>([&] { axpy(2, matrix, int_bias, on); },
                                                 "axpy dtype mismatch");
-    test::require_throws<std::invalid_argument>([&] { bias_add(Tensor{}, bias); },
+    test::require_throws<std::invalid_argument>([&] { bias_add(Tensor{}, bias, on); },
                                                 "bias_add undefined x");
-    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, Tensor{}); },
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, Tensor{}, on); },
                                                 "bias_add undefined bias");
-    test::require_throws<std::invalid_argument>([&] { bias_add(vector, bias); }, "bias_add x rank");
-    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, bias.unsqueeze(0)); },
+    test::require_throws<std::invalid_argument>([&] { bias_add(vector, bias, on); },
+                                                "bias_add x rank");
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, bias.unsqueeze(0), on); },
                                                 "bias_add bias must be a vector");
-    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, vector); },
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, vector, on); },
                                                 "bias_add wrong features");
-    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, int_bias); },
+    test::require_throws<std::invalid_argument>([&] { bias_add(matrix, int_bias, on); },
                                                 "bias_add dtype mismatch");
-    test::require_throws<detail::NotImplemented>([&] { axpy(2, ints, int_bias); },
+    test::require_throws<detail::NotImplemented>([&] { axpy(2, ints, int_bias, on); },
                                                  "axpy unsupported dtype");
-    test::require_throws<detail::NotImplemented>([&] { bias_add(ints, int_bias); },
+    test::require_throws<detail::NotImplemented>([&] { bias_add(ints, int_bias, on); },
                                                  "bias_add unsupported dtype");
     const Tensor empty = Tensor::empty({0, 4}, DType::I32, device);
-    test::require_throws<detail::NotImplemented>([&] { axpy(2, empty, int_bias); },
+    test::require_throws<detail::NotImplemented>([&] { axpy(2, empty, int_bias, on); },
                                                  "empty axpy unsupported dtype");
-    test::require_throws<detail::NotImplemented>([&] { bias_add(empty, int_bias); },
+    test::require_throws<detail::NotImplemented>([&] { bias_add(empty, int_bias, on); },
                                                  "empty bias_add unsupported dtype");
 }
 
@@ -436,29 +445,30 @@ void test_ieee_division() {
 }
 
 void test_errors(Device device) {
+    const Execution on = test::execution_on(device);
     const Tensor m = Tensor::from_vector(std::vector<float>{1, 2, 3, 4, 5, 6}, {2, 3}, device);
     const Tensor v4 = Tensor::from_vector(std::vector<float>{1, 2, 3, 4}, {4}, device);
     const Tensor ints = Tensor::from_vector(std::vector<std::int32_t>{1, 2, 3}, {3}, device);
     for (const Op& op : ops) {
         const std::string name = op.name;
-        test::require_throws<std::invalid_argument>([&] { op.apply(m, v4); },
+        test::require_throws<std::invalid_argument>([&] { op.apply(m, v4, on); },
                                                     name + " shapes do not broadcast");
-        test::require_throws<std::invalid_argument>([&] { op.apply(Tensor(), m); },
+        test::require_throws<std::invalid_argument>([&] { op.apply(Tensor(), m, on); },
                                                     name + " undefined input");
-        test::require_throws<std::invalid_argument>([&] { op.apply(ints, m); },
+        test::require_throws<std::invalid_argument>([&] { op.apply(ints, m, on); },
                                                     name + " dtype mismatch");
         // No int32 kernel exists on any backend yet; the failure must be a clear error.
-        test::require_throws<std::runtime_error>([&] { op.apply(ints, ints); },
+        test::require_throws<std::runtime_error>([&] { op.apply(ints, ints, on); },
                                                  name + " unsupported dtype");
     }
     for (const UnaryOp& op : unary_ops) {
-        test::require_throws<std::invalid_argument>([&] { op.apply(Tensor{}); },
+        test::require_throws<std::invalid_argument>([&] { op.apply(Tensor{}, on); },
                                                     std::string(op.name) + " undefined input");
-        test::require_throws<detail::NotImplemented>([&] { op.apply(ints); },
+        test::require_throws<detail::NotImplemented>([&] { op.apply(ints, on); },
                                                      std::string(op.name) + " unsupported dtype");
         const Tensor empty_ints = Tensor::empty({0}, DType::I32, device);
         test::require_throws<detail::NotImplemented>(
-            [&] { op.apply(empty_ints); }, std::string(op.name) + " empty unsupported dtype");
+            [&] { op.apply(empty_ints, on); }, std::string(op.name) + " empty unsupported dtype");
     }
 }
 

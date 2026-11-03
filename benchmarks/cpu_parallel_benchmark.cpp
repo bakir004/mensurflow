@@ -1,11 +1,8 @@
-// Scalar vs sequential vs parallel on the CPU, for the elementwise ops and dot.
-//   scalar:     sequential.cpp compiled without auto-vectorization (one element at a time).
-//   sequential: the same loop with whatever SIMD the compiler finds. No OpenMP, no parallel_for.
-//   parallel:   the kernels in elementwise.cpp / blas.cpp (parallel_for / parallel_sum) run with
-//               1, 2, 4, ... threads. The 1-thread row shows what the parallel machinery costs
-//               when there is nothing to gain.
-// The two speedup columns divide the scalar and the sequential median by this row's median, so
-// "vs scalar" is SIMD plus threads and "vs seq" is the threads alone.
+// One thread vs many on the CPU, for the elementwise ops and dot. Each kernel in
+// src/backends/cpu/ops is a single loop that OpenMP splits across threads (MENSURFLOW_PARALLEL_FOR).
+//   sequential: the kernel on one thread.
+//   parallel:   the same kernel on 2, 4, ... threads.
+// "vs seq" divides the sequential median by this row's median: what the threads add.
 // Kernels are called directly into preallocated buffers: no dispatcher, no allocation. GB/s counts
 // the bytes each op must touch (binary: 12 per element, unary and dot: 8 per element, bias_add:
 // 8*n + 4*features).
@@ -13,11 +10,9 @@
 // Built on the shared harness: see benchmarks/bench.hpp and docs/BENCHMARKING.md.
 #include "bench.hpp"
 
-#include "backends/cpu/blas.hpp"
-#include "backends/cpu/elementwise.hpp"
-#include "backends/cpu/parallel.hpp"
-#include "backends/cpu/scalar.hpp"
-#include "backends/cpu/sequential.hpp"
+#include "backends/cpu/ops/blas/blas.hpp"
+#include "backends/cpu/ops/elementwise/elementwise.hpp"
+#include "backends/cpu/threads.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -26,8 +21,6 @@
 #include <string>
 
 namespace cpu = mensurflow::cpu;
-namespace seq = mensurflow::cpu::sequential;
-namespace scalar = mensurflow::cpu::scalar;
 
 namespace {
 
@@ -63,9 +56,7 @@ void bias_add_kernel(const float* x, const float* bias, float* out, std::int64_t
 struct Op {
     const char* name;
     double bytes_per_element;
-    Kernel scalar;     // nullptr for dot, which returns a value instead of filling a buffer
-    Kernel sequential; // likewise
-    Kernel parallel;   // likewise
+    Kernel kernel; // nullptr for dot, which returns a value instead of filling a buffer
 };
 
 } // namespace
@@ -74,29 +65,20 @@ int main(int argc, char* argv[]) {
     const int max = cpu::max_threads();
     const std::vector<int> counts = bench::thread_counts(max);
 
-    const Op ops[] = {{"add", 12.0, scalar::add_f32, seq::add_f32, cpu::add_f32},
-                      {"sub", 12.0, scalar::sub_f32, seq::sub_f32, cpu::sub_f32},
-                      {"mul", 12.0, scalar::mul_f32, seq::mul_f32, cpu::mul_f32},
-                      {"div", 12.0, scalar::div_f32, seq::div_f32, cpu::div_f32},
-                      {"neg", 8.0, unary_kernel<scalar::neg_f32>, unary_kernel<seq::neg_f32>,
-                       unary_kernel<cpu::neg_f32>},
-                      {"abs", 8.0, unary_kernel<scalar::abs_f32>, unary_kernel<seq::abs_f32>,
-                       unary_kernel<cpu::abs_f32>},
-                      {"square", 8.0, unary_kernel<scalar::square_f32>,
-                       unary_kernel<seq::square_f32>, unary_kernel<cpu::square_f32>},
-                      {"relu", 8.0, unary_kernel<scalar::relu_f32>, unary_kernel<seq::relu_f32>,
-                       unary_kernel<cpu::relu_f32>},
-                      {"sqrt", 8.0, unary_kernel<scalar::sqrt_f32>, unary_kernel<seq::sqrt_f32>,
-                       unary_kernel<cpu::sqrt_f32>},
-                      {"exp", 8.0, unary_kernel<scalar::exp_f32>, unary_kernel<seq::exp_f32>,
-                       unary_kernel<cpu::exp_f32>},
-                      {"sigmoid", 8.0, unary_kernel<scalar::sigmoid_f32>,
-                       unary_kernel<seq::sigmoid_f32>, unary_kernel<cpu::sigmoid_f32>},
-                      {"axpy", 12.0, axpy_kernel<scalar::axpy_f32>, axpy_kernel<seq::axpy_f32>,
-                       axpy_kernel<cpu::axpy_f32>},
-                      {"bias_add", 8.0, bias_add_kernel<scalar::bias_add_f32>,
-                       bias_add_kernel<seq::bias_add_f32>, bias_add_kernel<cpu::bias_add_f32>},
-                      {"dot", 8.0, nullptr, nullptr, nullptr}};
+    const Op ops[] = {{"add", 12.0, cpu::add_f32},
+                      {"sub", 12.0, cpu::sub_f32},
+                      {"mul", 12.0, cpu::mul_f32},
+                      {"div", 12.0, cpu::div_f32},
+                      {"neg", 8.0, unary_kernel<cpu::neg_f32>},
+                      {"abs", 8.0, unary_kernel<cpu::abs_f32>},
+                      {"square", 8.0, unary_kernel<cpu::square_f32>},
+                      {"relu", 8.0, unary_kernel<cpu::relu_f32>},
+                      {"sqrt", 8.0, unary_kernel<cpu::sqrt_f32>},
+                      {"exp", 8.0, unary_kernel<cpu::exp_f32>},
+                      {"sigmoid", 8.0, unary_kernel<cpu::sigmoid_f32>},
+                      {"axpy", 12.0, axpy_kernel<cpu::axpy_f32>},
+                      {"bias_add", 8.0, bias_add_kernel<cpu::bias_add_f32>},
+                      {"dot", 8.0, nullptr}};
 
     std::set<std::string> selected;
     for (int i = 1; i < argc; ++i) {
@@ -119,10 +101,9 @@ int main(int argc, char* argv[]) {
 
     const bench::Config config;
     std::vector<std::string> notes = {
-        "impl: scalar = sequential.cpp without auto-vectorization; sequential = the same code with "
-        "the compiler's SIMD; parallel = the parallel kernel with N threads",
-        "vs scalar / vs seq = that baseline's median time / this row's median time",
-        "parallel cutoff: " + std::to_string(cpu::default_grain) + " elements"};
+        "impl: sequential = the kernel on one thread; parallel = the same kernel on N threads",
+        "vs seq = the sequential median time / this row's median time",
+        "parallel cutoff: " + std::to_string(cpu::parallel_threshold) + " elements"};
     if (wanted("axpy")) {
         notes.push_back("axpy: alpha=" + std::to_string(axpy_alpha) + ", fused multiply-add");
     }
@@ -131,18 +112,18 @@ int main(int argc, char* argv[]) {
             "bias_add: features = largest power-of-two divisor of n up to 256; the first "
             "features entries of b are the bias; GB/s counts 8*n + 4*features bytes");
     }
-    bench::print_header("Scalar vs sequential vs parallel on the CPU (float32)", config, notes);
+    bench::print_header("Sequential vs parallel on the CPU (float32)", config, notes);
 
     const std::int64_t sizes[] = {1000,    10000,   32768,   32769,    40000,
                                   50000,   75000,   100000,  200000,   500000,
                                   1000000, 2000000, 5000000, 10000000, 33554432};
-    bench::Table table("GB/s");
+    bench::Table table("GB/s", 1e9, "vs seq", "");
 
     for (const Op& op : ops) {
         if (!wanted(op.name)) {
             continue;
         }
-        const bool is_dot = op.sequential == nullptr;
+        const bool is_dot = op.kernel == nullptr;
         const bool is_bias_add = std::string(op.name) == "bias_add";
         const bool nonnegative_input = std::string(op.name) == "sqrt";
         table.section(op.name);
@@ -168,51 +149,39 @@ int main(int argc, char* argv[]) {
             double value = 0.0;
             auto observe_out = [&] { return is_dot ? value : bench::checksum(out, len); };
 
-            // The sequential result is the reference for the scalar and the parallel runs.
+            // The one-thread result is the reference for the multi-thread runs.
             auto run_sequential = [&] {
                 if (is_dot) {
-                    value = seq::dot_f32(a, b, n);
+                    value = cpu::dot_f32(a, b, n);
                 } else {
-                    op.sequential(a, b, reference, n);
+                    op.kernel(a, b, reference, n);
                 }
             };
+            cpu::set_max_threads(1);
             run_sequential();
             const double reference_value = value;
             auto observe_reference = [&] {
                 return is_dot ? value : bench::checksum(reference, len);
             };
 
-            auto run_scalar = [&] {
-                if (is_dot) {
-                    value = scalar::dot_f32(a, b, n);
-                } else {
-                    op.scalar(a, b, out, n);
-                }
-            };
-            run_scalar();
-            if (is_dot) {
-                bench::check_value(reference_value, value, 0.0, "scalar dot");
-            } else {
-                bench::check_bits(reference, out, len, std::string("scalar ") + op.name);
-            }
-
-            const bench::Sample scalar_sample = bench::measure(config, run_scalar, observe_out);
             const bench::Sample seq_sample =
                 bench::measure(config, run_sequential, observe_reference);
             const std::string label = std::to_string(n);
-            table.row(label, "scalar", "-", scalar_sample, bytes, &scalar_sample, &seq_sample);
-            table.row(label, "sequential", "-", seq_sample, bytes, &scalar_sample, &seq_sample);
+            table.row(label, "sequential", "-", seq_sample, bytes, &seq_sample);
 
             for (int threads : counts) {
+                if (threads == 1) {
+                    continue; // that is the sequential row
+                }
                 cpu::set_max_threads(threads);
                 auto run_parallel = [&] {
                     if (is_dot) {
                         value = cpu::dot_f32(a, b, n);
                     } else {
-                        op.parallel(a, b, out, n);
+                        op.kernel(a, b, out, n);
                     }
                 };
-                // Elementwise results must match the sequential ones bit for bit; dot may differ
+                // Elementwise results must match the one-thread ones bit for bit; dot may differ
                 // slightly because the partial sums are added in a different order.
                 run_parallel();
                 const std::string what =
@@ -223,8 +192,7 @@ int main(int argc, char* argv[]) {
                     bench::check_bits(reference, out, len, what);
                 }
                 const bench::Sample par = bench::measure(config, run_parallel, observe_out);
-                table.row(label, "parallel", std::to_string(threads), par, bytes, &scalar_sample,
-                          &seq_sample);
+                table.row(label, "parallel", std::to_string(threads), par, bytes, &seq_sample);
             }
             table.blank();
         }

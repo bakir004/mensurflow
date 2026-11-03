@@ -30,9 +30,11 @@ bit-identical CPU/GPU reductions.
 
 ## Current implementation status
 
-What exists today. Operations take `Tensor`s (float32 only, `mensurflow::` namespace) and run on
-the device the tensors live on, through the dispatcher. Every CPU kernel also has a plain
-sequential version, used as the benchmark baseline (`src/backends/cpu/sequential.cpp`).
+What exists today. Operations take `Tensor`s (float32 only, `mensurflow::` namespace) and an
+optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
+dispatcher where to run. CPU kernels are in `src/backends/cpu/ops/{blas,elementwise,reduction}/`;
+each is one loop that OpenMP parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`,
+`max` and `min`, which have separate sequential and parallel versions.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
 |Operation|CPU|CUDA|ROCm|Metal|
@@ -45,7 +47,6 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`dot`|OpenMP, double accumulation|`cublasSdot`|`rocblas_sdot`, untested|MPSGraph, untested|
 |`matvec`|OpenMP, double accumulation per row|—|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|—|
-|`softmax`|OpenMP, stable arbitrary-axis implementation|—|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|—|
 |`matmul`|blocked, rows split across threads; CPU autograd backward|—|—|—|
 
@@ -89,8 +90,9 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[x] `min(x)` and `prod(x)` — full-tensor minimum/product reductions.
 * \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
-* \[x] `softmax(x, axis)` — normalized exponentials with arbitrary-axis CPU support.
-* \[x] `mse_loss`, `log_softmax`, and index-target `cross_entropy` with CPU backward.
+* \[ ] `softmax(x, axis)` — normalized exponentials (removed; to be redone).
+* \[ ] `mse_loss`, `log_softmax`, and index-target `cross_entropy` (removed; MSE can be written
+as `mean(square(sub(p, t)))`).
 
 ### Tensor plumbing
 
@@ -112,8 +114,10 @@ softmax for multiclass classification. Run a two-layer ReLU network and compare
 with a reference. This supports inference, not training by itself.
 
 **Current project status:** the CPU float32 path now includes reverse-mode
-autograd for the implemented elementwise, reduction, bias, matrix multiply,
-and loss operations, plus SGD and a runnable MLP example. GPU backends,
+autograd for the implemented elementwise, reduction, bias, and matrix multiply
+operations, and a runnable MLP example (`examples/mlp_xor.cpp`) that writes its
+loss and update step from those operations. Softmax, the loss operations, and
+the SGD optimizer were removed. GPU backends,
 backend-independent correctness infrastructure, and the broader vendor-kernel
 coverage table remain separate work.
 
@@ -201,8 +205,8 @@ of a tensor, e.g. KV-cache updates.
 
 * \[x] Mean squared error (MSE).
 * \[ ] Binary cross-entropy **with logits**, using a stable formula.
-* \[x] `log\_softmax`, using stable log-sum-exp.
-* \[x] Multiclass cross-entropy **with logits**, with integer class labels.
+* \[ ] `log\_softmax`, using stable log-sum-exp (removed).
+* \[ ] Multiclass cross-entropy **with logits**, with integer class labels (removed).
 * \[ ] Negative log-likelihood loss on log-probabilities.
 * \[ ] Huber / smooth-L1 loss and KL divergence.
 * \[ ] Label smoothing for cross-entropy.
@@ -222,8 +226,8 @@ graphs if a full automatic differentiation system would exceed scope.
 * \[x] Elementwise gradients for arithmetic, ReLU, sigmoid, and tanh.
 * \[x] GEMM gradients using transposed GEMMs.
 * \[x] Bias gradients and reduction gradients using sum/broadcast.
-* \[x] MSE and cross-entropy-with-logits gradients.
-* \[x] Softmax/log-softmax backward when required independently of fused losses.
+* \[ ] MSE and cross-entropy-with-logits gradients (removed with the losses).
+* \[ ] Softmax/log-softmax backward when required independently of fused losses (removed).
 * \[ ] `sum\_to\_shape` — reduce broadcasted gradients back to an input's shape.
 * \[ ] Gradient accumulation for parameters used by multiple graph branches.
 * \[ ] Scatter-add or equivalent accumulation for gather/indexing gradients;
@@ -237,7 +241,7 @@ kernel. For example, GEMM backward can dispatch two existing GEMM operations.
 * \[ ] Seeded uniform and normal random initialization.
 * \[ ] `randperm` and Bernoulli sampling — data shuffling and dropout masks.
 * \[ ] Xavier/He initialization built from random generation and scaling.
-* \[x] SGD parameter update.
+* \[ ] SGD parameter update (removed).
 * \[ ] Optional momentum SGD, followed by Adam with optimizer state and bias
 correction.
 * \[ ] AdamW — Adam with decoupled weight decay; the usual optimizer for

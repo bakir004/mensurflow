@@ -2,16 +2,14 @@
 // dispatcher. Three questions:
 //   1. How fast is each device, and how much faster than the CPU?              (section 1)
 //   2. What does one call cost when there is no work to do?                    (section 2)
-//   3. On the CPU, what does the API cost compared with calling the kernel directly, and what
-//      do SIMD and threads each add?                                           (section 3)
+//   3. On the CPU, what does the API cost compared with calling the sequential and parallel
+//      kernels directly?                                                       (section 3)
 // Each timed call includes reading the scalar result back, so GPU work is finished when the clock
 // stops. Built on the shared harness: see benchmarks/bench.hpp and docs/BENCHMARKS.md.
 #include "bench.hpp"
 
-#include "backends/cpu/blas.hpp"
-#include "backends/cpu/parallel.hpp"
-#include "backends/cpu/scalar.hpp"
-#include "backends/cpu/sequential.hpp"
+#include "backends/cpu/ops/blas/blas.hpp"
+#include "backends/cpu/threads.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/blas.hpp"
 
@@ -54,8 +52,12 @@ int main() {
         for (Device device : devices) {
             const Tensor ta = Tensor::from_vector(a, {n}, device);
             const Tensor tb = Tensor::from_vector(b, {n}, device);
+            // Run on the device that holds the data, so each row times that device.
+            const mensurflow::Execution on = device.type == DeviceType::CPU
+                                                 ? mensurflow::Execution::CPU
+                                                 : mensurflow::Execution::GPU;
             double result = 0.0;
-            auto run = [&] { result = mensurflow::dot(ta, tb).item<float>(); };
+            auto run = [&] { result = mensurflow::dot(ta, tb, on).item<float>(); };
             run();
             // Float accumulation error is relative to the sum of |x*y|, not to the result.
             bench::check_value(want.value, result, 2e-4,
@@ -77,8 +79,11 @@ int main() {
     overhead.section("2. one call on 1 element (pure overhead)");
     for (Device device : devices) {
         const Tensor one = Tensor::from_vector(std::vector<float>{2.0f}, {1}, device);
+        const mensurflow::Execution on = device.type == DeviceType::CPU
+                                             ? mensurflow::Execution::CPU
+                                             : mensurflow::Execution::GPU;
         double result = 0.0;
-        auto run = [&] { result = mensurflow::dot(one, one).item<float>(); };
+        auto run = [&] { result = mensurflow::dot(one, one, on).item<float>(); };
         const bench::Sample sample = bench::measure(config, run, [&] { return result; });
         overhead.row("1", mensurflow::to_string(device), "-", sample, 0.0);
     }
@@ -99,24 +104,22 @@ int main() {
         auto observe = [&] { return result; };
 
         auto run_api = [&] { result = mensurflow::dot(ta, tb).item<float>(); };
-        auto run_parallel = [&] { result = cpu::dot_f32(a.data(), b.data(), n); };
-        auto run_sequential = [&] { result = cpu::sequential::dot_f32(a.data(), b.data(), n); };
-        auto run_scalar = [&] { result = cpu::scalar::dot_f32(a.data(), b.data(), n); };
+        auto run_kernel = [&] { result = cpu::dot_f32(a.data(), b.data(), n); };
 
-        run_sequential();
+        const int threads = cpu::max_threads();
+        cpu::set_max_threads(1);
+        run_kernel();
         const double expected = result;
-        run_parallel();
+        const bench::Sample sequential = bench::measure(config, run_kernel, observe);
+        cpu::set_max_threads(threads);
+        run_kernel();
         bench::check_value(expected, result, 1e-4, "parallel dot kernel n=" + std::to_string(n));
-        run_scalar();
-        bench::check_value(expected, result, 1e-4, "scalar dot kernel n=" + std::to_string(n));
         const bench::Sample api = bench::measure(config, run_api, observe);
         const std::string label = std::to_string(n);
         kernels.row(label, "api", "-", api, bytes, &api);
-        kernels.row(label, "parallel", std::to_string(cpu::max_threads()),
-                    bench::measure(config, run_parallel, observe), bytes, &api);
-        kernels.row(label, "sequential", "-", bench::measure(config, run_sequential, observe),
-                    bytes, &api);
-        kernels.row(label, "scalar", "-", bench::measure(config, run_scalar, observe), bytes, &api);
+        kernels.row(label, "parallel", std::to_string(threads),
+                    bench::measure(config, run_kernel, observe), bytes, &api);
+        kernels.row(label, "sequential", "1", sequential, bytes, &api);
         kernels.blank();
     }
     return 0;

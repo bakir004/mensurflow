@@ -1,7 +1,7 @@
 // Shared benchmark harness. See bench.hpp.
 #include "bench.hpp"
 
-#include "backends/cpu/parallel.hpp"
+#include "backends/cpu/threads.hpp"
 
 #include <atomic>
 #include <cmath>

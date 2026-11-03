@@ -5,6 +5,7 @@
 
 #include "backends/backend.hpp"
 #include "mensurflow/dtype.hpp"
+#include "mensurflow/execution.hpp"
 #include "mensurflow/tensor.hpp"
 
 #include <map>
@@ -56,7 +57,6 @@ enum class OpId {
     AxisMax,
     AxisMin,
     AxisProd,
-    Softmax,
     Argmax
 };
 
@@ -79,7 +79,7 @@ struct OpArgs {
     std::vector<Tensor> outputs;
     float alpha = 1.0f; // Scalar multiplier for axpy; unused by other operations.
     float beta = 1.0f;  // Upper bound for clamp; unused by other operations.
-    int axis = -1;      // Reduction/softmax axis; unused by other operations.
+    int axis = -1;      // Reduction axis; unused by other operations.
     bool keepdim = false;
     bool transpose = false;
 };
@@ -106,11 +106,19 @@ class Dispatcher {
     std::map<KernelKey, KernelFn> kernels_;
 };
 
-// Runs `op` on the device its inputs live on: picks that device's backend, looks up the kernel for
-// the first input's dtype, and calls it on the device's stream. The kernel may return before the
-// device finishes; reading an output through Tensor blocks until it is ready.
-// Throws invalid_argument if the inputs are on different devices, runtime_error if the device is
-// unavailable, and NotImplemented if no kernel exists.
-void dispatch(OpId op, const OpArgs& args);
+// The device an op runs on, given the caller's choice and the device its inputs live on:
+// CPU -> cpu:0; GPU -> data_device if it is a GPU, else the first available CUDA, ROCm or Metal
+// device (runtime_error if there is none); Auto -> cpu:0 for now. This is the one place a future
+// auto-tuner would decide.
+Device execution_device(Execution execution, Device data_device);
+
+// Runs `op` where `execution` says (see execution_device). The inputs must all be on one device;
+// the outputs must be allocated on that same device. If the op runs elsewhere, the inputs are
+// copied there, the kernel writes temporary outputs, and those are copied back into `outputs`.
+// The kernel is looked up for the execution device and the first input's dtype. On a GPU it may
+// return before the device finishes; reading an output through Tensor blocks until it is ready.
+// Throws invalid_argument if the tensors are on different devices, runtime_error if the
+// execution device is unavailable, and NotImplemented if it has no kernel for the op and dtype.
+void dispatch(OpId op, const OpArgs& args, Execution execution);
 
 } // namespace mensurflow::detail

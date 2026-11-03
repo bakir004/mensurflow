@@ -1,15 +1,14 @@
-// Tests CPU elementwise kernels against the reference loops, across sizes around the parallel
-// cutoff and several thread counts. Transcendental references allow float32 rounding;
+// Tests the CPU elementwise kernels against the reference loops, across sizes around
+// the parallel cutoff and several thread counts. Transcendental references allow float32 rounding;
 // exact sequential/parallel agreement is checked in sequential_test.cpp.
-#include "backends/cpu/elementwise.hpp"
-#include "backends/cpu/parallel.hpp"
+#include "backends/cpu/ops/elementwise/elementwise.hpp"
+#include "backends/cpu/threads.hpp"
 #include "reference/elementwise.hpp"
 #include "test_util.hpp"
 
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -74,9 +73,9 @@ void test_matches_reference() {
                                   16,
                                   17,
                                   1000,
-                                  default_grain - 1,
-                                  default_grain,
-                                  default_grain + 1,
+                                  parallel_threshold - 1,
+                                  parallel_threshold,
+                                  parallel_threshold + 1,
                                   75000,
                                   100003,
                                   (1 << 20) + 7};
@@ -135,29 +134,10 @@ void test_in_place() {
 
 void test_axpy_and_bias_contracts() {
     float x = 1.0f, y = 2.0f, out = 0.0f;
+    // n == 0 never touches memory.
     axpy_f32(2.0f, nullptr, nullptr, nullptr, 0);
     bias_add_f32(nullptr, nullptr, nullptr, 0, 0);
     bias_add_f32(nullptr, nullptr, nullptr, 0, 7);
-    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, &x, &y, &out, -1); },
-                                                "axpy negative length");
-    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, nullptr, &y, &out, 1); },
-                                                "axpy null x");
-    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, &x, nullptr, &out, 1); },
-                                                "axpy null y");
-    test::require_throws<std::invalid_argument>([&] { axpy_f32(2, &x, &y, nullptr, 1); },
-                                                "axpy null output");
-    for (const auto dimensions :
-         {std::pair<std::int64_t, std::int64_t>{-1, 1}, {0, -1}, {1, 0}, {2, 3}}) {
-        test::require_throws<std::invalid_argument>(
-            [&] { bias_add_f32(&x, &y, &out, dimensions.first, dimensions.second); },
-            "bias_add invalid length or feature count");
-    }
-    test::require_throws<std::invalid_argument>([&] { bias_add_f32(nullptr, &y, &out, 1, 1); },
-                                                "bias_add null x");
-    test::require_throws<std::invalid_argument>([&] { bias_add_f32(&x, nullptr, &out, 1, 1); },
-                                                "bias_add null bias");
-    test::require_throws<std::invalid_argument>([&] { bias_add_f32(&x, &y, nullptr, 1, 1); },
-                                                "bias_add null output");
 
     // Fused multiply-add retains the product's low bits and avoids intermediate overflow.
     x = 0x1.fffffcp-1f;
@@ -170,21 +150,11 @@ void test_axpy_and_bias_contracts() {
     test::require(out == x, "axpy avoids intermediate product overflow");
 }
 
-void test_errors() {
-    float x = 1.0f;
-    test::require_throws<std::invalid_argument>([&] { add_f32(&x, &x, &x, -1); }, "negative n");
-    test::require_throws<std::invalid_argument>([&] { add_f32(nullptr, &x, &x, 1); }, "null input");
-    test::require_throws<std::invalid_argument>([&] { mul_f32(&x, &x, nullptr, 1); },
-                                                "null output");
-    add_f32(nullptr, nullptr, nullptr, 0); // n == 0 never touches memory
+// Kernels do not validate (src/ops does); they must only leave memory alone when n == 0.
+void test_empty() {
+    add_f32(nullptr, nullptr, nullptr, 0);
     for (const UnaryOp& op : unary_ops) {
         op.kernel(nullptr, nullptr, 0);
-        test::require_throws<std::invalid_argument>([&] { op.kernel(&x, &x, -1); },
-                                                    "negative unary length");
-        test::require_throws<std::invalid_argument>([&] { op.kernel(nullptr, &x, 1); },
-                                                    "null unary input");
-        test::require_throws<std::invalid_argument>([&] { op.kernel(&x, nullptr, 1); },
-                                                    "null unary output");
     }
 }
 
@@ -195,6 +165,6 @@ int main() {
         test_matches_reference();
         test_in_place();
         test_axpy_and_bias_contracts();
-        test_errors();
+        test_empty();
     });
 }

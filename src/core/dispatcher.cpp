@@ -89,8 +89,6 @@ const char* op_name(OpId op) {
         return "min_axis";
     case OpId::AxisProd:
         return "prod_axis";
-    case OpId::Softmax:
-        return "softmax";
     case OpId::Argmax:
         return "argmax";
     }
@@ -120,24 +118,64 @@ KernelFn Dispatcher::lookup(KernelKey key) const {
                          device_type_name(key.device) + " for " + dtype_name(key.dtype));
 }
 
-void dispatch(OpId op, const OpArgs& args) {
+Device execution_device(Execution execution, Device data_device) {
+    switch (execution) {
+    case Execution::Auto:
+        // Not tuned yet: everything runs on the CPU.
+        return {DeviceType::CPU, 0};
+    case Execution::CPU:
+        return {DeviceType::CPU, 0};
+    case Execution::GPU:
+        if (data_device.type != DeviceType::CPU) {
+            return data_device;
+        }
+        for (DeviceType type : {DeviceType::CUDA, DeviceType::ROCm, DeviceType::Metal}) {
+            if (Registry::instance().find(type) != nullptr) {
+                return {type, 0};
+            }
+        }
+        throw std::runtime_error("Execution::GPU requested, but no GPU is available");
+    }
+    throw std::invalid_argument("invalid Execution value");
+}
+
+void dispatch(OpId op, const OpArgs& args, Execution execution) {
     if (args.inputs.empty()) {
         throw std::invalid_argument(std::string(op_name(op)) + ": no input tensors");
     }
-    const Device device = args.inputs[0].device();
+    const Device data_device = args.inputs[0].device();
     for (const auto* group : {&args.inputs, &args.outputs}) {
         for (const Tensor& t : *group) {
-            if (t.device() != device) {
+            if (t.device() != data_device) {
                 throw std::invalid_argument(std::string(op_name(op)) + ": tensors are on " +
-                                            to_string(device) + " and " + to_string(t.device()) +
-                                            "; move one with Tensor::to()");
+                                            to_string(data_device) + " and " +
+                                            to_string(t.device()) + "; move one with Tensor::to()");
             }
         }
     }
+
+    const Device target = execution_device(execution, data_device);
     Registry& registry = Registry::instance();
-    Backend& backend = registry.get(device);
-    const KernelFn kernel = registry.dispatcher().lookup({op, device.type, args.inputs[0].dtype()});
-    kernel(args, backend.stream(device.index));
+    Backend& backend = registry.get(target);
+    const KernelFn kernel = registry.dispatcher().lookup({op, target.type, args.inputs[0].dtype()});
+    if (target == data_device) {
+        kernel(args, backend.stream(target.index));
+        return;
+    }
+
+    // Run on another device: copy the inputs over, compute into fresh outputs there, copy back.
+    OpArgs moved = args;
+    for (Tensor& input : moved.inputs) {
+        input = input.to(target);
+    }
+    for (Tensor& output : moved.outputs) {
+        output = Tensor::empty(output.shape(), output.dtype(), target);
+    }
+    kernel(moved, backend.stream(target.index));
+    for (std::size_t i = 0; i < args.outputs.size(); ++i) {
+        Tensor destination = args.outputs[i]; // shares storage with the caller's output
+        destination.copy_from(moved.outputs[i].to(data_device));
+    }
 }
 
 } // namespace mensurflow::detail

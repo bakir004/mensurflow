@@ -12,7 +12,7 @@ namespace mensurflow {
 
 namespace {
 
-Tensor reduce(detail::OpId op, const Tensor& x, bool allow_empty) {
+Tensor reduce(detail::OpId op, const Tensor& x, bool allow_empty, Execution execution) {
     const std::string name = detail::op_name(op);
     if (!x.defined()) {
         throw std::invalid_argument(name + ": undefined tensor");
@@ -22,7 +22,7 @@ Tensor reduce(detail::OpId op, const Tensor& x, bool allow_empty) {
     }
     const Tensor input = x.contiguous();
     Tensor out = Tensor::empty({}, x.dtype(), x.device());
-    detail::dispatch(op, {{input}, {out}});
+    detail::dispatch(op, {{input}, {out}}, execution);
     if ((op == detail::OpId::Sum || op == detail::OpId::Mean) && x.requires_grad()) {
         detail::AutogradAccess::record(out, {x}, [x, op](const Tensor& gradient) {
             detail::autograd::NoGradGuard guard;
@@ -37,17 +37,27 @@ Tensor reduce(detail::OpId op, const Tensor& x, bool allow_empty) {
 
 } // namespace
 
-Tensor sum(const Tensor& x) { return reduce(detail::OpId::Sum, x, true); }
+Tensor sum(const Tensor& x, Execution execution) {
+    return reduce(detail::OpId::Sum, x, true, execution);
+}
 
-Tensor mean(const Tensor& x) { return reduce(detail::OpId::Mean, x, false); }
+Tensor mean(const Tensor& x, Execution execution) {
+    return reduce(detail::OpId::Mean, x, false, execution);
+}
 
-Tensor max(const Tensor& x) { return reduce(detail::OpId::Max, x, false); }
+Tensor max(const Tensor& x, Execution execution) {
+    return reduce(detail::OpId::Max, x, false, execution);
+}
 
-Tensor min(const Tensor& x) { return reduce(detail::OpId::Min, x, false); }
+Tensor min(const Tensor& x, Execution execution) {
+    return reduce(detail::OpId::Min, x, false, execution);
+}
 
-Tensor prod(const Tensor& x) { return reduce(detail::OpId::Prod, x, true); }
+Tensor prod(const Tensor& x, Execution execution) {
+    return reduce(detail::OpId::Prod, x, true, execution);
+}
 
-Tensor reduce_axis(detail::OpId op, const Tensor& x, int axis, bool keepdim) {
+Tensor reduce_axis(detail::OpId op, const Tensor& x, int axis, bool keepdim, Execution execution) {
     if (!x.defined()) {
         throw std::invalid_argument(std::string(detail::op_name(op)) + ": undefined tensor");
     }
@@ -74,7 +84,7 @@ Tensor reduce_axis(detail::OpId op, const Tensor& x, int axis, bool keepdim) {
     detail::OpArgs args{{input}, {out}};
     args.axis = normalized_axis;
     args.keepdim = keepdim;
-    detail::dispatch(op, args);
+    detail::dispatch(op, args, execution);
     if ((op == detail::OpId::AxisSum || op == detail::OpId::AxisMean ||
          op == detail::OpId::AxisMax) &&
         x.requires_grad()) {
@@ -129,27 +139,27 @@ Tensor reduce_axis(detail::OpId op, const Tensor& x, int axis, bool keepdim) {
     return out;
 }
 
-Tensor sum(const Tensor& x, int axis, bool keepdim) {
-    return reduce_axis(detail::OpId::AxisSum, x, axis, keepdim);
+Tensor sum(const Tensor& x, int axis, bool keepdim, Execution execution) {
+    return reduce_axis(detail::OpId::AxisSum, x, axis, keepdim, execution);
 }
 
-Tensor mean(const Tensor& x, int axis, bool keepdim) {
-    return reduce_axis(detail::OpId::AxisMean, x, axis, keepdim);
+Tensor mean(const Tensor& x, int axis, bool keepdim, Execution execution) {
+    return reduce_axis(detail::OpId::AxisMean, x, axis, keepdim, execution);
 }
 
-Tensor max(const Tensor& x, int axis, bool keepdim) {
-    return reduce_axis(detail::OpId::AxisMax, x, axis, keepdim);
+Tensor max(const Tensor& x, int axis, bool keepdim, Execution execution) {
+    return reduce_axis(detail::OpId::AxisMax, x, axis, keepdim, execution);
 }
 
-Tensor min(const Tensor& x, int axis, bool keepdim) {
-    return reduce_axis(detail::OpId::AxisMin, x, axis, keepdim);
+Tensor min(const Tensor& x, int axis, bool keepdim, Execution execution) {
+    return reduce_axis(detail::OpId::AxisMin, x, axis, keepdim, execution);
 }
 
-Tensor prod(const Tensor& x, int axis, bool keepdim) {
-    return reduce_axis(detail::OpId::AxisProd, x, axis, keepdim);
+Tensor prod(const Tensor& x, int axis, bool keepdim, Execution execution) {
+    return reduce_axis(detail::OpId::AxisProd, x, axis, keepdim, execution);
 }
 
-Tensor argmax(const Tensor& x, int axis) {
+Tensor argmax(const Tensor& x, int axis, Execution execution) {
     if (!x.defined()) {
         throw std::invalid_argument("argmax: undefined tensor");
     }
@@ -167,7 +177,7 @@ Tensor argmax(const Tensor& x, int axis) {
     Shape output_shape(x.shape().begin(), x.shape().end() - 1);
     Tensor out = Tensor::empty(std::move(output_shape), DType::I64, x.device());
     const Tensor input = x.is_contiguous() ? x : x.contiguous();
-    detail::dispatch(detail::OpId::Argmax, {{input}, {out}});
+    detail::dispatch(detail::OpId::Argmax, {{input}, {out}}, execution);
     return out;
 }
 

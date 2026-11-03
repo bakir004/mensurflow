@@ -1,9 +1,8 @@
 // Last-axis argmax: sequential versus row-parallel CPU kernels.
 #include "bench.hpp"
 
-#include "backends/cpu/argmax.hpp"
-#include "backends/cpu/parallel.hpp"
-#include "backends/cpu/sequential_argmax.hpp"
+#include "backends/cpu/ops/reduction/reduction.hpp"
+#include "backends/cpu/threads.hpp"
 
 #include <cstdint>
 #include <stdexcept>
@@ -11,7 +10,6 @@
 #include <vector>
 
 namespace cpu = mensurflow::cpu;
-namespace sequential = mensurflow::cpu::sequential;
 
 double checksum(const std::int64_t* values, std::size_t n) {
     std::int64_t total = 0;
@@ -35,7 +33,7 @@ int main() {
     const int maximum_threads = cpu::max_threads();
     const std::vector<int> thread_counts = bench::thread_counts(maximum_threads);
     bench::print_header("CPU last-axis argmax (float32 input, int64 output)", config,
-                        {"parallel splits rows across the configured OpenMP thread count",
+                        {"sequential = one thread; parallel splits rows across N OpenMP threads",
                          "rate is rows processed per second"});
     bench::Table table("M rows/s", 1e6);
     table.section("argmax");
@@ -49,8 +47,9 @@ int main() {
         std::vector<std::int64_t> output(output_length);
         std::vector<std::int64_t> expected(output_length);
         bench::fill_a(input, input_length);
-        auto run_sequential = [&] { sequential::argmax_f32(input, expected.data(), rows, width); };
+        auto run_sequential = [&] { cpu::argmax_f32(input, expected.data(), rows, width); };
         auto run_parallel = [&] { cpu::argmax_f32(input, output.data(), rows, width); };
+        cpu::set_max_threads(1);
         run_sequential();
         run_parallel();
         check_equal(expected.data(), output.data(), output_length,
@@ -60,6 +59,9 @@ int main() {
         const std::string label = std::to_string(rows) + "x" + std::to_string(width);
         table.row(label, "sequential", "-", serial, static_cast<double>(rows), &serial);
         for (int threads : thread_counts) {
+            if (threads == 1) {
+                continue; // that is the sequential row
+            }
             cpu::set_max_threads(threads);
             run_parallel();
             check_equal(expected.data(), output.data(), output_length,

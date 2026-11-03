@@ -76,7 +76,10 @@ The available CMake options are:
 backend SDK and fails configuration when it is unavailable. `OFF` disables the
 backend.
 
-OpenMP parallelizes suitable CPU kernels. `MENSURFLOW_NATIVE=ON` enables
+CPU kernels live in `src/backends/cpu/ops/{blas,elementwise,reduction}/`. Each
+is a loop marked with `MENSURFLOW_PARALLEL_FOR`, which splits it across threads
+in an OpenMP build and does nothing otherwise; `matmul`, `max`, and `min` have a
+separate sequential and parallel version. `MENSURFLOW_NATIVE=ON` enables
 machine-specific compiler optimizations and should not be used for portable
 builds.
 
@@ -114,8 +117,21 @@ Expected output:
 11 22 33
 ```
 
-Operations run on the device where their input tensors reside. Results are
-out-of-place and inputs are not modified.
+Results are out-of-place and inputs are not modified, and a result is always on
+its inputs' device. Every operation takes an optional last argument saying where
+it runs:
+
+```cpp
+Tensor r = dot(x, y, Execution::GPU); // CPU, GPU, or Auto (the default)
+```
+
+- `Execution::CPU` runs on the CPU.
+- `Execution::GPU` runs on the GPU the inputs live on, otherwise the first
+  available CUDA, ROCm, or Metal device.
+- `Execution::Auto` lets the library choose; for now it always chooses the CPU.
+
+If an operation runs away from its data, the inputs are copied over and the
+result is copied back.
 
 ## Supported operations
 
@@ -125,7 +141,6 @@ out-of-place and inputs are not modified.
 - `matvec`
 - `gemv`
 - `matmul`
-- `softmax`
 - `argmax`
 - `axpy`
 - `bias_add`
@@ -145,12 +160,10 @@ out-of-place and inputs are not modified.
 
 - Reverse-mode autograd with `requires_grad`, `grad`, `zero_grad`, and `backward`
 - Differentiable elementwise operations, reductions, `matmul`, and `bias_add`
-- `mse_loss`, `log_softmax`, and `cross_entropy`
-- SGD with optional momentum and weight decay
 - General `gemm` with scaling and transpose flags
 
-The training path is currently CPU-only. GPU backends do not yet register the
-autograd, loss, or optimizer operations.
+The training path is currently CPU-only. Losses and the parameter update are
+written with the operations above; see `examples/mlp_xor.cpp`.
 
 ### Elementwise operations
 
@@ -168,9 +181,9 @@ autograd, loss, or optimizer operations.
 - `log`, `rsqrt`, `tanh`, `sin`, `cos`, and `reciprocal`
 - `pow`, `minimum`, and `maximum`
 
-`matvec` and `matmul` currently have CPU implementations only. Unsupported backend and
-operation combinations throw `NotImplemented`; they do not silently fall back
-to another device.
+`matvec` and `matmul` currently have CPU implementations only. Asking for an
+execution device that has no kernel for an operation throws `NotImplemented`;
+the library does not silently run it somewhere else.
 
 ## Tensor operations
 
@@ -224,7 +237,6 @@ not silently redirect an operation to another device.
 | `dot` | Yes | Yes | Implemented, hardware validation pending | Implemented, hardware validation pending | No |
 | `matvec` | Yes | No | No | No | No |
 | `matmul` | Yes | No | No | No | No |
-| `softmax` | Yes | No | No | No | No |
 | `argmax` | Yes | No | No | No | No |
 | Tensor transfers | Yes | Yes | Yes | Yes | No |
 
@@ -256,7 +268,7 @@ kernel implementations:
 - `dot_benchmark`
 - `matvec_benchmark`
 - `matmul_benchmark`
-- `softmax_benchmark`
+- `reduction_benchmark`
 - `argmax_benchmark`
 - `cpu_parallel_benchmark`
 
