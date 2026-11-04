@@ -31,6 +31,16 @@ ranked so we build what matters first:
 | ★★★★☆ | Tiling + register blocking + tuning to get within 2× of the vendor. |
 | ★★★★★ | State of the art (FlashAttention, Winograd, tensor/coop-matrix GEMM, SVD). |
 
+### Rules for every kernel
+
+- **Vectorized.** Every kernel we write must be vectorized (SIMD on the CPU,
+  vector loads on the GPU). Check it in the benchmark against the `scalar`
+  baseline instead of assuming the compiler did it.
+- **Parallel CPU first.** The parallel CPU implementation is the main fallback
+  for everything (see ARCHITECTURE.md section 5b).
+- **Several variants where it pays.** For ops such as `gemm`, register several
+  tile or block-size variants so the autotuner has something to choose from.
+
 **Vendor column**: which library provides it, i.e. where the vendor backends
 just call a library instead of shipping our own kernel. "—" means everyone
 writes it by hand (including PyTorch).

@@ -7,7 +7,7 @@ ARM, Qualcomm, or any vendor without its runtime installed).
 
 | Document | Contents |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Layers, public `Tensor`/`Device` API, device autodetection, dispatcher and per-op fallback, folder structure, phases |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Layers, public `Tensor`/`Device` API, device autodetection, dispatcher and per-op fallback, autotuning (proposed), folder structure, phases |
 | [KERNELS_ROADMAP.md](KERNELS_ROADMAP.md) | Every kernel from the vendor BLAS/DNN libraries, ranked by necessity (P0–P3) and difficulty (★1–5), plus build order by milestone |
 | [VULKAN_DESIGN.md](VULKAN_DESIGN.md) | Vulkan backend: RAII handles and destruction order, device/feature selection, VMA memory and buffer pooling, command batching and barriers, descriptors/push constants/specialization constants, shader-writing rules, debugging and testing |
 

@@ -184,6 +184,10 @@ CUDA tensor:
    log a one-time warning. Off by default, on with `MENSURFLOW_ENABLE_CPU_FALLBACK=1`
    (same idea as PyTorch's `PYTORCH_ENABLE_MPS_FALLBACK`). Useful while a
    backend is still incomplete; never something to rely on for speed.
+   *Proposed change after the professor's remarks:* the main fallback is our
+   **parallel CPU implementation**, so `Execution::Auto` falls back to it
+   without the flag. An explicit `Execution::GPU` still throws
+   `NotImplemented` instead of moving the data.
 4. Otherwise throw `NotImplemented("softmax", CUDA, F16)`.
 
 Ops are **not** silently redirected from CUDA to Vulkan: the memory lives in a
@@ -198,6 +202,30 @@ priority and an `is_supported(args, device_caps)` predicate.
 
 A test (`tests/coverage_test.cpp`) prints the op × backend × dtype matrix and
 fails CI if the Vulkan or CPU column has holes.
+
+## 5b. Autotuning (proposed, from the professor's remarks)
+
+The user can choose where an op runs (`Execution::CPU` or `Execution::GPU`)
+or let the library choose (`Execution::Auto`), and can call the autotuner
+explicitly, for example `autotune(dot, a, b)`. Which kernel is best depends on the
+dimensions: different tiles suit different matrix shapes, so one op has several
+kernels with different block-size parameters (the "multiple implementations
+of the same op" above).
+
+- **What it does:** for the given op and inputs it times the registered
+  candidates (device, kernel, block sizes) and picks the fastest.
+- **Switch:** the autotuner only runs when a flag turns it on, for example
+  `MENSURFLOW_AUTOTUNE=1`. With the flag off, `Auto` uses fixed defaults.
+- **Log:** every timed run is written to a log (op, dtype, shape, device, kernel
+  and parameters, time). This log is the autotune record.
+- **All kernels vectorized:** candidates must be vectorized kernels; a scalar
+  loop is only the benchmark baseline.
+- **Fallback:** the default and the final fallback is the parallel CPU kernel.
+
+Open questions: when does it run (proposal: on the first call for each
+combination of op, dtype, device and size bucket, then the winner is reused),
+does the log double as a persistent cache, and does `autotune(...)` return the
+choice, run the op, or both?
 
 ---
 
@@ -368,3 +396,6 @@ never touches the `Backend` class.
 | 2 | P1 kernels, autograd, `nn` modules, Adam. Small CNN. F16 on Vulkan. |
 | 3 | P2: attention (flash), conv fast paths, cooperative-matrix GEMM, graph capture + fusion. Tiny transformer. |
 | 4 | P3: LAPACK-style solvers, quantization, multi-GPU. |
+
+The autotuner (section 5b) needs more than one variant of some kernel, so it
+comes after the first tiled `gemm` variants exist (Phase 2 on the CPU).
