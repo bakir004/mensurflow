@@ -201,7 +201,8 @@ MENSURFLOW_TARGET_AVX2 void kernel_6x16(std::int64_t kc, const float* pa, const 
         pb += NR6;
     }
 
-    auto store_row = [&](float* row, __m256 lo, __m256 hi) {
+    // GCC lambdas do not inherit the enclosing function's AVX2 target attribute.
+    auto store_row = [&](float* row, __m256 lo, __m256 hi) MENSURFLOW_TARGET_AVX2 {
         if (accumulate) {
             lo = _mm256_add_ps(lo, _mm256_loadu_ps(row));
             hi = _mm256_add_ps(hi, _mm256_loadu_ps(row + 8));
@@ -274,7 +275,7 @@ MENSURFLOW_TARGET_AVX2 void kernel_6x16_unrolled(std::int64_t kc, const float* p
         pa += 6;
         pb += 16;
     }
-    auto store_row = [&](float* row, __m256 lo, __m256 hi) {
+    auto store_row = [&](float* row, __m256 lo, __m256 hi) MENSURFLOW_TARGET_AVX2 {
         if (accumulate) {
             lo = _mm256_add_ps(lo, _mm256_loadu_ps(row));
             hi = _mm256_add_ps(hi, _mm256_loadu_ps(row + 8));
@@ -320,7 +321,7 @@ MENSURFLOW_TARGET_AVX2 void kernel_4x24(std::int64_t kc, const float* pa, const 
         pa += 4;
         pb += 24;
     }
-    auto store_row = [&](float* row, __m256 v0, __m256 v1, __m256 v2) {
+    auto store_row = [&](float* row, __m256 v0, __m256 v1, __m256 v2) MENSURFLOW_TARGET_AVX2 {
         if (accumulate) {
             v0 = _mm256_add_ps(v0, _mm256_loadu_ps(row));
             v1 = _mm256_add_ps(v1, _mm256_loadu_ps(row + 8));
@@ -365,7 +366,7 @@ MENSURFLOW_TARGET_AVX2 void kernel_12x8(std::int64_t kc, const float* pa, const 
         pa += 12;
         pb += 8;
     }
-    auto store_row = [&](float* row, __m256 v) {
+    auto store_row = [&](float* row, __m256 v) MENSURFLOW_TARGET_AVX2 {
         if (accumulate) {
             v = _mm256_add_ps(v, _mm256_loadu_ps(row));
         }
