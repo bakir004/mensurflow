@@ -157,6 +157,21 @@ links the harness and gives it the include paths for `src/` and `tests/reference
    `ops` list; unary and `axpy`-like signatures have adapter templates there).
 3. Run it twice, plugged in, and add the table to [BENCHMARKS.md](BENCHMARKS.md) with your machine.
 
+## Comparing against OpenBLAS
+
+`matmul_openblas_benchmark` runs our sequential and parallel matmul next to `cblas_sgemm` at the same
+thread counts and prints a `vs obl` column (OpenBLAS median time / this row's, so 1.00 = as fast as
+OpenBLAS). It is only built when OpenBLAS is found.
+
+1. Get OpenBLAS for the same architecture as the build (x64): the prebuilt `OpenBLAS-<version>-x64.zip`
+   from the OpenBLAS GitHub releases, or `vcpkg install openblas:x64-windows`.
+2. Configure with `-DOPENBLAS_ROOT=<folder with include/ lib/ bin/>` (or the vcpkg toolchain file). Use
+   `-DMENSURFLOW_OPENBLAS=ON` to fail when it is not found. `libopenblas.dll` is copied next to the
+   executable.
+3. Build and run `matmul_openblas_benchmark` in Release, then follow the rules below as usual.
+
+The header line prints the OpenBLAS build and the core type it selected; report both with the numbers.
+
 ## Before you report numbers
 
 - Release build, no `MENSURFLOW_NATIVE`, CMake from a clean build folder.

@@ -1,0 +1,133 @@
+// Tests the packed AVX2 GEMM (matmul_f32_packed) against a float64 reference on shapes around every
+// tile and block boundary: the 6 x 16 tile, MC = 168, KC = 256, NC = 4080, and degenerate sizes.
+#include "backends/cpu/ops/blas/blas.hpp"
+#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/threads.hpp"
+#include "test_util.hpp"
+
+#include <cmath>
+#include <cstdint>
+#include <iostream>
+#include <string>
+#include <vector>
+
+namespace cpu = mensurflow::cpu;
+
+namespace {
+
+// Multiples of 0.25 in [-4, 4].
+std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {
+    std::vector<float> v(static_cast<std::size_t>(n));
+    std::uint32_t state = seed;
+    for (auto& x : v) {
+        state = state * 1664525u + 1013904223u;
+        x = static_cast<float>(static_cast<int>(state >> 12) % 33 - 16) / 4;
+    }
+    return v;
+}
+
+using Kernel = void (*)(const float*, const float*, float*, std::int64_t, std::int64_t, std::int64_t);
+
+void check_shape(Kernel kernel, const char* name, std::int64_t m, std::int64_t n, std::int64_t k) {
+    const std::string what =
+        std::string(name) + " m=" + std::to_string(m) + " n=" + std::to_string(n) + " k=" + std::to_string(k);
+    const auto a = make_input(m * k, 1);
+    const auto b = make_input(k * n, 2);
+    // Poison C to prove every entry is written, not accumulated into.
+    std::vector<float> c(static_cast<std::size_t>(m * n), 12345.0f);
+    kernel(a.data(), b.data(), c.data(), m, n, k);
+    for (std::int64_t i = 0; i < m; ++i) {
+        for (std::int64_t j = 0; j < n; ++j) {
+            double expected = 0.0;
+            for (std::int64_t p = 0; p < k; ++p) {
+                expected += static_cast<double>(a[i * k + p]) * static_cast<double>(b[p * n + j]);
+            }
+            const float got = c[static_cast<std::size_t>(i * n + j)];
+            // Products are exact in float; only the summation order/rounding can differ.
+            const double tolerance = 1e-5 * (1.0 + std::abs(expected)) * (1.0 + static_cast<double>(k) / 64.0);
+            test::require(std::abs(static_cast<double>(got) - expected) <= tolerance,
+                          what + " wrong at (" + std::to_string(i) + "," + std::to_string(j) +
+                              "): got " + std::to_string(got) + " expected " + std::to_string(expected));
+        }
+    }
+}
+
+} // namespace
+
+int main() {
+    return test::run("gemm_packed_test", [] {
+        std::cout << "AVX2 packed kernel: " << (cpu::packed_gemm_supported() ? "yes" : "no (fallback)")
+                  << '\n';
+        const std::int64_t shapes[][3] = {
+            {1, 1, 1},     {1, 17, 3},   {5, 15, 7},     {6, 16, 1},    {6, 16, 256},  {7, 17, 257},
+            {12, 32, 512}, {13, 33, 255}, {167, 31, 20}, {168, 16, 20}, {169, 17, 300}, {337, 49, 513},
+            {40, 4080, 9}, {20, 4081, 17}, {9, 8200, 5}, {64, 64, 64}, {100, 1, 100}, {1, 100, 100},
+        };
+        const std::int64_t extra[][3] = {{11, 7, 5},   {13, 9, 17},  {3, 23, 7},   {5, 25, 9},
+                                         {24, 48, 300}, {25, 49, 301}, {50, 50, 1100}};
+        // The threaded version needs shapes large enough to really split (the others fall back to
+        // the sequential kernel).
+        const std::int64_t big[][3] = {{200, 300, 100}, {500, 70, 400}, {37, 1000, 300}, {1000, 37, 300}};
+        const int saved_threads = cpu::max_threads();
+        const cpu::PackedGemmBlocking original = cpu::packed_gemm_blocking();
+
+        // Every micro-kernel shape, with the default block sizes and with tiny ones, so partial
+        // tiles and every block boundary (rows, depth, columns) are crossed on small matrices.
+        const char* shape_names[] = {"6x16", "6x16 unrolled", "4x24", "12x8"};
+        for (int shape = 0; shape < 4; ++shape) {
+            for (int tiny = 0; tiny < 2; ++tiny) {
+                cpu::PackedGemmBlocking blocking = original;
+                blocking.shape = shape;
+                if (tiny != 0) {
+                    blocking.mc = 24;
+                    blocking.kc = 20;
+                    blocking.nc = 48;
+                }
+                cpu::set_packed_gemm_blocking(blocking);
+                const std::string name = std::string("packed ") + shape_names[shape] +
+                                         (tiny != 0 ? " tiny blocks" : "");
+                for (const auto& s : shapes) {
+                    check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                }
+                for (const auto& s : extra) {
+                    check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                }
+                // 24 threads for every shape, plus 1 to 8 threads for the default shape.
+                std::vector<int> thread_counts = {3, 24};
+                if (shape == 0 && tiny == 0) {
+                    thread_counts = {1, 2, 3, 8, 24};
+                }
+                for (int threads : thread_counts) {
+                    cpu::set_max_threads(threads);
+                    for (const auto& s : shapes) {
+                        check_shape(cpu::matmul_f32_packed_parallel, (name + " parallel").c_str(),
+                                    s[0], s[1], s[2]);
+                    }
+                    for (const auto& s : big) {
+                        check_shape(cpu::matmul_f32_packed_parallel, (name + " parallel").c_str(),
+                                    s[0], s[1], s[2]);
+                    }
+                    for (const auto& s : extra) {
+                        check_shape(cpu::matmul_f32_packed_parallel, (name + " parallel").c_str(),
+                                    s[0], s[1], s[2]);
+                    }
+                }
+                cpu::set_max_threads(saved_threads);
+            }
+        }
+        cpu::set_packed_gemm_blocking(original);
+
+        // Degenerate sizes: k == 0 fills C with zeros, m or n == 0 touches nothing.
+        std::vector<float> c(6, 7.0f);
+        cpu::matmul_f32_packed(nullptr, nullptr, c.data(), 2, 3, 0);
+        for (float x : c) {
+            test::require(x == 0.0f, "k == 0 must zero C");
+        }
+        std::vector<float> untouched(4, 7.0f);
+        cpu::matmul_f32_packed(nullptr, nullptr, untouched.data(), 0, 4, 5);
+        cpu::matmul_f32_packed(nullptr, nullptr, untouched.data(), 4, 0, 5);
+        for (float x : untouched) {
+            test::require(x == 7.0f, "empty m or n must not write");
+        }
+    });
+}

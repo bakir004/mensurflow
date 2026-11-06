@@ -5,6 +5,7 @@
 #include "backends/backend.hpp"
 
 #include "backends/cpu/ops/blas/blas.hpp"
+#include "backends/cpu/ops/blas/gemm_packed.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
 #include "backends/cpu/threads.hpp"
@@ -20,7 +21,7 @@ namespace mensurflow::detail {
 namespace {
 
 // matmul, max and min have a separate sequential and parallel kernel: run the parallel one when the
-// build has OpenMP. Every other kernel is a single function that parallelizes itself.
+// build has OpenMP (matmul prefers the packed AVX2 kernel when the CPU has it). Every other kernel is a single function that parallelizes itself.
 constexpr bool use_parallel = cpu::has_openmp();
 
 // 64-byte alignment fits a cache line and the widest SIMD loads (AVX-512).
@@ -116,7 +117,12 @@ void matmul_kernel(const OpArgs& args, Stream&) {
     const Tensor& a = args.inputs[0];
     const Tensor& b = args.inputs[1];
     float* c = data<float>(args.outputs[0]);
-    if (use_parallel) {
+    if (cpu::packed_gemm_supported()) {
+        // The AVX2 + FMA packed kernel; it runs on one thread when the build has no OpenMP and for
+        // products too small to split.
+        const auto kernel = use_parallel ? cpu::matmul_f32_packed_parallel : cpu::matmul_f32_packed;
+        kernel(data<float>(a), data<float>(b), c, a.size(0), b.size(1), a.size(1));
+    } else if (use_parallel) {
         cpu::matmul_f32_parallel(data<float>(a), data<float>(b), c, a.size(0), b.size(1),
                                  a.size(1));
     } else {
