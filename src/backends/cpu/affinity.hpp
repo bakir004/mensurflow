@@ -17,7 +17,8 @@ int physical_core_count();
 //   Logical: to one hardware thread (the first SMT half of its core).
 //   Ideal:   not restricted at all, but the scheduler is told which hardware thread to prefer (Windows:
 //            the "ideal processor"). The thread can still move away, for example from a core that a
-//            background program is using. On Linux this falls back to Core.
+//            background program is using. Linux has no such hint, so there it does nothing (returns
+//            false) and the thread stays unrestricted.
 enum class PinMode { Core, Logical, Ideal };
 
 // Restricts the calling thread to physical core (index modulo physical_core_count()), taking the

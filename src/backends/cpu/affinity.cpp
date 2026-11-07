@@ -131,9 +131,12 @@ bool pin_current_thread(int index, PinMode mode) {
     GROUP_AFFINITY previous{};
     return SetThreadGroupAffinity(GetCurrentThread(), &target, &previous) != 0;
 #elif defined(__linux__)
+    if (mode == PinMode::Ideal) {
+        return false; // Linux has no "preferred processor" hint: leave the thread unrestricted
+    }
     cpu_set_t set;
     CPU_ZERO(&set);
-    if (mode == PinMode::Core || mode == PinMode::Ideal) {
+    if (mode == PinMode::Core) {
         for (int cpu : core.cpus) {
             CPU_SET(cpu, &set);
         }
