@@ -349,8 +349,8 @@ every earlier threaded measurement noisy:
 | register-only FMA loop, 12 threads, time of a ~1 ms slice | 0.50 ms, up to 0.93 ms after 100 ms idle | 0.48 ms always |
 
 MSVC's OpenMP (version 2.0) cannot pin threads, so `src/backends/cpu/affinity.hpp` does it: the CPU
-topology comes from `GetLogicalProcessorInformationEx` (Linux: sysfs, written but not compiled or run
-there yet), each thread restricts itself to the two hardware threads of its own physical core, and a team
+topology comes from `GetLogicalProcessorInformationEx` (Linux: sysfs and `pthread_setaffinity_np`; compiled and tested
+on the GitHub Actions Ubuntu runner, correctness only, no Linux timings), each thread restricts itself to the two hardware threads of its own physical core, and a team
 fills the cores in order, performance cores first on hybrid CPUs. Details that matter:
 
 - The calling thread is thread 0 of the team. It is pinned for the call and gets its old restriction back
@@ -423,8 +423,8 @@ core; larger ones use all hardware threads, which gains a few percent (n = 4096:
 when the topology is known, MC = 240, KC = 1024, NC = 8160.
 
 **Caveats.** All numbers are single runs on one busy desktop (antivirus and other background programs were
-running), so differences below about 5% are not meaningful. The Linux pinning code and the pinning on the
-i7 laptop have not been run. The cause of the private-A penalty after idle time is open.
+running), so differences below about 5% are not meaningful. The Linux pinning code passes its tests on the GitHub Ubuntu runner but has no timings, and pinning on the
+i7 laptop has not been run. The cause of the private-A penalty after idle time is open.
 
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
@@ -449,7 +449,7 @@ Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's
 |---|---|
 | Threaded efficiency (82-86% of the 1333 GFLOP/s chip peak at best; about 5% behind OpenBLAS at n = 2048 on 4-8 threads) | What is left is overlapping packing with compute, reading several B panels per source row so `pack_b` stops being latency bound, and the last small row block |
 | The 10 ms per-call penalty of strategies 2 and 3 after idle time | Their back-to-back speed (1075-1110 GFLOP/s) is the best measured, so removing the penalty would beat the default; cause not found (not buffer placement, not thread placement, not clock ramp-up) |
-| Linux and i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) is written but was never compiled or run; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
+| Linux timings and the i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) compiles and passes `affinity_test` and `gemm_packed_test` on the GitHub Ubuntu runner, but nothing has been timed on Linux; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
 
 ## Files
