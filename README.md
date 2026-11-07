@@ -73,8 +73,8 @@ The available CMake options are:
 backend SDK and fails configuration when it is unavailable. `OFF` disables the
 backend.
 
-CPU kernels live in `src/backends/cpu/ops/{blas,elementwise,reduction}/`. Each
-is a loop marked with `MENSURFLOW_PARALLEL_FOR`, which splits it across threads
+CPU kernels live in `src/backends/cpu/ops/{blas,elementwise,reduction}/`. Most
+use a loop marked with `MENSURFLOW_PARALLEL_FOR`, which splits it across threads
 in an OpenMP build and does nothing otherwise; `matmul`, `max`, and `min` have a
 separate sequential and parallel version. `MENSURFLOW_NATIVE=ON` enables
 machine-specific compiler optimizations and should not be used for portable
@@ -179,8 +179,15 @@ written with the operations above; see `examples/mlp_xor.cpp`.
 - `log`, `rsqrt`, `tanh`, `sin`, `cos`, and `reciprocal`
 - `pow`, `minimum`, and `maximum`
 
-The CPU float32 activations include autograd and a shared parallel loop. Parameters, numeric
-conventions, tests, and benchmark/reference commands are described in [ACTIVATIONS.md](docs/ACTIVATIONS.md).
+The five CPU float32 activations `leaky_relu`, `gelu`, `silu`, `elu`, and `softplus` provide forward
+execution and share a portable parallel loop. Their backward implementations remain Vedad's task in
+the [weekly plan](docs/weekly/2026-11-04-plan.md#who-does-what). Parameters, numeric conventions, tests,
+and benchmark/reference commands are described in [ACTIVATIONS.md](docs/ACTIVATIONS.md).
+
+`eq`, `ne`, `lt`, `le`, `gt`, and `ge` compare F32 tensors and return Bool masks. `where(mask, x, y)`
+selects F32 values using a Bool mask; all three inputs broadcast. These operations use ordinary
+C++/OpenMP CPU loops. `where` provides forward execution only. See [SELECTION.md](docs/SELECTION.md)
+for Bool storage, examples and verification commands.
 
 `matvec` and `matmul` currently have CPU implementations only. Asking for an
 execution device that has no kernel for an operation throws `NotImplemented`;
@@ -271,6 +278,7 @@ kernel implementations:
 - `reduction_benchmark`
 - `argmax_benchmark`
 - `cpu_parallel_benchmark`
+- `selection_benchmark`
 
 The optional `activation_torch_benchmark` compares the CPU activations with native C++ ATen calls.
 It requires LibTorch and `MENSURFLOW_TORCH_BENCHMARK=ON`; setup and paired-run commands are in

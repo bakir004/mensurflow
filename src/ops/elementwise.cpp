@@ -15,11 +15,6 @@ namespace mensurflow {
 
 namespace {
 
-double activation_sigmoid(double value) {
-    const double z = std::exp(-std::fabs(value));
-    return value < 0.0 ? z / (1.0 + z) : 1.0 / (1.0 + z);
-}
-
 Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alpha = 1.0f,
                 float beta = 20.0f, bool approximate = false) {
     if (!x.defined()) {
@@ -33,7 +28,7 @@ Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alp
     args.approximate = approximate;
     detail::dispatch(op, args, execution);
     if (x.requires_grad()) {
-        const auto backward = [x, op, alpha, beta, approximate](const Tensor& gradient) {
+        detail::AutogradAccess::record(out, {x}, [x, op](const Tensor& gradient) {
             const auto input = x.to_vector<float>();
             const auto upstream = gradient.to_vector<float>();
             std::vector<float> values(upstream.size());
@@ -52,45 +47,6 @@ Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alp
                 case detail::OpId::Relu:
                     values[i] = value > 0.0f ? upstream[i] : 0.0f;
                     break;
-                case detail::OpId::LeakyRelu:
-                    values[i] = value > 0.0f ? upstream[i] : alpha * upstream[i];
-                    break;
-                case detail::OpId::Gelu: {
-                    double derivative;
-                    const double v = value;
-                    if (std::isinf(v)) {
-                        derivative = v > 0.0 ? 1.0 : 0.0;
-                    } else if (approximate) {
-                        const double u = 0.79788456080286535588 * v * (1.0 + 0.044715 * v * v);
-                        const double cdf = activation_sigmoid(2.0 * u);
-                        derivative = cdf + 2.0 * v * cdf * (1.0 - cdf) *
-                                               0.79788456080286535588 * (1.0 + 0.134145 * v * v);
-                    } else {
-                        derivative = 0.5 * std::erfc(-v * 0.70710678118654752440) +
-                                     v * std::exp(-0.5 * v * v) * 0.39894228040143267794;
-                    }
-                    values[i] = static_cast<float>(derivative * upstream[i]);
-                    break;
-                }
-                case detail::OpId::Silu: {
-                    const double s = activation_sigmoid(value);
-                    const double derivative = std::isinf(value)
-                                                  ? s
-                                                  : s + static_cast<double>(value) * s * (1.0 - s);
-                    values[i] = static_cast<float>(derivative * upstream[i]);
-                    break;
-                }
-                case detail::OpId::Elu:
-                    values[i] = static_cast<float>(
-                        (value > 0.0f ? 1.0 : alpha * std::exp(static_cast<double>(value))) *
-                        upstream[i]);
-                    break;
-                case detail::OpId::Softplus: {
-                    const double scaled = static_cast<double>(alpha) * value;
-                    const double derivative = scaled > beta ? 1.0 : activation_sigmoid(scaled);
-                    values[i] = static_cast<float>(derivative * upstream[i]);
-                    break;
-                }
                 case detail::OpId::Sqrt:
                     values[i] = upstream[i] / (2.0f * std::sqrt(value));
                     break;
@@ -129,8 +85,7 @@ Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alp
                 }
             }
             detail::autograd::propagate(x, Tensor::from_vector(values, x.shape(), x.device()));
-        };
-        detail::AutogradAccess::record(out, {x}, backward);
+        });
     }
     return out;
 }
@@ -147,6 +102,28 @@ void require_compatible(const Tensor& a, const Tensor& b, const std::string& nam
         throw std::invalid_argument(name + ": tensors are on " + to_string(a.device()) + " and " +
                                     to_string(b.device()) + "; move one with Tensor::to()");
     }
+}
+
+Tensor comparison_op(detail::OpId op, const Tensor& a, const Tensor& b, Execution execution) {
+    const std::string name = detail::op_name(op);
+    require_compatible(a, b, name);
+    Shape shape;
+    try {
+        shape = broadcast_shapes(a.shape(), b.shape());
+    } catch (const std::invalid_argument& e) {
+        throw std::invalid_argument(name + ": " + e.what());
+    }
+    const auto packed = [&shape](const Tensor& input) {
+        return input.shape() == shape && input.is_contiguous()
+                   ? input
+                   : input.expand(shape).contiguous();
+    };
+    const Tensor x = packed(a);
+    const Tensor y = packed(b);
+    Tensor out = Tensor::empty(shape, DType::Bool, a.device());
+    // Always dispatch, including empty results, to check dtype/backend support.
+    detail::dispatch(op, {{x, y}, {out}}, execution);
+    return out;
 }
 
 Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha,
@@ -377,6 +354,61 @@ Tensor clamp(const Tensor& x, float lower, float upper, Execution execution) {
     args.alpha = lower;
     args.beta = upper;
     detail::dispatch(detail::OpId::Clamp, args, execution);
+    return out;
+}
+
+Tensor eq(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Eq, a, b, execution);
+}
+
+Tensor ne(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Ne, a, b, execution);
+}
+
+Tensor lt(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Lt, a, b, execution);
+}
+
+Tensor le(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Le, a, b, execution);
+}
+
+Tensor gt(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Gt, a, b, execution);
+}
+
+Tensor ge(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Ge, a, b, execution);
+}
+
+Tensor where(const Tensor& condition, const Tensor& x, const Tensor& y, Execution execution) {
+    require_compatible(x, y, "where");
+    if (!condition.defined()) {
+        throw std::invalid_argument("where: undefined condition tensor");
+    }
+    if (condition.dtype() != DType::Bool) {
+        throw std::invalid_argument("where: condition must have Bool dtype");
+    }
+    if (condition.device() != x.device()) {
+        throw std::invalid_argument("where: condition and values must be on the same device");
+    }
+    Shape shape;
+    try {
+        shape = broadcast_shapes(broadcast_shapes(x.shape(), y.shape()), condition.shape());
+    } catch (const std::invalid_argument& e) {
+        throw std::invalid_argument(std::string("where: ") + e.what());
+    }
+    const auto packed = [&shape](const Tensor& input) {
+        return input.shape() == shape && input.is_contiguous()
+                   ? input
+                   : input.expand(shape).contiguous();
+    };
+    const Tensor a = packed(x);
+    const Tensor b = packed(y);
+    const Tensor mask = packed(condition);
+    Tensor out = Tensor::empty(shape, x.dtype(), x.device());
+    // The dispatch key uses the first input dtype, so keep values before the Bool condition.
+    detail::dispatch(detail::OpId::Where, {{a, b, mask}, {out}}, execution);
     return out;
 }
 

@@ -53,8 +53,8 @@ Tensor abs(const Tensor& x, Execution execution = Execution::Auto);
 Tensor square(const Tensor& x, Execution execution = Execution::Auto);
 // x < 0 ? +0 : x; preserves NaNs and signed zeros
 Tensor relu(const Tensor& x, Execution execution = Execution::Auto);
+// The following five activations provide forward execution only; backward is not implemented.
 // Negative values are multiplied by negative_slope.
-// Backward uses negative_slope at zero.
 Tensor leaky_relu(const Tensor& x, float negative_slope = 0.01f,
                   Execution execution = Execution::Auto);
 // Gaussian error linear unit. approximate=true selects the tanh approximation.
@@ -62,7 +62,7 @@ Tensor leaky_relu(const Tensor& x, float negative_slope = 0.01f,
 Tensor gelu(const Tensor& x, bool approximate = false, Execution execution = Execution::Auto);
 // x * sigmoid(x), computed without exponential overflow.
 Tensor silu(const Tensor& x, Execution execution = Execution::Auto);
-// Negative values become alpha * expm1(x). Backward uses alpha at zero.
+// Negative values become alpha * expm1(x).
 Tensor elu(const Tensor& x, float alpha = 1.0f, Execution execution = Execution::Auto);
 // log(1 + exp(beta*x)) / beta; returns x when beta*x > threshold.
 // beta must be positive and finite; threshold must be finite.
@@ -89,5 +89,25 @@ Tensor minimum(const Tensor& a, const Tensor& b, Execution execution = Execution
 // elementwise maximum
 Tensor maximum(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
 Tensor clamp(const Tensor& x, float lower, float upper, Execution execution = Execution::Auto);
+
+// Elementwise F32 comparisons. Inputs must have the same dtype/device and broadcast normally.
+// Return a new contiguous Bool tensor on the inputs' device, with byte values 0 or 1.
+// NaN follows ordinary floating-point comparisons: only ne is true for a NaN operand.
+// CPU F32 only; unsupported dtype/backend throws NotImplemented, including empty inputs.
+// Comparisons do not track gradients. Read Bool values with copy_to_host into uint8_t storage.
+Tensor eq(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor ne(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor lt(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor le(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor gt(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor ge(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+
+// Select x where condition is nonzero, otherwise y. Condition must be Bool; x/y must be F32
+// with the same dtype/device. All three shapes broadcast together. Returns a new contiguous F32
+// tensor on their device and preserves the selected value's bits, including signed zeros/NaNs.
+// CPU forward only: no gradient graph is recorded. Unsupported dtype/backend throws
+// NotImplemented even for empty results; invalid condition, devices or shapes throw invalid_argument.
+Tensor where(const Tensor& condition, const Tensor& x, const Tensor& y,
+             Execution execution = Execution::Auto);
 
 } // namespace mensurflow

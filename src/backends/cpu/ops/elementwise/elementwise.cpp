@@ -25,7 +25,48 @@ double stable_sigmoid(double value) {
     return value < 0.0 ? z / (1.0 + z) : 1.0 / (1.0 + z);
 }
 
+template <typename Compare>
+void comparison_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n,
+                     Compare compare) {
+    MENSURFLOW_PARALLEL_FOR(if (n > parallel_threshold))
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = static_cast<std::uint8_t>(compare(a[i], b[i]));
+    }
+}
+
 } // namespace
+
+void eq_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n) {
+    comparison_f32(a, b, out, n, [](float x, float y) { return x == y; });
+}
+
+void ne_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n) {
+    comparison_f32(a, b, out, n, [](float x, float y) { return x != y; });
+}
+
+void lt_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n) {
+    comparison_f32(a, b, out, n, [](float x, float y) { return x < y; });
+}
+
+void le_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n) {
+    comparison_f32(a, b, out, n, [](float x, float y) { return x <= y; });
+}
+
+void gt_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n) {
+    comparison_f32(a, b, out, n, [](float x, float y) { return x > y; });
+}
+
+void ge_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n) {
+    comparison_f32(a, b, out, n, [](float x, float y) { return x >= y; });
+}
+
+void where_f32(const std::uint8_t* condition, const float* x, const float* y, float* out,
+               std::int64_t n) {
+    MENSURFLOW_PARALLEL_FOR(if (n > parallel_threshold))
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = condition[i] != 0 ? x[i] : y[i];
+    }
+}
 
 void add_f32(const float* a, const float* b, float* out, std::int64_t n) {
     MENSURFLOW_PARALLEL_FOR(if (n > parallel_threshold))

@@ -116,7 +116,8 @@ with a reference. This supports inference, not training by itself.
 **Current project status:** the CPU float32 path now includes reverse-mode
 autograd for the implemented elementwise, reduction, bias, and matrix multiply
 operations, and a runnable MLP example (`examples/mlp_xor.cpp`) that writes its
-loss and update step from those operations. Softmax, the loss operations, and
+loss and update step from those operations. The five additional activations below currently
+provide forward support only. Softmax, the loss operations, and
 the SGD optimizer were removed. GPU backends,
 backend-independent correctness infrastructure, and the broader vendor-kernel
 coverage table remain separate work.
@@ -131,8 +132,8 @@ Implement these after P0 works end to end.
 * \[x] `exp` and `sqrt` — exponential and square root (CPU, float32).
 * \[x] `log` and `rsqrt`.
 * \[x] `minimum`, `maximum`, and `clamp`.
-* \[ ] `equal`, `less`, `greater`, and related comparisons producing boolean masks.
-* \[ ] `where(mask, a, b)` — conditional element selection.
+* \[x] `eq`, `ne`, `lt`, `le`, `gt`, `ge` — CPU F32 comparisons producing Bool masks, with broadcasting.
+* \[x] `where(mask, a, b)` — CPU Bool/F32 conditional element selection, with broadcasting; forward only.
 * \[x] `tanh` — activation used by older networks and recurrent models.
 * \[x] `pow` and `reciprocal`.
 * \[x] `sin` and `cos` — rotary and sinusoidal position encodings.
@@ -306,14 +307,18 @@ normalization is the case of one group per channel.
 
 ### Additional activations
 
-* \[x] `silu` (swish), `x \* sigmoid(x)` — CPU F32, including backward.
-* \[x] `gelu` — Gaussian CDF and tanh approximation, CPU F32, including backward.
-* \[x] `leaky\_relu`, `elu`, and `softplus` — CPU F32, including backward; see
+* \[x] `silu` (swish), `x \* sigmoid(x)` — CPU F32 forward.
+* \[x] `gelu` — Gaussian CDF and tanh approximation, CPU F32 forward.
+* \[x] `leaky\_relu`, `elu`, and `softplus` — CPU F32 forward; see
   [ACTIVATIONS.md](ACTIVATIONS.md) for parameters and numeric conventions.
+
 * \[ ] `hardswish`, `hardsigmoid`, and `relu6` / `hardtanh` — mobile CNNs.
 * \[ ] `prelu` — leaky ReLU with a learned slope.
 * \[ ] Squared ReLU, `relu(x)^2` — used in some recent LLMs.
 * \[ ] `selu`, `celu`, `mish`, `softsign`, `shrink`, and `thresholded\_relu`.
+
+Backward for the five implemented activations remains Vedad's task in the
+[weekly plan](weekly/2026-11-04-plan.md#who-does-what).
 
 ### Recurrent networks
 
@@ -336,7 +341,7 @@ behavior.
 * \[ ] Relative position bias and ALiBi — biases added to attention scores
 (T5, SAM, BLOOM).
 * \[ ] Window partition / unpartition for windowed attention (Swin, SAM).
-* \[x] GELU activation — exact and tanh approximation, CPU F32 forward and backward.
+* \[x] GELU activation — exact and tanh approximation, CPU F32 forward only.
 * \[ ] LayerNorm or RMSNorm as required by the chosen model. Variants: Gemma's
 `(1 + w)` scale and gated RMSNorm.
 * \[ ] Positional encodings or rotary positional embeddings, model-dependent.

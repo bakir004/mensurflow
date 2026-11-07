@@ -29,6 +29,7 @@ the threads made it faster.
 |---|---|---|
 | `cpu_parallel_benchmark` | sequential vs parallel for every elementwise op and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
 | `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
+| `selection_benchmark` | F32 comparisons and `where`, one/many CPU threads; optional native ATen reference | `benchmarks/selection_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
 | `matmul_benchmark` | the same for matrix multiplication, in GFLOP/s | `benchmarks/blas/matmul_benchmark.cpp` |
 | `matvec_benchmark` | sequential vs parallel matrix-vector multiplication across thread counts | `benchmarks/blas/matvec_benchmark.cpp` |
@@ -217,8 +218,7 @@ values; drift values above 10% are bold and the affected rows are counted in the
 
 ## Not done yet
 
-- An AVX2 variant (intrinsics in their own file, compiled with `-mavx2 -mfma` for that file only,
-  called only when `bench::avx2_supported()`) and an `omp simd` variant: the harness is ready for
-  them; no kernel has one yet.
+- Activation kernels use ordinary C++/OpenMP loops. The manual leaky ReLU AVX2 path was removed
+  at the user's request; no current activation benchmark establishes explicit SIMD gain.
 - Results in BENCHMARKS.md were taken with the earlier kernel layout (`parallel_for` helpers, and a
   `scalar` no-SIMD baseline that has since been removed); its file paths refer to that layout.

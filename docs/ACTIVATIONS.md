@@ -1,9 +1,10 @@
 # CPU activations
 
-All five activations use the existing Tensor API, dispatcher and CPU F32 backend. Their low-level
-kernels share one templated loop, `activation_f32`, including the existing OpenMP cutoff of 32,768
+All five activations use the existing Tensor API, dispatcher and CPU F32 backend. Their kernels
+share one ordinary C++ templated loop, `activation_f32`, with the existing OpenMP cutoff of 32,768
 elements and support for exact input/output aliasing. Public calls allocate a fresh output and accept
-strided or expanded views. Autograd uses the same CPU F32 restrictions as the other unary operations.
+strided or expanded views. These five activations provide forward execution only; their backward
+implementations remain Vedad's task in the [weekly plan](weekly/2026-11-04-plan.md#who-does-what).
 
 ```cpp
 leaky_relu(x);                         // negative slope 0.01
@@ -24,19 +25,19 @@ The transcendental implementations retain intermediate values in double where ca
 premature underflow would destroy negative tails. Softplus uses `log1p` with a nonpositive exponential
 argument. GELU and SiLU explicitly return their limiting value `-0` at negative infinity and positive
 infinity at positive infinity. These infinity conventions need not match a vendor implementation's
-literal `infinity * 0` behavior. NaNs propagate. At zero, leaky ReLU and ELU backward use the supplied
-slope/alpha; GELU and SiLU have derivative 0.5, while softplus uses its selected linear shortcut.
+literal `infinity * 0` behavior. NaNs propagate.
 
 `activation_test` checks float64 references, custom parameters, tails/special values, views, scalars,
-empty inputs, dtype errors, registration, one/many threads, in-place kernels, weighted finite-difference
-gradients and a composed backward path. The existing test suite checks regression of the shared unary
-helper. These scalar/libm implementations are not claimed to provide an explicit AVX2 transcendental
-kernel, a tuned per-operation cutoff, or measured SIMD speedup.
+empty inputs, dtype errors, registration, one/many threads and in-place kernels. The existing test
+suite checks regression of the shared unary helper. The transcendental activations still use
+ordinary C++/libm implementations. The manual leaky ReLU intrinsics path was removed at the user's
+request; no activation has a hand-written SIMD variant. Compiler vectorization and per-operation
+cutoffs have not been established for this final C++ path.
 
 ## Existing autograd engine limits
 
-The activation rules have been checked for simple chains. The core autograd engine currently has
-two separate limitations, reproduced with the pre-existing `square` operation during review:
+The core autograd engine currently has two separate limitations, reproduced with the pre-existing
+`square` operation during review. These findings are independent of the five forward-only activations:
 
 - Reusing an intermediate loses contributions to its parents: for scalar `x=2`, `z=square(x)` and
   `add(z,z).backward()`, `x.grad()` is 4 instead of 8. `propagate` consumes a node on its first visit
@@ -46,8 +47,7 @@ two separate limitations, reproduced with the pre-existing `square` operation du
   shape `[3,2]` on the original tensor instead of `[2,3]`.
 
 Forward execution on views remains covered. The engine issues require separate graph-accumulation
-and view-gradient work; the activation tests do not establish support for arbitrary branched graphs
-or differentiation through views.
+and view-gradient work; the activation tests do not add backward support.
 
 ## Build and verify
 

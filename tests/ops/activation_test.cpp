@@ -1,5 +1,5 @@
-// CPU activation contracts: independent float64 values, API views/errors, thread invariance,
-// parameter forwarding and backward derivatives checked by numerical differentiation.
+// CPU activation forward contracts: independent float64 values, API views/errors,
+// thread invariance, parameter forwarding and errors for pending backward rules.
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/registry.hpp"
@@ -202,60 +202,15 @@ void test_parameters_and_special_values() {
     }
 }
 
-void test_backward() {
+void test_backward_pending() {
     for (const Activation& op : activations) {
-        // Values avoid the nonsmooth origin and the softplus linear cutoff.
-        const std::vector<float> points{-3.0f, -0.75f, 0.25f, 2.0f, 8.0f};
-        Tensor x = Tensor::from_vector(points, {static_cast<std::int64_t>(points.size())});
+        Tensor x = Tensor::full({}, -0.75);
         x.set_requires_grad();
-        const Tensor weights = Tensor::from_vector<float>({0.5f, -2.0f, 3.0f, 0.25f, 1.5f}, {5});
-        sum(mul(op.apply(x, Execution::CPU), weights)).backward();
-        const auto gradient = x.grad().to_vector<float>();
-        const auto upstream = weights.to_vector<float>();
-        for (std::size_t i = 0; i < points.size(); ++i) {
-            const double h = 1e-4;
-            const double numerical =
-                (op.reference(points[i] + h) - op.reference(points[i] - h)) / (2.0 * h);
-            const double expected = numerical * upstream[i];
-            test::require(std::fabs(gradient[i] - expected) <= 2e-5 * (1.0 + std::fabs(expected)),
-                          std::string(op.name) + " weighted backward vs finite differences");
-        }
-    }
-    for (bool negative_zero : {false, true}) {
-        Tensor x = Tensor::full({}, negative_zero ? -0.0 : 0.0);
-        x.set_requires_grad();
-        leaky_relu(x, 0.2f).backward();
-        test::require(x.grad().item<float>() == 0.2f, "leaky_relu zero derivative convention");
-        x.zero_grad();
-        elu(x, 1.5f).backward();
-        test::require(x.grad().item<float>() == 1.5f, "ELU zero derivative convention");
-    }
-    // Composition exercises a non-leaf activation input, not only independent leaf callbacks.
-    Tensor x = Tensor::full({}, -2.0);
-    x.set_requires_grad();
-    leaky_relu(square(x), 0.2f).backward();
-    test::require(x.grad().item<float>() == -4.0f, "activation chain rule");
-}
-
-void test_backward_limits() {
-    const float inf = std::numeric_limits<float>::infinity();
-    const float nan = std::numeric_limits<float>::quiet_NaN();
-    for (const Activation& op : activations) {
-        Tensor x = Tensor::from_vector<float>({-inf, -0.0f, 0.0f, inf, nan}, {5});
-        x.set_requires_grad();
-        sum(op.apply(x, Execution::CPU)).backward();
-        const auto gradient = x.grad().to_vector<float>();
-        const float at_zero = op.id == detail::OpId::LeakyRelu ? 0.2f
-                              : op.id == detail::OpId::Elu    ? 1.5f
-                                                             : 0.5f;
-        const float at_negative_inf = op.id == detail::OpId::LeakyRelu ? 0.2f : 0.0f;
-        test::require(gradient[0] == at_negative_inf && gradient[1] == at_zero &&
-                          gradient[2] == at_zero && gradient[3] == 1.0f,
-                      std::string(op.name) + " backward at infinity and signed zero");
-        // Leaky ReLU follows its branch convention for NaN, like the existing ReLU rule.
-        if (op.id != detail::OpId::LeakyRelu) {
-            test::require(std::isnan(gradient[4]), std::string(op.name) + " backward NaN");
-        }
+        const Tensor output = op.apply(x, Execution::CPU);
+        check_values(op, {-0.75f}, output.to_vector<float>());
+        test::require(output.requires_grad(), std::string(op.name) + " records the pending operation");
+        test::require_throws<std::logic_error>([&] { output.backward(); },
+                                              std::string(op.name) + " backward is not implemented");
     }
 }
 
@@ -266,7 +221,6 @@ int main() {
         test_api_and_errors();
         test_threads_and_in_place();
         test_parameters_and_special_values();
-        test_backward();
-        test_backward_limits();
+        test_backward_pending();
     });
 }

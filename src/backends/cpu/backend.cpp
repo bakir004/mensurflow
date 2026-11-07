@@ -146,6 +146,20 @@ void unary_kernel(const OpArgs& args, Stream&) {
     Kernel(data<float>(args.inputs[0]), data<float>(out), out.numel());
 }
 
+template <void (*Kernel)(const float*, const float*, std::uint8_t*, std::int64_t)>
+void comparison_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    Kernel(data<float>(args.inputs[0]), data<float>(args.inputs[1]), data<std::uint8_t>(out),
+           out.numel());
+}
+
+void where_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    // Value inputs come first so the existing dispatcher selects their F32 kernel key.
+    cpu::where_f32(data<std::uint8_t>(args.inputs[2]), data<float>(args.inputs[0]),
+                   data<float>(args.inputs[1]), data<float>(out), out.numel());
+}
+
 void leaky_relu_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
     const Tensor& out = args.outputs[0];
@@ -262,6 +276,13 @@ class CpuBackend final : public Backend {
         add(OpId::Pow, binary_kernel<pow_f32>);
         add(OpId::Minimum, binary_kernel<minimum_f32>);
         add(OpId::Maximum, binary_kernel<maximum_f32>);
+        add(OpId::Eq, comparison_kernel<eq_f32>);
+        add(OpId::Ne, comparison_kernel<ne_f32>);
+        add(OpId::Lt, comparison_kernel<lt_f32>);
+        add(OpId::Le, comparison_kernel<le_f32>);
+        add(OpId::Gt, comparison_kernel<gt_f32>);
+        add(OpId::Ge, comparison_kernel<ge_f32>);
+        add(OpId::Where, where_kernel);
         add(OpId::Axpy, axpy_kernel);
         add(OpId::BiasAdd, bias_add_kernel);
         add(OpId::Neg, unary_kernel<neg_f32>);

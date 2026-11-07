@@ -12,6 +12,19 @@
 
 namespace mensurflow::cpu {
 
+// F32 comparisons write canonical Bool bytes (0 or 1). Output must not overlap either input.
+void eq_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n);
+void ne_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n);
+void lt_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n);
+void le_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n);
+void gt_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n);
+void ge_f32(const float* a, const float* b, std::uint8_t* out, std::int64_t n);
+
+// Nonzero condition selects x, zero selects y. out may equal x or y exactly, but must not
+// overlap condition or partially overlap a value input. Selected bits are copied unchanged.
+void where_f32(const std::uint8_t* condition, const float* x, const float* y, float* out,
+               std::int64_t n);
+
 // Binary operations: out[i] = f(a[i], b[i]).
 
 // out[i] = a[i] + b[i]
