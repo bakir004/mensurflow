@@ -503,7 +503,7 @@ columns and the memory after C are untouched; four large products also cover the
 and checks the gradient of `sum(a x b)` exactly (the backward pass with the stride-0 gradient).
 
 **Not covered.** The GPU backends still receive contiguous copies. `gemm` applies alpha and beta as
-separate elementwise passes after the product. `contiguous()` itself is still single-threaded for the
+separate elementwise passes after the product (fusing them into the kernel is on the open list, probably to be done another time). `contiguous()` itself is still single-threaded for the
 operations that need it.
 
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
@@ -531,6 +531,7 @@ Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's
 | The 10 ms per-call penalty of strategies 2 and 3 after idle time | Their back-to-back speed (1075-1110 GFLOP/s) is the best measured, so removing the penalty would beat the default; cause not found (not buffer placement, not thread placement, not clock ramp-up) |
 | Linux timings and the i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) compiles and passes `affinity_test` and `gemm_packed_test` on the GitHub Ubuntu runner, but nothing has been timed on Linux; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
+| Fuse alpha and beta into the kernel (probably another time) | `gemm` applies alpha and beta as separate elementwise passes over C (`mul`, `scal`, `add`, each a full read and write plus a temporary). Fusing them into the micro-kernel's C update (scale the accumulators by alpha, add beta times the old C when storing) would remove those passes and temporaries. Estimated cost of the passes at n = 2048 (not measured): about 4 ms on top of a 16 ms product with both alpha and beta, about 1 ms with alpha only, and several times the product when k is small. It only matters for `gemm` calls with alpha other than 1 or beta other than 0; `matmul` and the backward pass are unaffected. Decided to postpone until such calls are on a hot path; measure `gemm` against `matmul` first |
 
 ## Files
 
