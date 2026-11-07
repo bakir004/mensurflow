@@ -146,6 +146,28 @@ void unary_kernel(const OpArgs& args, Stream&) {
     Kernel(data<float>(args.inputs[0]), data<float>(out), out.numel());
 }
 
+void leaky_relu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    cpu::leaky_relu_f32(data<float>(x), data<float>(out), out.numel(), args.alpha);
+}
+
+void gelu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::gelu_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.approximate);
+}
+
+void elu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::elu_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.alpha);
+}
+
+void softplus_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::softplus_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.alpha,
+                      args.beta);
+}
+
 void axpy_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
     cpu::axpy_f32(args.alpha, data<float>(args.inputs[0]), data<float>(args.inputs[1]),
@@ -246,6 +268,11 @@ class CpuBackend final : public Backend {
         add(OpId::Abs, unary_kernel<abs_f32>);
         add(OpId::Square, unary_kernel<square_f32>);
         add(OpId::Relu, unary_kernel<relu_f32>);
+        add(OpId::LeakyRelu, leaky_relu_kernel);
+        add(OpId::Gelu, gelu_kernel);
+        add(OpId::Silu, unary_kernel<silu_f32>);
+        add(OpId::Elu, elu_kernel);
+        add(OpId::Softplus, softplus_kernel);
         add(OpId::Sqrt, unary_kernel<sqrt_f32>);
         add(OpId::Exp, unary_kernel<exp_f32>);
         add(OpId::Sigmoid, unary_kernel<sigmoid_f32>);

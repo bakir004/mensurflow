@@ -4,9 +4,28 @@
 
 #include "backends/cpu/threads.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace mensurflow::cpu {
+
+namespace {
+
+// All activation kernels share the same traversal, cutoff and in-place contract.
+template <typename Function>
+void activation_f32(const float* x, float* out, std::int64_t n, Function apply) {
+    MENSURFLOW_PARALLEL_FOR(if (n > parallel_threshold))
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = apply(x[i]);
+    }
+}
+
+double stable_sigmoid(double value) {
+    const double z = std::exp(-std::fabs(value));
+    return value < 0.0 ? z / (1.0 + z) : 1.0 / (1.0 + z);
+}
+
+} // namespace
 
 void add_f32(const float* a, const float* b, float* out, std::int64_t n) {
     MENSURFLOW_PARALLEL_FOR(if (n > parallel_threshold))
@@ -101,6 +120,62 @@ void relu_f32(const float* x, float* out, std::int64_t n) {
     for (std::int64_t i = 0; i < n; ++i) {
         out[i] = x[i] < 0.0f ? 0.0f : x[i];
     }
+}
+
+void leaky_relu_f32(const float* x, float* out, std::int64_t n, float negative_slope) {
+    activation_f32(x, out, n, [negative_slope](float value) {
+        return value < 0.0f ? negative_slope * value : value;
+    });
+}
+
+void gelu_f32(const float* x, float* out, std::int64_t n, bool approximate) {
+    // Compute the CDF in double to retain the negative tail before rounding to F32.
+    // sigmoid(2*u) is algebraically (1+tanh(u))/2 without negative-tail cancellation.
+    if (approximate) {
+        activation_f32(x, out, n, [](float value) {
+            if (std::isinf(value)) {
+                return value < 0.0f ? -0.0f : value;
+            }
+            const double v = value;
+            const double u = 0.79788456080286535588 * v * (1.0 + 0.044715 * v * v);
+            return static_cast<float>(v * stable_sigmoid(2.0 * u));
+        });
+    } else {
+        activation_f32(x, out, n, [](float value) {
+            if (std::isinf(value)) {
+                return value < 0.0f ? -0.0f : value;
+            }
+            const double v = value;
+            return static_cast<float>(0.5 * v * std::erfc(-v * 0.70710678118654752440));
+        });
+    }
+}
+
+void silu_f32(const float* x, float* out, std::int64_t n) {
+    activation_f32(x, out, n, [](float value) {
+        if (std::isinf(value) && value < 0.0f) {
+            return -0.0f;
+        }
+        // Keep the sigmoid tail in double until after multiplying by x.
+        return static_cast<float>(static_cast<double>(value) * stable_sigmoid(value));
+    });
+}
+
+void elu_f32(const float* x, float* out, std::int64_t n, float alpha) {
+    activation_f32(x, out, n, [alpha](float value) {
+        return value < 0.0f ? alpha * std::expm1(value) : value;
+    });
+}
+
+void softplus_f32(const float* x, float* out, std::int64_t n, float beta, float threshold) {
+    activation_f32(x, out, n, [beta, threshold](float value) {
+        const double scaled = static_cast<double>(beta) * value;
+        if (scaled > threshold) {
+            return value;
+        }
+        return static_cast<float>(
+            (std::max(scaled, 0.0) + std::log1p(std::exp(-std::fabs(scaled)))) / beta);
+    });
 }
 
 void sqrt_f32(const float* x, float* out, std::int64_t n) {

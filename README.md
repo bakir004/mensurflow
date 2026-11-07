@@ -67,6 +67,7 @@ The available CMake options are:
 | `MENSURFLOW_METAL` | `AUTO`, `ON`, `OFF` | `AUTO` |
 | `MENSURFLOW_OPENMP` | `ON`, `OFF` | `ON` |
 | `MENSURFLOW_NATIVE` | `ON`, `OFF` | `OFF` |
+| `MENSURFLOW_TORCH_BENCHMARK` | `ON`, `OFF` | `OFF` |
 
 `AUTO` enables a backend when its development SDK is found. `ON` requires the
 backend SDK and fails configuration when it is unavailable. `OFF` disables the
@@ -171,11 +172,15 @@ written with the operations above; see `examples/mlp_xor.cpp`.
 - `abs`
 - `square`
 - `relu`
+- `leaky_relu`, `gelu` (exact and tanh approximation), `silu`, `elu`, `softplus`
 - `sqrt`
 - `exp`
 - `sigmoid`
 - `log`, `rsqrt`, `tanh`, `sin`, `cos`, and `reciprocal`
 - `pow`, `minimum`, and `maximum`
+
+The CPU float32 activations include autograd and a shared parallel loop. Parameters, numeric
+conventions, tests, and benchmark/reference commands are described in [ACTIVATIONS.md](docs/ACTIVATIONS.md).
 
 `matvec` and `matmul` currently have CPU implementations only. Asking for an
 execution device that has no kernel for an operation throws `NotImplemented`;
@@ -266,6 +271,10 @@ kernel implementations:
 - `reduction_benchmark`
 - `argmax_benchmark`
 - `cpu_parallel_benchmark`
+
+The optional `activation_torch_benchmark` compares the CPU activations with native C++ ATen calls.
+It requires LibTorch and `MENSURFLOW_TORCH_BENCHMARK=ON`; setup and paired-run commands are in
+[ACTIVATIONS.md](docs/ACTIVATIONS.md#native-c-reference-preferred-for-timing).
 
 Build the benchmark targets with:
 

@@ -57,6 +57,19 @@ void square_f32(const float* x, float* out, std::int64_t n);
 // out[i] = x[i] < 0 ? 0 : x[i]; preserves NaNs and signed zeros
 void relu_f32(const float* x, float* out, std::int64_t n);
 
+// out[i] = x[i] < 0 ? negative_slope * x[i] : x[i]; preserves NaNs and signed zeros
+void leaky_relu_f32(const float* x, float* out, std::int64_t n, float negative_slope);
+
+// GELU (Gaussian CDF or tanh approximation) and SiLU use their limits at infinity.
+void gelu_f32(const float* x, float* out, std::int64_t n, bool approximate = false);
+void silu_f32(const float* x, float* out, std::int64_t n);
+
+// Negative values become alpha * expm1(x).
+void elu_f32(const float* x, float* out, std::int64_t n, float alpha);
+
+// Stable softplus; caller validates positive finite beta and finite threshold.
+void softplus_f32(const float* x, float* out, std::int64_t n, float beta, float threshold);
+
 // out[i] = sqrt(x[i]); negatives give NaN
 void sqrt_f32(const float* x, float* out, std::int64_t n);
 

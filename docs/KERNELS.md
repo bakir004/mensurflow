@@ -306,8 +306,10 @@ normalization is the case of one group per channel.
 
 ### Additional activations
 
-* \[ ] `silu` (swish), `x \* sigmoid(x)` — LLaMA-family MLPs and diffusion U-Nets.
-* \[ ] `leaky\_relu`, `elu`, and `softplus`.
+* \[x] `silu` (swish), `x \* sigmoid(x)` — CPU F32, including backward.
+* \[x] `gelu` — Gaussian CDF and tanh approximation, CPU F32, including backward.
+* \[x] `leaky\_relu`, `elu`, and `softplus` — CPU F32, including backward; see
+  [ACTIVATIONS.md](ACTIVATIONS.md) for parameters and numeric conventions.
 * \[ ] `hardswish`, `hardsigmoid`, and `relu6` / `hardtanh` — mobile CNNs.
 * \[ ] `prelu` — leaky ReLU with a learned slope.
 * \[ ] Squared ReLU, `relu(x)^2` — used in some recent LLMs.
@@ -334,7 +336,7 @@ behavior.
 * \[ ] Relative position bias and ALiBi — biases added to attention scores
 (T5, SAM, BLOOM).
 * \[ ] Window partition / unpartition for windowed attention (Swin, SAM).
-* \[ ] GELU activation; specify exact or approximate formula.
+* \[x] GELU activation — exact and tanh approximation, CPU F32 forward and backward.
 * \[ ] LayerNorm or RMSNorm as required by the chosen model. Variants: Gemma's
 `(1 + w)` scale and gated RMSNorm.
 * \[ ] Positional encodings or rotary positional embeddings, model-dependent.

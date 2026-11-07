@@ -53,6 +53,21 @@ Tensor abs(const Tensor& x, Execution execution = Execution::Auto);
 Tensor square(const Tensor& x, Execution execution = Execution::Auto);
 // x < 0 ? +0 : x; preserves NaNs and signed zeros
 Tensor relu(const Tensor& x, Execution execution = Execution::Auto);
+// Negative values are multiplied by negative_slope.
+// Backward uses negative_slope at zero.
+Tensor leaky_relu(const Tensor& x, float negative_slope = 0.01f,
+                  Execution execution = Execution::Auto);
+// Gaussian error linear unit. approximate=true selects the tanh approximation.
+// GELU and SiLU use their limiting value -0 at -infinity, and +infinity at +infinity.
+Tensor gelu(const Tensor& x, bool approximate = false, Execution execution = Execution::Auto);
+// x * sigmoid(x), computed without exponential overflow.
+Tensor silu(const Tensor& x, Execution execution = Execution::Auto);
+// Negative values become alpha * expm1(x). Backward uses alpha at zero.
+Tensor elu(const Tensor& x, float alpha = 1.0f, Execution execution = Execution::Auto);
+// log(1 + exp(beta*x)) / beta; returns x when beta*x > threshold.
+// beta must be positive and finite; threshold must be finite.
+Tensor softplus(const Tensor& x, float beta = 1.0f, float threshold = 20.0f,
+                Execution execution = Execution::Auto);
 // sqrt(x); negatives -> NaN, preserves signed zeros
 Tensor sqrt(const Tensor& x, Execution execution = Execution::Auto);
 // exp(x); overflow -> +inf, underflow may produce +0

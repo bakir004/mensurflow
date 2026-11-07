@@ -15,15 +15,25 @@ namespace mensurflow {
 
 namespace {
 
-Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution) {
+double activation_sigmoid(double value) {
+    const double z = std::exp(-std::fabs(value));
+    return value < 0.0 ? z / (1.0 + z) : 1.0 / (1.0 + z);
+}
+
+Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alpha = 1.0f,
+                float beta = 20.0f, bool approximate = false) {
     if (!x.defined()) {
         throw std::invalid_argument(std::string(detail::op_name(op)) + ": undefined tensor");
     }
     const Tensor input = x.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
-    detail::dispatch(op, {{input}, {out}}, execution);
+    detail::OpArgs args{{input}, {out}};
+    args.alpha = alpha;
+    args.beta = beta;
+    args.approximate = approximate;
+    detail::dispatch(op, args, execution);
     if (x.requires_grad()) {
-        detail::AutogradAccess::record(out, {x}, [x, op](const Tensor& gradient) {
+        const auto backward = [x, op, alpha, beta, approximate](const Tensor& gradient) {
             const auto input = x.to_vector<float>();
             const auto upstream = gradient.to_vector<float>();
             std::vector<float> values(upstream.size());
@@ -42,6 +52,45 @@ Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution) {
                 case detail::OpId::Relu:
                     values[i] = value > 0.0f ? upstream[i] : 0.0f;
                     break;
+                case detail::OpId::LeakyRelu:
+                    values[i] = value > 0.0f ? upstream[i] : alpha * upstream[i];
+                    break;
+                case detail::OpId::Gelu: {
+                    double derivative;
+                    const double v = value;
+                    if (std::isinf(v)) {
+                        derivative = v > 0.0 ? 1.0 : 0.0;
+                    } else if (approximate) {
+                        const double u = 0.79788456080286535588 * v * (1.0 + 0.044715 * v * v);
+                        const double cdf = activation_sigmoid(2.0 * u);
+                        derivative = cdf + 2.0 * v * cdf * (1.0 - cdf) *
+                                               0.79788456080286535588 * (1.0 + 0.134145 * v * v);
+                    } else {
+                        derivative = 0.5 * std::erfc(-v * 0.70710678118654752440) +
+                                     v * std::exp(-0.5 * v * v) * 0.39894228040143267794;
+                    }
+                    values[i] = static_cast<float>(derivative * upstream[i]);
+                    break;
+                }
+                case detail::OpId::Silu: {
+                    const double s = activation_sigmoid(value);
+                    const double derivative = std::isinf(value)
+                                                  ? s
+                                                  : s + static_cast<double>(value) * s * (1.0 - s);
+                    values[i] = static_cast<float>(derivative * upstream[i]);
+                    break;
+                }
+                case detail::OpId::Elu:
+                    values[i] = static_cast<float>(
+                        (value > 0.0f ? 1.0 : alpha * std::exp(static_cast<double>(value))) *
+                        upstream[i]);
+                    break;
+                case detail::OpId::Softplus: {
+                    const double scaled = static_cast<double>(alpha) * value;
+                    const double derivative = scaled > beta ? 1.0 : activation_sigmoid(scaled);
+                    values[i] = static_cast<float>(derivative * upstream[i]);
+                    break;
+                }
                 case detail::OpId::Sqrt:
                     values[i] = upstream[i] / (2.0f * std::sqrt(value));
                     break;
@@ -80,7 +129,8 @@ Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution) {
                 }
             }
             detail::autograd::propagate(x, Tensor::from_vector(values, x.shape(), x.device()));
-        });
+        };
+        detail::AutogradAccess::record(out, {x}, backward);
     }
     return out;
 }
@@ -242,6 +292,32 @@ Tensor square(const Tensor& x, Execution execution) {
 
 Tensor relu(const Tensor& x, Execution execution) {
     return unary_op(detail::OpId::Relu, x, execution);
+}
+
+Tensor leaky_relu(const Tensor& x, float negative_slope, Execution execution) {
+    return unary_op(detail::OpId::LeakyRelu, x, execution, negative_slope);
+}
+
+Tensor gelu(const Tensor& x, bool approximate, Execution execution) {
+    return unary_op(detail::OpId::Gelu, x, execution, 1.0f, 20.0f, approximate);
+}
+
+Tensor silu(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Silu, x, execution);
+}
+
+Tensor elu(const Tensor& x, float alpha, Execution execution) {
+    return unary_op(detail::OpId::Elu, x, execution, alpha);
+}
+
+Tensor softplus(const Tensor& x, float beta, float threshold, Execution execution) {
+    if (!std::isfinite(beta) || beta <= 0.0f) {
+        throw std::invalid_argument("softplus: beta must be positive and finite");
+    }
+    if (!std::isfinite(threshold)) {
+        throw std::invalid_argument("softplus: threshold must be finite");
+    }
+    return unary_op(detail::OpId::Softplus, x, execution, beta, threshold);
 }
 
 Tensor sqrt(const Tensor& x, Execution execution) {

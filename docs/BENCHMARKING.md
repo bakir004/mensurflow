@@ -28,6 +28,7 @@ the threads made it faster.
 | Executable | Question | Source |
 |---|---|---|
 | `cpu_parallel_benchmark` | sequential vs parallel for every elementwise op and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
+| `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
 | `matmul_benchmark` | the same for matrix multiplication, in GFLOP/s | `benchmarks/blas/matmul_benchmark.cpp` |
 | `matvec_benchmark` | sequential vs parallel matrix-vector multiplication across thread counts | `benchmarks/blas/matvec_benchmark.cpp` |
@@ -171,6 +172,29 @@ OpenBLAS). It is only built when OpenBLAS is found.
 3. Build and run `matmul_openblas_benchmark` in Release, then follow the rules below as usual.
 
 The header line prints the OpenBLAS build and the core type it selected; report both with the numbers.
+
+## Comparing activations against PyTorch
+
+`activation_torch_benchmark` is OFF by default; enable it with
+`-DMENSURFLOW_TORCH_BENCHMARK=ON`. See [the native reference instructions](ACTIVATIONS.md#native-c-reference-preferred-for-timing)
+for LibTorch discovery, the separate build directory and paired run commands.
+
+Both libraries use the same preallocated F32 input/output addresses and benchmark harness. The timed
+calls are direct MensurFlow CPU kernels and native C++ ATen `out` operators, including ATen dispatch;
+allocation, Tensor wrapping and Python are excluded. `vs torch` is ATen median / MensurFlow median,
+so above one favors MensurFlow. After two cooled runs with matching operations, sizes and thread
+counts, create the paired Markdown table:
+
+```bash
+python3 benchmarks/reference/compare_native_activations.py \
+  build-torch-bench/results/activations-run1.txt \
+  build-torch-bench/results/activations-run2.txt \
+  > build-torch-bench/results/activations-paired.md
+```
+
+The parser needs only Python's standard library. It validates matching rows and shows both median
+times and ratios. Its drift column takes the larger of the two libraries' `abs(a-b)/min(a,b)*100`
+values; drift values above 10% are bold and the affected rows are counted in the summary.
 
 ## Before you report numbers
 

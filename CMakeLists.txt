@@ -127,6 +127,7 @@ mensurflow_add_test(transfer_test tests/core/transfer_test.cpp)
 mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
+mensurflow_add_test(activation_test tests/ops/activation_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 mensurflow_add_test(gemm_packed_test tests/ops/gemm_packed_test.cpp)
@@ -203,6 +204,21 @@ mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
+
+# LibTorch from a CPU PyTorch wheel is an optional native reference, not a core dependency.
+# Configure a separate build directory with Torch's CMake prefix when enabling this target.
+option(MENSURFLOW_TORCH_BENCHMARK "Build the native CPU activation comparison with LibTorch" OFF)
+if(MENSURFLOW_TORCH_BENCHMARK)
+    find_package(Torch CONFIG REQUIRED)
+    if(TORCH_CXX_FLAGS)
+        # Keep the ABI consistent across libraries that exchange std::string/vector values.
+        separate_arguments(MENSURFLOW_TORCH_CXX_FLAGS NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        target_compile_options(mensurflow PUBLIC ${MENSURFLOW_TORCH_CXX_FLAGS})
+    endif()
+    mensurflow_add_benchmark(activation_torch_benchmark benchmarks/activation_torch_benchmark.cpp)
+    target_link_libraries(activation_torch_benchmark PRIVATE ${TORCH_LIBRARIES})
+    # The imported torch target supplies the C++ standard its installed headers require.
+endif()
 
 add_executable(mlp_xor examples/mlp_xor.cpp)
 target_link_libraries(mlp_xor PRIVATE mensurflow)

@@ -13,12 +13,16 @@
 #include "backends/cpu/ops/blas/blas.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/threads.hpp"
+#include "reference/elementwise.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <set>
+#include <sstream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace cpu = mensurflow::cpu;
 
@@ -30,6 +34,26 @@ using Kernel = void (*)(const float*, const float*, float*, std::int64_t);
 template <void (*Unary)(const float*, float*, std::int64_t)>
 void unary_kernel(const float* x, const float*, float* out, std::int64_t n) {
     Unary(x, out, n);
+}
+
+void leaky_relu_kernel(const float* x, const float*, float* out, std::int64_t n) {
+    cpu::leaky_relu_f32(x, out, n, 0.01f);
+}
+
+void gelu_kernel(const float* x, const float*, float* out, std::int64_t n) {
+    cpu::gelu_f32(x, out, n);
+}
+
+void gelu_tanh_kernel(const float* x, const float*, float* out, std::int64_t n) {
+    cpu::gelu_f32(x, out, n, true);
+}
+
+void elu_kernel(const float* x, const float*, float* out, std::int64_t n) {
+    cpu::elu_f32(x, out, n, 1.0f);
+}
+
+void softplus_kernel(const float* x, const float*, float* out, std::int64_t n) {
+    cpu::softplus_f32(x, out, n, 1.0f, 20.0f);
 }
 
 constexpr float axpy_alpha = 1.25f;
@@ -57,7 +81,32 @@ struct Op {
     const char* name;
     double bytes_per_element;
     Kernel kernel; // nullptr for dot, which returns a value instead of filling a buffer
+    Kernel reference = nullptr; // Optional independent float64 check before timing.
 };
+
+std::vector<std::int64_t> parse_sizes(const std::string& text) {
+    std::vector<std::int64_t> sizes;
+    std::istringstream stream(text);
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        std::size_t parsed = 0;
+        const auto n = std::stoll(token, &parsed);
+        if (n <= 0 || parsed != token.size()) {
+            throw std::invalid_argument("sizes must be positive integers");
+        }
+        // Arrays(len, 4) rounds each stride up by at most 1279 floats. Validate before
+        // converting to size_t so both the padding and four-array allocation cannot wrap.
+        const auto max_stride = std::vector<float>().max_size() / 4;
+        if (max_stride <= 1279 || static_cast<std::uint64_t>(n) > max_stride - 1279) {
+            throw std::invalid_argument("size exceeds the four-array allocation limit");
+        }
+        sizes.push_back(n);
+    }
+    if (sizes.empty() || text.back() == ',') {
+        throw std::invalid_argument("sizes must be a nonempty comma-separated list");
+    }
+    return sizes;
+}
 
 } // namespace
 
@@ -73,6 +122,12 @@ int main(int argc, char* argv[]) {
                       {"abs", 8.0, unary_kernel<cpu::abs_f32>},
                       {"square", 8.0, unary_kernel<cpu::square_f32>},
                       {"relu", 8.0, unary_kernel<cpu::relu_f32>},
+                      {"leaky_relu", 8.0, leaky_relu_kernel, unary_kernel<reference::leaky_relu>},
+                      {"gelu", 8.0, gelu_kernel, unary_kernel<reference::gelu>},
+                      {"gelu_tanh", 8.0, gelu_tanh_kernel, unary_kernel<reference::gelu_tanh>},
+                      {"silu", 8.0, unary_kernel<cpu::silu_f32>, unary_kernel<reference::silu>},
+                      {"elu", 8.0, elu_kernel, unary_kernel<reference::elu>},
+                      {"softplus", 8.0, softplus_kernel, unary_kernel<reference::softplus>},
                       {"sqrt", 8.0, unary_kernel<cpu::sqrt_f32>},
                       {"exp", 8.0, unary_kernel<cpu::exp_f32>},
                       {"sigmoid", 8.0, unary_kernel<cpu::sigmoid_f32>},
@@ -80,9 +135,20 @@ int main(int argc, char* argv[]) {
                       {"bias_add", 8.0, bias_add_kernel<cpu::bias_add_f32>},
                       {"dot", 8.0, nullptr}};
 
+    std::vector<std::int64_t> sizes{1000, 10000, 32768, 32769, 40000, 50000, 75000, 100000,
+                                    200000, 500000, 1000000, 2000000, 5000000, 10000000, 33554432};
     std::set<std::string> selected;
     for (int i = 1; i < argc; ++i) {
         const std::string name = argv[i];
+        if (name.rfind("--sizes=", 0) == 0) {
+            try {
+                sizes = parse_sizes(name.substr(8));
+            } catch (const std::exception& e) {
+                std::cerr << "Invalid --sizes: " << e.what() << '\n';
+                return 1;
+            }
+            continue;
+        }
         bool known = false;
         for (const Op& op : ops) {
             known = known || name == op.name;
@@ -112,11 +178,14 @@ int main(int argc, char* argv[]) {
             "bias_add: features = largest power-of-two divisor of n up to 256; the first "
             "features entries of b are the bias; GB/s counts 8*n + 4*features bytes");
     }
+    if (wanted("leaky_relu") || wanted("gelu") || wanted("gelu_tanh") || wanted("silu") ||
+        wanted("elu") || wanted("softplus")) {
+        notes.push_back("activations: leaky_relu slope=0.01, ELU alpha=1, "
+                        "softplus beta=1 threshold=20; "
+                        "GELU exact and tanh have separate rows; checked against float64 first");
+    }
     bench::print_header("Sequential vs parallel on the CPU (float32)", config, notes);
 
-    const std::int64_t sizes[] = {1000,    10000,   32768,   32769,    40000,
-                                  50000,   75000,   100000,  200000,   500000,
-                                  1000000, 2000000, 5000000, 10000000, 33554432};
     bench::Table table("GB/s", 1e9, "vs seq", "");
 
     for (const Op& op : ops) {
@@ -159,6 +228,11 @@ int main(int argc, char* argv[]) {
             };
             cpu::set_max_threads(1);
             run_sequential();
+            if (op.reference != nullptr) {
+                op.reference(a, b, out, n);
+                bench::check_close(out, reference, len, 3e-6,
+                                   std::string(op.name) + " float64 reference");
+            }
             const double reference_value = value;
             auto observe_reference = [&] {
                 return is_dot ? value : bench::checksum(reference, len);
