@@ -5,9 +5,11 @@
 #include "backends/backend.hpp"
 
 #include "backends/cpu/ops/blas/blas.hpp"
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
 #include "backends/cpu/ops/elementwise/cast.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
+#include "backends/cpu/ops/gemm/gemm_batched.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
+#include "backends/cpu/ops/movement/movement.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/dispatcher.hpp"
@@ -16,6 +18,7 @@
 
 #include <cstring>
 #include <new>
+#include <vector>
 
 namespace mensurflow::detail {
 
@@ -113,23 +116,135 @@ void gemv_kernel(const OpArgs& args, Stream&) {
                   a.size(0), a.size(1), args.alpha, args.beta, initial, args.transpose);
 }
 
-// Ops hand matmul contiguous [m,k] and [k,n] inputs and a [m,n] output.
+// Ops hand matmul [m,k] and [k,n] inputs with any strides (a transposed or sliced view is not copied)
+// and a contiguous [m,n] output. The packed kernel reads them in place; the plain kernels need
+// contiguous memory, so on a CPU without AVX2 the operands are made contiguous here.
 void matmul_kernel(const OpArgs& args, Stream&) {
     const Tensor& a = args.inputs[0];
     const Tensor& b = args.inputs[1];
     float* c = data<float>(args.outputs[0]);
+    const std::int64_t m = a.size(0), k = a.size(1), n = b.size(1);
     if (cpu::packed_gemm_supported()) {
         // The AVX2 + FMA packed kernel; it runs on one thread when the build has no OpenMP and for
         // products too small to split.
-        const auto kernel = use_parallel ? cpu::matmul_f32_packed_parallel : cpu::matmul_f32_packed;
-        kernel(data<float>(a), data<float>(b), c, a.size(0), b.size(1), a.size(1));
-    } else if (use_parallel) {
-        cpu::matmul_f32_parallel(data<float>(a), data<float>(b), c, a.size(0), b.size(1),
-                                 a.size(1));
-    } else {
-        cpu::matmul_f32_sequential(data<float>(a), data<float>(b), c, a.size(0), b.size(1),
-                                   a.size(1));
+        const auto kernel =
+            use_parallel ? cpu::matmul_f32_packed_parallel_strided : cpu::matmul_f32_packed_strided;
+        const Strides& sa = a.strides();
+        const Strides& sb = b.strides();
+        kernel(data<float>(a), sa[0], sa[1], data<float>(b), sb[0], sb[1], c, n, m, n, k);
+        return;
     }
+    const Tensor x = a.is_contiguous() ? a : a.contiguous();
+    const Tensor y = b.is_contiguous() ? b : b.contiguous();
+    if (use_parallel) {
+        cpu::matmul_f32_parallel(data<float>(x), data<float>(y), c, m, n, k);
+    } else {
+        cpu::matmul_f32_sequential(data<float>(x), data<float>(y), c, m, n, k);
+    }
+}
+
+void ger_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    const float* initial = args.inputs.size() > 2 ? data<float>(args.inputs[2]) : nullptr;
+    cpu::ger_f32(args.alpha, data<float>(args.inputs[0]), data<float>(args.inputs[1]), initial,
+                 data<float>(out), out.size(0), out.size(1));
+}
+
+// Ops hand gemm_strided_batched two views with the full batch shape, [batch..., m, k] and
+// [batch..., k, n] (broadcast batch dimensions have stride 0, matrices any strides), a contiguous
+// [batch..., m, n] output and, when beta != 0, a contiguous c of the output's shape. Each matrix's
+// starting offset is found by walking the batch index through both views' batch strides.
+template <void (*Kernel)(const cpu::BatchedGemm&)>
+void gemm_batched_kernel(const OpArgs& args, Stream&) {
+    const Tensor& a = args.inputs[0];
+    const Tensor& b = args.inputs[1];
+    const Tensor& out = args.outputs[0];
+    const int batch_dims = out.dim() - 2;
+    std::int64_t batch = 1;
+    for (int d = 0; d < batch_dims; ++d) {
+        batch *= out.size(d);
+    }
+    std::vector<std::int64_t> a_offsets(static_cast<std::size_t>(batch));
+    std::vector<std::int64_t> b_offsets(static_cast<std::size_t>(batch));
+    std::vector<std::int64_t> index(static_cast<std::size_t>(batch_dims), 0);
+    std::int64_t a_offset = 0, b_offset = 0;
+    for (std::int64_t i = 0; i < batch; ++i) {
+        a_offsets[static_cast<std::size_t>(i)] = a_offset;
+        b_offsets[static_cast<std::size_t>(i)] = b_offset;
+        // Advance the batch index like an odometer, last batch dimension fastest.
+        for (int d = batch_dims - 1; d >= 0; --d) {
+            const auto du = static_cast<std::size_t>(d);
+            if (++index[du] < out.size(d)) {
+                a_offset += a.strides()[du];
+                b_offset += b.strides()[du];
+                break;
+            }
+            a_offset -= (index[du] - 1) * a.strides()[du];
+            b_offset -= (index[du] - 1) * b.strides()[du];
+            index[du] = 0;
+        }
+    }
+    cpu::BatchedGemm g;
+    g.a = data<float>(a);
+    g.a_offsets = a_offsets.data();
+    g.rsa = a.strides()[static_cast<std::size_t>(batch_dims)];
+    g.csa = a.strides()[static_cast<std::size_t>(batch_dims) + 1];
+    g.b = data<float>(b);
+    g.b_offsets = b_offsets.data();
+    g.rsb = b.strides()[static_cast<std::size_t>(batch_dims)];
+    g.csb = b.strides()[static_cast<std::size_t>(batch_dims) + 1];
+    g.c = data<float>(out);
+    g.c0 = args.inputs.size() > 2 ? data<float>(args.inputs[2]) : nullptr;
+    g.batch = batch;
+    g.m = out.size(-2);
+    g.n = out.size(-1);
+    g.k = a.size(-1);
+    g.alpha = args.alpha;
+    g.beta = args.beta;
+    Kernel(g);
+}
+
+// The default: the parallel version (which picks over-batch or within-matrix from the shapes) when
+// the build has OpenMP, the sequential one otherwise.
+constexpr void (*gemm_batched_default)(const cpu::BatchedGemm&) =
+    use_parallel ? cpu::gemm_batched_f32_parallel : cpu::gemm_batched_f32_sequential;
+
+// ---- Data movement -------------------------------------------------------------------------
+
+// Ops hand concat contiguous inputs, all of the output's shape except along args.axis.
+void concat_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    const int axis = args.axis;
+    std::int64_t outer = 1;
+    for (int d = 0; d < axis; ++d) {
+        outer *= out.size(d);
+    }
+    std::int64_t inner = 1;
+    for (int d = axis + 1; d < out.dim(); ++d) {
+        inner *= out.size(d);
+    }
+    std::vector<const float*> inputs;
+    std::vector<std::int64_t> widths;
+    for (const Tensor& t : args.inputs) {
+        inputs.push_back(data<float>(t));
+        widths.push_back(t.size(axis) * inner);
+    }
+    cpu::concat_f32(inputs.data(), widths.data(), static_cast<std::int64_t>(inputs.size()),
+                    data<float>(out), outer);
+}
+
+// Ops hand pad a contiguous input and args.padding as (before, after) per dimension, in order.
+void pad_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const int ndim = x.dim();
+    std::vector<std::int64_t> before(static_cast<std::size_t>(ndim));
+    std::vector<std::int64_t> after(static_cast<std::size_t>(ndim));
+    for (std::size_t d = 0; d < static_cast<std::size_t>(ndim); ++d) {
+        before[d] = args.padding[2 * d];
+        after[d] = args.padding[2 * d + 1];
+    }
+    cpu::pad_f32(data<float>(x), data<float>(args.outputs[0]), x.shape().data(), before.data(),
+                 after.data(), ndim, args.alpha);
 }
 
 // ---- Elementwise ---------------------------------------------------------------------------
@@ -340,6 +455,11 @@ class CpuBackend final : public Backend {
         add(OpId::AxisMin, axis_reduce_kernel<min_axis_f32>);
         add(OpId::AxisProd, axis_reduce_kernel<prod_axis_f32>);
         add(OpId::Argmax, argmax_kernel);
+
+        add(OpId::Ger, ger_kernel);
+        add(OpId::GemmBatched, gemm_batched_kernel<gemm_batched_default>);
+        add(OpId::Concat, concat_kernel);
+        add(OpId::Pad, pad_kernel);
     }
 
   private:

@@ -32,9 +32,10 @@ bit-identical CPU/GPU reductions.
 
 What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
-dispatcher where to run. CPU kernels are in `src/backends/cpu/ops/{blas,elementwise,reduction}/`;
-each is one loop that OpenMP parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`,
-`max` and `min`, which have separate sequential and parallel versions.
+dispatcher where to run. CPU kernels are in
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement}/`; each is one loop that OpenMP
+parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
+which have separate sequential and parallel versions.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
 |Operation|CPU|CUDA|Metal|
@@ -50,6 +51,10 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
 |`matmul`|blocked, rows split across threads; CPU autograd backward|—|—|
+|`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|
+|`ger`|OpenMP, rows split across threads|—|—|
+|`concat`, `pad`|OpenMP, memcpy pieces and vectorized fills; `pad` is constant mode only|—|—|
+|`split`|views (no kernel)|views|views|
 
 CUDA was tested on an RTX 3060; Metal has never been built on real hardware. The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
@@ -167,8 +172,8 @@ integer masks and unpacking int4 weights.
 * \[ ] Lp normalization, e.g. L2 `x / ||x||` — embedding and retrieval models.
 * \[ ] Variance and standard deviation; specify population/sample convention and
 use a numerically stable algorithm where practical.
-* \[ ] Batched `matmul`, initially for matching batch dimensions.
-* \[ ] `outer(x, y)` — outer product; also appears in gradient formulas.
+* \[x] Batched `matmul` (`gemm_strided_batched`), with NumPy-style batch broadcasting.
+* \[x] `outer(x, y)` — outer product, as `ger(1, x, y)`; also appears in gradient formulas.
 * \[ ] `einsum` — lowered to permute, reshape, and batched GEMM.
 * \[ ] Pairwise squared Euclidean distances, initially composed from reductions
 and GEMM; clamp small negative roundoff artifacts to zero.
@@ -180,7 +185,7 @@ slice) can follow.
 * \[ ] `select` and `diagonal` — single-index and diagonal views. Also building a
 diagonal matrix from a vector and overwriting a diagonal.
 * \[ ] `as\_strided` — general strided view, once views are supported.
-* \[ ] `concat` and `split` along a selected axis.
+* \[x] `concat` and `split` along a selected axis (`split` returns views).
 * \[ ] `stack` / `unstack` — join along, or split into, a new axis.
 * \[ ] `gather` / row selection with integer indices and bounds validation.
 * \[ ] `gather\_nd` / `scatter\_nd` — multi-dimensional index tuples.
@@ -191,7 +196,7 @@ diagonal matrix from a vector and overwriting a diagonal.
 unsupported.
 * \[ ] `squeeze` / `unsqueeze` — metadata-only.
 * \[ ] `repeat` / tile.
-* \[ ] `pad` — constant, reflection, and replication modes.
+* \[ ] `pad` — constant mode done; reflection and replication modes remain.
 * \[ ] `flip` and `roll`; `reverse\_sequence` for variable-length sequences.
 * \[ ] `depth\_to\_space` / `space\_to\_depth` (pixel shuffle) — super-resolution.
 `batch\_to\_space` / `space\_to\_batch` are the batch-axis equivalents.

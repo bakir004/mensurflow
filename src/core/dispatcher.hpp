@@ -8,6 +8,7 @@
 #include "mensurflow/execution.hpp"
 #include "mensurflow/tensor.hpp"
 
+#include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <tuple>
@@ -70,7 +71,11 @@ enum class OpId {
     AxisMax,
     AxisMin,
     AxisProd,
-    Argmax
+    Argmax,
+    GemmBatched,
+    Ger,
+    Concat,
+    Pad
 };
 
 const char* op_name(OpId op);
@@ -97,6 +102,9 @@ struct OpArgs {
     bool keepdim = false;
     bool transpose = false;
     bool approximate = false; // GELU: tanh approximation instead of the Gaussian CDF.
+    // pad: elements added before and after each dimension, as (before, after) pairs in dimension
+    // order. Unused by other operations.
+    std::vector<std::int64_t> padding{};
 };
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);

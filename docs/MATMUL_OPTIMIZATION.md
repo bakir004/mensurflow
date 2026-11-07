@@ -26,6 +26,8 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 11 | Other micro-kernel tile shapes | 6x16 unrolled, 4x24 and 12x8 kernels, selectable per call, all tested | None is faster than 6x16 on this CPU (4x24: 0.92x-0.99x, 12x8: 0.79x-0.95x, unrolled: 0.75x-0.85x); kept as tile variants for the autotuner |
 | 12 | Register-level analysis and measured FMA peak | Disassembly of every kernel plus a register-only FMA benchmark (`fma_peak_benchmark`) | 6x16 has no spills and runs at 90-93% of the measured 112 GFLOP/s per-core peak (the 135-145 estimate was wrong: the core holds about 3.5 GHz under AVX2); the unrolled variant spills, which explains its slowdown |
 | 13 | Hand-vectorized packing | AVX2 `pack_a` (8 x 8 register transpose) and `pack_b` (256-bit copies) replace scalar loops | Packing 3.0-3.6x (A) and 1.4-2.3x (B) faster alone; 1-6% faster matmul end to end; 106 GFLOP/s on 1 thread at n = 1024 (95% of peak) |
+| 14 | Threading: pinning, placement, loop order | Each thread pinned to its own physical core (adjacent cores first), strategy 1 (one parallel region), A panel kept in L1, 16 tiles per thread, no SMT threads for small products | Removes a random 40-45% slowdown (n = 2048, 12 threads: 597 -> 1036); placement on one chiplet +3-45% at 2-6 threads; loop order +4-7% at n = 2048; 4 strategies compared, 3 kept as options |
+| 15 | Strided operands | The packing step reads transposed, sliced and padded matrices in place (new fast paths for transposed A and B); `matmul` no longer copies them to contiguous memory on the CPU | Transposed operands 2.5-3.8x faster (one operand), 4.0-6.6x (both, the backward pass); same speed as contiguous; leading dimension (n, n+16, n+1) makes no difference |
 
 ## The improvements, explained
 
@@ -40,7 +42,7 @@ option `MENSURFLOW_OPENBLAS`). How to set it up: [BENCHMARKING.md](BENCHMARKING.
 ### 2. Packed 6x16 AVX2/FMA micro-kernel (the Goto/BLIS design)
 
 The old kernel computed one row of C at a time, loading and storing C for every product. The new one
-(`src/backends/cpu/ops/blas/gemm_packed.cpp`) works like BLIS and OpenBLAS:
+(`src/backends/cpu/ops/gemm/gemm_packed.cpp`) works like BLIS and OpenBLAS:
 
 | Piece | What it is | Why it is fast |
 |---|---|---|
@@ -72,7 +74,8 @@ With GCC or Clang the kernel function carries a `target("avx2,fma")` attribute i
 
 ### 4. Threaded version
 
-`matmul_f32_packed_parallel` splits the work without locks. Per (NC, KC) step:
+`matmul_f32_packed_parallel` splits the work without locks. This is the first version (strategy 0 in section
+14; the default is now strategy 1, the same work in a single parallel region). Per (NC, KC) step:
 
 1. One parallel loop packs all panels of B and all panels of A.
 2. A second parallel loop hands out tiles of C (an MC-row block times a group of B panels) with dynamic
@@ -80,7 +83,8 @@ With GCC or Clang the kernel function carries a `target("avx2,fma")` attribute i
 
 Groups of B panels are sized to give about `tiles_per_thread` tiles per thread, so small matrices (a
 single row block) are split along the columns instead. It uses the repository's
-`MENSURFLOW_PARALLEL_FOR` macro, so there are no raw pragmas in the kernel.
+`MENSURFLOW_PARALLEL_FOR` macro (and, from section 14 on, `MENSURFLOW_PARALLEL_REGION`, `MENSURFLOW_FOR` and
+`MENSURFLOW_BARRIER` from `threads.hpp`), so there are no raw pragmas in the kernel.
 
 | n | threads | old blocked parallel | packed parallel | OpenBLAS |
 |---|---|---|---|---|
@@ -181,7 +185,7 @@ was the per-call buffer allocation (improvement 5).
 
 | Tool | Use |
 |---|---|
-| `gemm_tune_benchmark key=list ...` (`threads=`, `sizes=`, `mc=`, `kc=`, `nc=`, `tiles=`, `prefetch=`, `shape=`, `pack=`) | Sweeps any combination of block sizes, re-times the best five and the default alternately, prints the confirmed best and the CPU's cache sizes |
+| `gemm_tune_benchmark key=list ...` (`threads=`, `sizes=`, `mc=`, `kc=`, `nc=`, `tiles=`, `prefetch=`, `shape=`, `pack=`); `gemm_thread_benchmark` for the threading options | Sweeps any combination of block sizes, re-times the best five and the default alternately, prints the confirmed best and the CPU's cache sizes |
 | `set_packed_gemm_blocking()` / `packed_gemm_blocking()` | Sets and reads the block sizes at run time (not thread-safe; for tuning only) |
 | `gemm_packed_test` | Checks the sequential and threaded kernels against a float64 reference on 22 shapes around every tile and block edge, at 1, 2, 3, 8 and 24 threads |
 
@@ -272,7 +276,7 @@ and compute for every K block, and tile balance.
 
 The disassembly (section 12) showed both packing loops were plain scalar code: one `mov` load and one `mov`
 store per float, an `imul` per element for the strided A writes, and a `memset` call for padding. They are
-now written with AVX2 intrinsics in `src/backends/cpu/ops/blas/gemm_pack.hpp`.
+now written with AVX2 intrinsics in `src/backends/cpu/ops/gemm/gemm_pack.hpp`.
 
 | Packer | Technique | Registers |
 |---|---|---|
@@ -325,39 +329,230 @@ So the vectorized packing is worth 1-6% overall (more where the product is small
 low). Absolute results with it: 106 GFLOP/s on 1 thread at n = 1024 (95% of the 112 GFLOP/s core peak),
 and 1083 GFLOP/s on 24 threads at n = 2048 (81% of the chip's 1333).
 
-## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run)
+### 14. Multithreading: thread placement, pinning and how the loops are split
+
+The threaded kernel was at 66-78% of the chip's measured peak. To see why, `PackedGemmBlocking::profile`
+records, per call, how long each thread spent packing and in the micro-kernel, and `gemm_thread_benchmark`
+prints it next to the GFLOP/s. For a warm 12-thread call at n = 2048 the average thread spent about 85% of
+the wall time in the micro-kernel, 7% packing and 7% waiting at barriers: the structure was not the main
+loss. The big loss turned out to be where the operating system put the threads.
+
+**Thread placement.** On a CPU with SMT the OS sometimes runs two of our threads on the two halves of one
+core and leaves another core idle. Compute-bound code on the shared core runs at half speed and every
+barrier waits for it. It comes and goes between runs (it depends on what else is running), which made
+every earlier threaded measurement noisy:
+
+| Measurement | Not pinned | Each thread pinned to its own core |
+|---|---|---|
+| matmul n = 2048, 12 threads, GFLOP/s | 597 (a bad run) to 1050 | 973-1060, stable |
+| matmul n = 4096, 12 threads | 638 (a bad run) | 1075 |
+| matmul n = 1024, 2 threads | 107 (both threads on one core) | 192 |
+| register-only FMA loop, 12 threads, time of a ~1 ms slice | 0.50 ms, up to 0.93 ms after 100 ms idle | 0.48 ms always |
+
+MSVC's OpenMP (version 2.0) cannot pin threads, so `src/backends/cpu/affinity.hpp` does it: the CPU
+topology comes from `GetLogicalProcessorInformationEx` (Linux: sysfs and `pthread_setaffinity_np`; compiled and tested
+on the GitHub Actions Ubuntu runner, correctness only, no Linux timings), each thread restricts itself to the two hardware threads of its own physical core, and a team
+fills the cores in order, performance cores first on hybrid CPUs. Details that matter:
+
+- The calling thread is thread 0 of the team. It is pinned for the call and gets its old restriction back
+  at the end, so the application's own thread is never left pinned. Leaving it unpinned instead made
+  things worse (237 vs 297 GFLOP/s at n = 512, 4 threads), because it lands on a worker's core.
+- Only one call pins at a time, never from inside another parallel region, and only for products of at
+  least 8 million multiply-adds, so concurrent callers do not all pin to core 0 and tiny calls pay nothing.
+- Settings: `PackedGemmBlocking::pin` is 0 (off), 1 (core), 2 (one hardware thread) or 3 (only a
+  preference, the Windows "ideal processor"). Mode 3 did not help: it still produced the 2-thread
+  collision (107 GFLOP/s) in the same test.
+- `affinity_test` checks that pinning restricts the thread, thread numbers wrap around the cores, the
+  logical mode leaves one hardware thread, mode 3 restricts nothing, and unpinning restores the original
+  mask exactly.
+
+**Which cores.** Threads are packed onto adjacent cores (one chiplet, one L3) before using the next.
+Spreading them over both chiplets looked natural and was clearly worse, because the packed A and B panels
+are shared and a cache line that has to cross between chiplets is slow (GFLOP/s, pinned, 2 / 4 / 6 threads):
+
+| n | spread over both chiplets | adjacent cores |
+|---|---|---|
+| 256 | 126 / 192 / 200 | 161 / 242 / 290 |
+| 512 | 169 / 300 / 410 | 190 / 343 / 497 |
+| 1024 | 193 / 364 / 515 | 198 / 379 / 551 |
+| 2048 | 197 / 380 / 555 | 200 / 389 / 568 |
+
+**Ways of splitting the loops.** All four are in `matmul_f32_packed_parallel`, chosen with
+`PackedGemmBlocking::parallel`, all tested for correctness:
+
+| # | Strategy | Result (pinned, 12 threads, GFLOP/s at n = 512 / 1024 / 2048 / 4096) |
+|---|---|---|
+| 0 | Two parallel loops per K step: pack everything, then dynamically scheduled tiles of C (an MC-row block times a group of B panels) | 612 / 868 / 967 / 1083 |
+| 1 | The same work in one parallel region for the whole call (the team is woken once) | 634 / 881 / 917 / 1085 |
+| 2 | One region, B packed together, each thread packs its own rows of A (static split into rows x columns of threads, like BLIS) | 767 / 888 / 639 / 1087 |
+| 3 | Strategy 0's dynamic tiles, but A packed privately per tile and kept while the thread stays on the same rows | 722 / 951 / 626 / 1091 |
+
+- Waking the team once instead of twice per step (0 vs 1) makes no measurable difference.
+- Packing A privately wins at n = 512 and 1024 (+18-25% and +2-10%) and is level at n = 4096, but at
+  n = 1536-2560 it loses 40% whenever a call does not directly follow another one (the numbers above are
+  the median of calls separated by a checksum; back to back the same strategies reach 1075-1110, the best
+  of all). The penalty is about 10 ms per call, shows up in the micro-kernel time (24-28 ms instead of
+  13.5), and I did not find the cause. Allocating the private buffers from one block instead of per thread
+  changed nothing, a pure FMA loop does not show it, and pinning does not remove it. So strategies 2 and 3
+  are kept as options but are not the default.
+- **Default: strategy 1.** Same speed as 0, robust after idle time, and the threads pin themselves when the
+  team starts, without an extra thread wake-up.
+
+**Loop order and tile size.** Inside a block the micro-kernel can sweep A panels for each B panel (order 0)
+or the other way round (order 1). A packed B panel is KC x 16 floats = 64 KB at KC = 1024, more than the
+32 KB L1; an A panel is KC x 6 floats = 24 KB and fits, so the A panel should stay in L1 while B streams
+past (order 1; the default is derived from the L1 size). Strategy 0, pinned, 12 threads, GFLOP/s:
+
+| Tiles per thread | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|
+| n = 2048, order 0 | 956 | 975 | 959 | 1014 |
+| n = 2048, order 1 | 618 | 707 | 1056 | 1052 |
+| n = 4096, order 0 | 974 | 1070 | 1092 | 1105 |
+| n = 4096, order 1 | 992 | 1065 | 1092 | 1090 |
+
+Order 1 is 4-7% faster at n = 2048 and 25% faster for a call after idle time, but only with 16 or more
+tiles per thread (with 4 or 8 it collapses, probably because the last tiles are too coarse). The default is
+16 tiles per thread.
+
+**One thread per physical core for small products.** The second hardware thread of a core adds no FMA
+throughput; for small products it only adds barrier and packing overhead (n = 256: 266 GFLOP/s on 12
+threads, 185 on 24). Products below 2^30 multiply-adds (about n = 1024) now use at most one thread per
+core; larger ones use all hardware threads, which gains a few percent (n = 4096: 1144 on 24 threads against
+1058 on 12).
+
+**Defaults after this work (Ryzen 9 5900X):** strategy 1, loop order 1, 16 tiles per thread, pinning on
+when the topology is known, MC = 240, KC = 1024, NC = 8160.
+
+**Caveats.** All numbers are single runs on one busy desktop (antivirus and other background programs were
+running), so differences below about 5% are not meaningful. The Linux pinning code passes its tests on the GitHub Ubuntu runner but has no timings, and pinning on the
+i7 laptop has not been run. The cause of the private-A penalty after idle time is open.
+
+### 15. Strides: no copies for transposed, sliced or padded operands
+
+`matmul` used to turn every non-contiguous input into a contiguous copy before calling the kernel
+(`a.contiguous()` in `src/ops/blas.cpp`), and that copy is a single-threaded strided read. The backward
+pass is made of such inputs: `grad_a = grad x b^T` and `grad_b = a^T x grad`, where `grad` is often a
+broadcast view with stride 0; `gemm` with transposes goes through the same path. At n = 2048 the copy of
+one transposed matrix takes about as long as the multiplication itself.
+
+The packing step already reads every element of A and B once, so it can read them in place. Everything
+below takes strides: element (i, p) of A is `a[i * rsa + p * csa]`, element (p, j) of B is
+`b[p * rsb + j * csb]`, and C has a row stride `ldc`.
+
+| Operand layout | Packing path |
+|---|---|
+| A row-major, any leading dimension (`csa = 1`) | the 8 x 8 register transpose of section 13 |
+| A transposed (`rsa = 1`) | direct 6-float copy per depth step, no transpose; depth steps outermost so each source column is read as one run |
+| B row-major, any leading dimension (`csb = 1`) | 256-bit copies of section 13 |
+| B transposed (`rsb = 1`) | 8 x 8 register transposes, 8 depth steps at a time |
+| anything else (odd strides, stride 0) | generic scalar loops |
+
+- The new entry points are `matmul_f32_packed_strided` and `matmul_f32_packed_parallel_strided`; the old
+  contiguous ones call them with `(k, 1)`, `(n, 1)` and `ldc = n`.
+- `src/ops/blas.cpp` no longer makes inputs contiguous when the tensors are on the CPU; the CPU backend
+  reads `Tensor::strides()` and passes them on. Other devices still get contiguous copies.
+- On a CPU without AVX2 the strided entry points copy the operands into contiguous temporaries and use the
+  plain loops, so every CPU stays correct.
+
+**Result** (public API, GFLOP/s, all threads; "copy" is the old behaviour, `contiguous()` then `matmul`):
+
+| n | operands | copy first | in place | speedup |
+|---|---|---|---|---|
+| 512 | A B | 384 | 410 | 1.07x |
+| 512 | A^T B | 102 | 386 | 3.80x |
+| 512 | A B^T | 111 | 409 | 3.68x |
+| 512 | A^T B^T | 63 | 416 | 6.61x |
+| 1024 | A^T B | 217 | 766 | 3.52x |
+| 1024 | A B^T | 222 | 765 | 3.44x |
+| 1024 | A^T B^T | 118 | 762 | 6.49x |
+| 2048 | A B | 921 | 919 | 1.00x |
+| 2048 | A^T B | 364 | 920 | 2.53x |
+| 2048 | A B^T | 360 | 905 | 2.51x |
+| 2048 | A^T B^T | 226 | 904 | 4.00x |
+
+With one operand transposed the product is 2.5-3.8x faster, with both 4.0-6.6x (the backward pass). In
+place, a transposed product runs at the speed of a contiguous one (n = 2048: 919, 905 and 904 against
+919): the transposed packers cost nothing measurable. Contiguous products are unchanged.
+
+**Does the row stride matter?** A leading dimension that is a large power of two (n = 2048 floats =
+8 KB) makes the rows of a block map to the same cache sets, which is a known problem for strided code.
+Kernel-level sweep, row strides n, n + 16 and n + 1 for A, B and C (GFLOP/s):
+
+| n | ld = n | ld = n + 16 | ld = n + 1 |
+|---|---|---|---|
+| 512 | 622 | 626 | 628 |
+| 1024 | 945 | 942 | 940 |
+| 2048 | 1093 | 1090 | 1070 |
+
+Within 1-2%. The packing step absorbs the stride (every source row is read as a contiguous run and
+written to a panel), so there is nothing to gain from padding the matrices.
+
+**Tile layout.** The layouts were already contiguous where it matters: an A panel is `kc x 6` floats
+(24 KB at KC = 1024) and a B panel `kc x 16` (64 KB), each read front to back by the micro-kernel, and
+the panels sit one after the other. The sweep above shows no sensitivity to strides, the earlier sweeps
+(sections 7, 11, 14) cover the tile shape, the block sizes and the loop order inside a block, and the
+register-level analysis (section 12) shows the kernel at 90-95% of the FMA peak. I did not try padding
+the stride between packed panels; nothing measured points to a gain from it.
+
+**Tests.** `gemm_pack_test` compares every packer with the scalar reference for the row-major, padded,
+transposed and odd-stride layouts (guard words after each panel). `gemm_packed_test` runs 5 layouts for A
+times 5 for B (row-major, padded, transposed, transposed and padded, interleaved) on 8 shapes with both
+kernels and default and tiny block sizes, writes C with a larger row stride, and checks the unused
+columns and the memory after C are untouched; four large products also cover the pinned path.
+`matmul_test` multiplies large transposed, sliced and transposed-and-sliced views through the public API
+and checks the gradient of `sum(a x b)` exactly (the backward pass with the stride-0 gradient).
+
+**Not covered.** The GPU backends still receive contiguous copies. `gemm` applies alpha and beta as
+separate elementwise passes after the product (fusing them into the kernel is on the open list, probably to be done another time). `contiguous()` itself is still single-threaded for the
+operations that need it.
+
+## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
 | n | Packed vs OpenBLAS, 1 to 24 threads |
 |---|---|
-| 128 | 1.08x to 1.62x |
-| 256 | 1.08x to 2.23x |
-| 512 | 1.01x to 1.50x |
-| 1024 | 1.00x to 1.06x up to 12 threads, 0.95x on 24 |
-| 2048 | 0.94x to 0.99x on 1-8 threads; 1.25x on 12 and 1.56x on 24 (OpenBLAS's median is unstable there: the 24-thread median is 664 GFLOP/s against 1087 for its best run, so treat those two as optimistic) |
+| 128 | 0.98x to 2.07x |
+| 256 | 1.04x to 2.32x |
+| 512 | 0.96x to 1.43x |
+| 1024 | 1.00x to 1.04x |
+| 2048 | 0.95x to 1.01x on 1-8 threads; 1.48x on 12 and 1.32x on 24 (OpenBLAS drops there: its 12-thread median is 709 GFLOP/s, and it varied between 600 and 1087 across runs, so treat those two as optimistic) |
+| 4096 | 0.97x to 1.19x (run with `matmul_openblas_benchmark 4096`): 1.00x-1.01x on 1-2 threads, 0.97x-0.98x on 4-8, 1.07x on 12, 1.19x on 16, 1.02x on 24. OpenBLAS's best single run is a little higher than ours on 12 and 24 threads (1200 against 1177 GFLOP/s on 24), its median is less stable |
 
-Absolute best so far: 1037 GFLOP/s at n = 2048 on 24 threads (about 10x one thread, which is 103).
+Of the 30 combinations from 128 to 2048 (5 sizes x 6 thread counts) the packed kernel is at or above OpenBLAS
+in 26. The four below are 0.98x (n = 128, 2 threads), 0.96x (n = 512, 4 threads), 0.97x and 0.95x
+(n = 2048, 4 and 8 threads).
+
+Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's measured 1333) and about
+1142 at n = 4096 on 24 threads (86%). One thread: 106 GFLOP/s (95% of the core's 112).
 
 ## Open items
 
 | Item | Why |
 |---|---|
-| Threaded efficiency (66-78% of the 1320 GFLOP/s chip peak; about 5% behind OpenBLAS at n = 2048 on 1-8 threads) | The micro-kernel, block sizes and prefetching are exhausted. What is left is overlapping packing with compute (or avoiding the barrier after every K block), reading several B panels per source row so `pack_b` stops being latency bound, and balancing the last small row block |
-| Measure and sweep on the i7-10510U | The small-L2 defaults are untested; also the laptop throttles under AVX2 load |
+| Threaded efficiency (82-86% of the 1333 GFLOP/s chip peak at best; about 5% behind OpenBLAS at n = 2048 on 4-8 threads) | What is left is overlapping packing with compute, reading several B panels per source row so `pack_b` stops being latency bound, and the last small row block |
+| The 10 ms per-call penalty of strategies 2 and 3 after idle time | Their back-to-back speed (1075-1110 GFLOP/s) is the best measured, so removing the penalty would beat the default; cause not found (not buffer placement, not thread placement, not clock ramp-up) |
+| Linux timings and the i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) compiles and passes `affinity_test` and `gemm_packed_test` on the GitHub Ubuntu runner, but nothing has been timed on Linux; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
+| Fuse alpha and beta into the kernel (probably another time) | `gemm` applies alpha and beta as separate elementwise passes over C (`mul`, `scal`, `add`, each a full read and write plus a temporary). Fusing them into the micro-kernel's C update (scale the accumulators by alpha, add beta times the old C when storing) would remove those passes and temporaries. Estimated cost of the passes at n = 2048 (not measured): about 4 ms on top of a 16 ms product with both alpha and beta, about 1 ms with alpha only, and several times the product when k is small. It only matters for `gemm` calls with alpha other than 1 or beta other than 0; `matmul` and the backward pass are unaffected. Decided to postpone until such calls are on a hot path; measure `gemm` against `matmul` first |
 
 ## Files
 
 | File | Role |
 |---|---|
-| `src/backends/cpu/ops/blas/gemm_packed.hpp`, `.cpp` | The kernel, packing, threading, CPU detection and block sizes |
+| `src/backends/cpu/ops/gemm/gemm_packed.hpp`, `.cpp` | The kernel, packing, threading, CPU detection and block sizes |
 | `src/backends/cpu/backend.cpp` | Selects the packed kernel for `matmul` |
-| `src/backends/cpu/ops/blas/gemm_pack.hpp` | Scalar and AVX2 packing |
+| `src/backends/cpu/ops/gemm/gemm_pack.hpp` | Scalar and AVX2 packing, including the strided layouts |
+| `src/ops/blas.cpp`, `src/backends/cpu/backend.cpp` | `matmul` passes strided CPU views on without a copy |
 | `tests/ops/gemm_packed_test.cpp` | Correctness tests |
 | `tests/ops/gemm_pack_test.cpp` | Packers against the scalar reference, with guard words |
 | `benchmarks/blas/gemm_pack_benchmark.cpp` | Packing speed, scalar vs AVX2 |
 | `benchmarks/blas/matmul_openblas_benchmark.cpp` | Comparison against OpenBLAS |
 | `benchmarks/blas/gemm_tune_benchmark.cpp` | Block-size sweep |
-| `benchmarks/blas/fma_peak_benchmark.cpp` | Register-only FMA throughput: the real per-core and per-chip peak |
+| `benchmarks/blas/gemm_stride_benchmark.cpp` | Transposed operands copied first vs read in place; row-stride sweep |
+| `benchmarks/blas/fma_peak_benchmark.cpp` | Register-only FMA throughput: the real per-core and per-chip peak; `ramp` shows the effect of thread placement |
+| `benchmarks/blas/gemm_thread_benchmark.cpp` | Compares parallelization strategies, pinning, loop order and tile size, with the time split per thread |
+| `src/backends/cpu/affinity.hpp`, `.cpp` | CPU topology and thread pinning |
+| `src/backends/cpu/threads.hpp` | Adds parallel-region, worksharing-loop and barrier macros, thread index, wall clock |
+| `tests/core/affinity_test.cpp` | Pinning restricts, wraps, and restores the original affinity |
 | `CMakeLists.txt`, `docs/BENCHMARKING.md` | Build options and how to run the comparison |
 
 ## Design references
