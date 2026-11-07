@@ -210,3 +210,6 @@ mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmar
 
 add_executable(mlp_xor examples/mlp_xor.cpp)
 target_link_libraries(mlp_xor PRIVATE mensurflow)
+
+add_executable(client client/main.cpp)
+target_link_libraries(client PRIVATE mensurflow)
