@@ -1,5 +1,5 @@
 // CPU elementwise kernels over contiguous float32 buffers. Each is one loop marked with
-// MENSURFLOW_PARALLEL_FOR: with OpenMP, inputs larger than parallel_threshold are split across
+// MENSURFLOW_PARALLEL_FOR: with OpenMP, inputs larger than the operation's cutoff are split across
 // threads; without OpenMP, or for small inputs, the loop runs on the calling thread. Every element
 // is computed the same way either way, so results do not depend on the thread count.
 //

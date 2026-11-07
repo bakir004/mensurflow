@@ -30,7 +30,7 @@ bit-identical CPU/GPU reductions.
 
 ## Current implementation status
 
-What exists today. Operations take `Tensor`s (float32 only, `mensurflow::` namespace) and an
+What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
 dispatcher where to run. CPU kernels are in `src/backends/cpu/ops/{blas,elementwise,reduction}/`;
 each is one loop that OpenMP parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`,
@@ -44,6 +44,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`neg`, `abs`, `square`, `relu`|OpenMP, float32; tensor views supported|—|—|
 |`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|
 |`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|
+|`cast`|OpenMP, F32/I32/F16/BF16; tensor views supported, forward only|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|MPSGraph, untested|
 |`matvec`|OpenMP, double accumulation per row|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
@@ -150,8 +151,8 @@ negative inputs.
 masks.
 * \[ ] `bitwise\_and`, `bitwise\_or`, `bitwise\_xor`, `bitwise\_not`, and shifts —
 integer masks and unpacking int4 weights.
-* \[ ] `cast` — dtype conversion; needed once integer, boolean, or half types exist.
-`bitcast` reinterprets the bits without converting values.
+* \[x] `cast` — CPU dtype conversion among F32, I32, F16 and BF16; see [CAST.md](CAST.md).
+* \[ ] `bitcast` — reinterpret bits without converting values.
 * \[ ] `add\_n` — sum of many same-shaped tensors in one pass.
 * \[ ] `bucketize` / `searchsorted` — map values to bins given sorted boundaries.
 * \[ ] General broadcasting for elementwise operations.
@@ -317,8 +318,7 @@ normalization is the case of one group per channel.
 * \[ ] Squared ReLU, `relu(x)^2` — used in some recent LLMs.
 * \[ ] `selu`, `celu`, `mish`, `softsign`, `shrink`, and `thresholded\_relu`.
 
-Backward for the five implemented activations remains Vedad's task in the
-[weekly plan](weekly/2026-11-04-plan.md#who-does-what).
+The five implemented activations currently provide forward execution only.
 
 ### Recurrent networks
 

@@ -180,14 +180,17 @@ written with the operations above; see `examples/mlp_xor.cpp`.
 - `pow`, `minimum`, and `maximum`
 
 The five CPU float32 activations `leaky_relu`, `gelu`, `silu`, `elu`, and `softplus` provide forward
-execution and share a portable parallel loop. Their backward implementations remain Vedad's task in
-the [weekly plan](docs/weekly/2026-11-04-plan.md#who-does-what). Parameters, numeric conventions, tests,
+execution and share a portable parallel loop. Parameters, numeric conventions, tests,
 and benchmark/reference commands are described in [ACTIVATIONS.md](docs/ACTIVATIONS.md).
 
 `eq`, `ne`, `lt`, `le`, `gt`, and `ge` compare F32 tensors and return Bool masks. `where(mask, x, y)`
 selects F32 values using a Bool mask; all three inputs broadcast. These operations use ordinary
 C++/OpenMP CPU loops. `where` provides forward execution only. See [SELECTION.md](docs/SELECTION.md)
 for Bool storage, examples and verification commands.
+
+`cast(x, dtype)` converts among CPU F32, I32, F16 and BF16 with nearest-even floating rounding.
+It returns a fresh contiguous tensor and supports views. See [CAST.md](docs/CAST.md) for
+integer conversion rules, 16-bit storage and verification commands.
 
 `matvec` and `matmul` currently have CPU implementations only. Asking for an
 execution device that has no kernel for an operation throws `NotImplemented`;

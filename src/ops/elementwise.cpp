@@ -412,4 +412,25 @@ Tensor where(const Tensor& condition, const Tensor& x, const Tensor& y, Executio
     return out;
 }
 
+Tensor cast(const Tensor& x, DType dtype, Execution execution) {
+    if (!x.defined()) {
+        throw std::invalid_argument("cast: undefined tensor");
+    }
+    // Validate enum values before formatting errors or allocating the target.
+    (void)dtype_name(dtype);
+    const auto supported = [](DType type) {
+        return type == DType::F32 || type == DType::I32 || type == DType::F16 ||
+               type == DType::BF16;
+    };
+    if (!supported(x.dtype()) || !supported(dtype)) {
+        throw detail::NotImplemented(std::string("cast: unsupported conversion from ") +
+                                     dtype_name(x.dtype()) + " to " + dtype_name(dtype));
+    }
+    const Tensor input = x.contiguous();
+    Tensor out = Tensor::empty(x.shape(), dtype, x.device());
+    // The existing key selects the source dtype; the adapter reads the destination from out.
+    detail::dispatch(detail::OpId::Cast, {{input}, {out}}, execution);
+    return out;
+}
+
 } // namespace mensurflow

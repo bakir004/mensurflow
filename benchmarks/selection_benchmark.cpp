@@ -2,6 +2,7 @@
 // Inputs, output addresses, thread settings, observer and timing harness are shared by both sides.
 // Allocation, Tensor wrapping, correctness checks, checksums and Python are outside the timer.
 #include "bench.hpp"
+#include "elementwise_cutoffs.hpp"
 
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/threads.hpp"
@@ -9,6 +10,7 @@
 #ifdef MENSURFLOW_TORCH_REFERENCE
 #include <ATen/ATen.h>
 #include <ATen/Parallel.h>
+#include <ATen/TensorIterator.h>
 #include <ATen/Version.h>
 #include <c10/core/InferenceMode.h>
 #include <torch/version.h>
@@ -117,15 +119,19 @@ int run(int argc, char** argv) {
     std::vector<int> threads = bench::thread_counts(maximum_threads);
     std::set<std::string> selected;
     bool reverse = false;
+    bench::ElementwiseCutoffOption cutoff;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help") {
             std::cout << "selection_benchmark [operation ...] [--sizes=1000,32769,1000000,10000000] "
-                         "[--threads=1,2,6,12] [--reverse]\n"
+                         "[--threads=1,2,6,12] [--reverse] [--cutoff=n]\n"
                          "Operations: eq ne lt le gt ge where\n"
                          "With LibTorch, --reverse times ATen first; otherwise it has no effect.\n"
                          "CPU-only mode always includes a one-thread baseline.\n";
             return 0;
+        }
+        if (cutoff.parse(arg)) {
+            continue;
         }
         if (arg == "--reverse") {
             reverse = true;
@@ -161,9 +167,17 @@ int run(int argc, char** argv) {
         }
     }
 
+    std::string cutoff_notes = "MensurFlow cutoffs (parallel iff n > cutoff):";
+    for (const auto& op : operations) {
+        if (selected.empty() || selected.count(op.name) != 0) {
+            cutoff_notes += " " + cutoff.configure(op.name);
+        }
+    }
+
     bench::Config config;
     config.slow_repeats = config.repeats; // Nine samples even when an individual call is slow.
     std::vector<std::string> notes{
+        cutoff_notes,
         "F32 comparisons write Bool bytes 0/1; where mask repeats true,true,false,false,false",
         "comparisons: 9 logical bytes/element (two F32 reads, one Bool write)",
         "where: 13 logical bytes/element upper bound (mask, both F32 branches, F32 write)",
@@ -174,6 +188,8 @@ int run(int argc, char** argv) {
     c10::InferenceMode inference_guard;
     at::set_num_interop_threads(1);
     notes.push_back(std::string("LibTorch version: ") + TORCH_VERSION);
+    notes.push_back("ATen TensorIterator GRAIN_SIZE=" + std::to_string(at::internal::GRAIN_SIZE) +
+                    " elements; ATen retains its own scheduling policy");
     notes.push_back("scope: direct MensurFlow kernels vs native C++ ATen out operators; ATen dispatch included");
     notes.push_back("both sides share input/output addresses and requested intra-op threads; inter-op=1");
     notes.push_back("vs torch = ATen median / MensurFlow median; above 1 favors MensurFlow");

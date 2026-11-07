@@ -91,6 +91,8 @@ const char* op_name(OpId op) {
         return "ge";
     case OpId::Where:
         return "where";
+    case OpId::Cast:
+        return "cast";
     case OpId::BiasAdd:
         return "bias_add";
     case OpId::Sum:

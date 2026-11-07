@@ -58,6 +58,7 @@ enum class OpId {
     Gt,
     Ge,
     Where,
+    Cast,
     BiasAdd,
     Sum,
     Mean,

@@ -1,12 +1,14 @@
 // F32 comparisons -> Bool and Bool/F32 selection: independent broadcasting, byte/bit contracts,
 // strided views, dispatch/errors and invariance across CPU thread counts.
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
+#include "backends/cpu/ops/elementwise/parallel_cutoffs.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/registry.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/selection.hpp"
 #include "test_util.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -26,6 +28,7 @@ using CompareKernel = void (*)(const float*, const float*, Byte*, std::int64_t);
 struct Comparison {
     const char* name;
     detail::OpId id;
+    cpu::ElementwiseOp parallel_op;
     Tensor (*apply)(const Tensor&, const Tensor&, Execution);
     CompareKernel kernel;
     CompareKernel reference;
@@ -33,17 +36,17 @@ struct Comparison {
 };
 
 const Comparison comparisons[] = {
-    {"eq", detail::OpId::Eq, eq, cpu::eq_f32, reference::eq,
+    {"eq", detail::OpId::Eq, cpu::ElementwiseOp::eq, eq, cpu::eq_f32, reference::eq,
      [](float a, float b) { return a == b; }},
-    {"ne", detail::OpId::Ne, ne, cpu::ne_f32, reference::ne,
+    {"ne", detail::OpId::Ne, cpu::ElementwiseOp::ne, ne, cpu::ne_f32, reference::ne,
      [](float a, float b) { return a != b; }},
-    {"lt", detail::OpId::Lt, lt, cpu::lt_f32, reference::lt,
+    {"lt", detail::OpId::Lt, cpu::ElementwiseOp::lt, lt, cpu::lt_f32, reference::lt,
      [](float a, float b) { return a < b; }},
-    {"le", detail::OpId::Le, le, cpu::le_f32, reference::le,
+    {"le", detail::OpId::Le, cpu::ElementwiseOp::le, le, cpu::le_f32, reference::le,
      [](float a, float b) { return a <= b; }},
-    {"gt", detail::OpId::Gt, gt, cpu::gt_f32, reference::gt,
+    {"gt", detail::OpId::Gt, cpu::ElementwiseOp::gt, gt, cpu::gt_f32, reference::gt,
      [](float a, float b) { return a > b; }},
-    {"ge", detail::OpId::Ge, ge, cpu::ge_f32, reference::ge,
+    {"ge", detail::OpId::Ge, cpu::ElementwiseOp::ge, ge, cpu::ge_f32, reference::ge,
      [](float a, float b) { return a >= b; }}};
 
 float from_bits(std::uint32_t bits) {
@@ -229,15 +232,27 @@ void test_where_api() {
     test::require(!tracked_x.has_grad() && !tracked_y.has_grad(), "selection does not accumulate gradients");
 }
 
+std::vector<std::int64_t> thread_sizes(cpu::ElementwiseOp op) {
+    std::vector<std::int64_t> sizes{0, 1, 7, 8, 9, 17, 31, 32, 33, 100003};
+    const auto cutoff = cpu::elementwise_parallel_cutoff(op);
+    if (cutoff != std::numeric_limits<std::int64_t>::max()) {
+        if (cutoff > 0) {
+            sizes.push_back(cutoff - 1);
+        }
+        sizes.push_back(cutoff);
+        sizes.push_back(cutoff + 1);
+    }
+    std::sort(sizes.begin(), sizes.end());
+    sizes.erase(std::unique(sizes.begin(), sizes.end()), sizes.end());
+    return sizes;
+}
+
 void test_cpu_threads_and_aliasing() {
     const int original_threads = cpu::max_threads();
-    const std::int64_t sizes[] = {0, 1, 7, 8, 9, 17, 31, 32, 33, cpu::parallel_threshold - 1,
-                                  cpu::parallel_threshold, cpu::parallel_threshold + 1, 100003};
-    for (auto n : sizes) {
-        const auto count = static_cast<std::size_t>(n);
-        const auto x = make_values(count), y = make_values(count, 5);
-        const auto condition = make_mask(count);
-        for (const auto& op : comparisons) {
+    for (const auto& op : comparisons) {
+        for (auto n : thread_sizes(op.parallel_op)) {
+            const auto count = static_cast<std::size_t>(n);
+            const auto x = make_values(count), y = make_values(count, 5);
             std::vector<Byte> expected(count);
             op.reference(x.data(), y.data(), expected.data(), n);
             op.kernel(nullptr, nullptr, nullptr, 0);
@@ -251,6 +266,11 @@ void test_cpu_threads_and_aliasing() {
                               std::string(op.name) + " reference and thread agreement");
             }
         }
+    }
+    for (auto n : thread_sizes(cpu::ElementwiseOp::where)) {
+        const auto count = static_cast<std::size_t>(n);
+        const auto x = make_values(count), y = make_values(count, 5);
+        const auto condition = make_mask(count);
         std::vector<float> expected(count);
         reference::where(condition.data(), x.data(), y.data(), expected.data(), n);
         cpu::where_f32(nullptr, nullptr, nullptr, nullptr, 0);

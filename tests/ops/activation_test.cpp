@@ -1,6 +1,7 @@
 // CPU activation forward contracts: independent float64 values, API views/errors,
 // thread invariance, parameter forwarding and errors for pending backward rules.
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
+#include "backends/cpu/ops/elementwise/parallel_cutoffs.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/registry.hpp"
 #include "mensurflow/mensurflow.hpp"
@@ -23,6 +24,7 @@ namespace {
 struct Activation {
     const char* name;
     detail::OpId id;
+    cpu::ElementwiseOp parallel_op;
     Tensor (*apply)(const Tensor&, Execution);
     void (*kernel)(const float*, float*, std::int64_t);
     double (*reference)(double);
@@ -30,24 +32,24 @@ struct Activation {
 
 // Non-default parameters exercise the full API -> OpArgs -> adapter -> kernel path.
 const Activation activations[] = {
-    {"leaky_relu", detail::OpId::LeakyRelu,
+    {"leaky_relu", detail::OpId::LeakyRelu, cpu::ElementwiseOp::leaky_relu,
      [](const Tensor& x, Execution e) { return leaky_relu(x, 0.2f, e); },
      [](const float* x, float* y, std::int64_t n) { cpu::leaky_relu_f32(x, y, n, 0.2f); },
      [](double x) { return reference::leaky_relu_value(x, 0.2f); }},
-    {"gelu", detail::OpId::Gelu,
+    {"gelu", detail::OpId::Gelu, cpu::ElementwiseOp::gelu,
      [](const Tensor& x, Execution e) { return gelu(x, false, e); },
      [](const float* x, float* y, std::int64_t n) { cpu::gelu_f32(x, y, n); },
      [](double x) { return reference::gelu_value(x); }},
-    {"gelu_tanh", detail::OpId::Gelu,
+    {"gelu_tanh", detail::OpId::Gelu, cpu::ElementwiseOp::gelu_tanh,
      [](const Tensor& x, Execution e) { return gelu(x, true, e); },
      [](const float* x, float* y, std::int64_t n) { cpu::gelu_f32(x, y, n, true); },
      [](double x) { return reference::gelu_value(x, true); }},
-    {"silu", detail::OpId::Silu, silu, cpu::silu_f32, reference::silu_value},
-    {"elu", detail::OpId::Elu,
+    {"silu", detail::OpId::Silu, cpu::ElementwiseOp::silu, silu, cpu::silu_f32, reference::silu_value},
+    {"elu", detail::OpId::Elu, cpu::ElementwiseOp::elu,
      [](const Tensor& x, Execution e) { return elu(x, 1.5f, e); },
      [](const float* x, float* y, std::int64_t n) { cpu::elu_f32(x, y, n, 1.5f); },
      [](double x) { return reference::elu_value(x, 1.5); }},
-    {"softplus", detail::OpId::Softplus,
+    {"softplus", detail::OpId::Softplus, cpu::ElementwiseOp::softplus,
      [](const Tensor& x, Execution e) { return softplus(x, 2.0f, 15.0f, e); },
      [](const float* x, float* y, std::int64_t n) { cpu::softplus_f32(x, y, n, 2.0f, 15.0f); },
      [](double x) { return reference::softplus_value(x, 2.0, 15.0); }}};
@@ -125,17 +127,30 @@ void test_api_and_errors() {
     }
 }
 
+std::vector<std::int64_t> thread_sizes(cpu::ElementwiseOp op) {
+    std::vector<std::int64_t> sizes{0, 1, 7, 8, 9, 17, 100003};
+    const auto cutoff = cpu::elementwise_parallel_cutoff(op);
+    // INT64_MAX means always serial; practical sizes exercise that policy without a huge allocation.
+    if (cutoff != std::numeric_limits<std::int64_t>::max()) {
+        if (cutoff > 0) {
+            sizes.push_back(cutoff - 1);
+        }
+        sizes.push_back(cutoff);
+        sizes.push_back(cutoff + 1);
+    }
+    std::sort(sizes.begin(), sizes.end());
+    sizes.erase(std::unique(sizes.begin(), sizes.end()), sizes.end());
+    return sizes;
+}
+
 void test_threads_and_in_place() {
     const int original = cpu::max_threads();
-    for (std::int64_t n : {std::int64_t{0}, std::int64_t{1}, std::int64_t{7}, std::int64_t{8},
-                           std::int64_t{9}, std::int64_t{17}, cpu::parallel_threshold - 1,
-                           cpu::parallel_threshold, cpu::parallel_threshold + 1,
-                           std::int64_t{100003}}) {
-        std::vector<float> input(static_cast<std::size_t>(n));
-        for (std::size_t i = 0; i < input.size(); ++i) {
-            input[i] = (static_cast<int>(i % 161) - 80) / 8.0f;
-        }
-        for (const Activation& op : activations) {
+    for (const Activation& op : activations) {
+        for (std::int64_t n : thread_sizes(op.parallel_op)) {
+            std::vector<float> input(static_cast<std::size_t>(n));
+            for (std::size_t i = 0; i < input.size(); ++i) {
+                input[i] = (static_cast<int>(i % 161) - 80) / 8.0f;
+            }
             cpu::set_max_threads(1);
             std::vector<float> baseline(input.size());
             op.kernel(input.data(), baseline.data(), n);

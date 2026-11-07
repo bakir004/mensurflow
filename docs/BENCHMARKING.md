@@ -27,9 +27,10 @@ the threads made it faster.
 
 | Executable | Question | Source |
 |---|---|---|
-| `cpu_parallel_benchmark` | sequential vs parallel for every elementwise op and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
+| `cpu_parallel_benchmark` | sequential vs parallel arithmetic/activations and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
 | `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
 | `selection_benchmark` | F32 comparisons and `where`, one/many CPU threads; optional native ATen reference | `benchmarks/selection_benchmark.cpp` |
+| `cast_benchmark` | all 16 F32/I32/F16/BF16 pairs, one/many CPU threads; optional native ATen `copy_` reference | `benchmarks/cast_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
 | `matmul_benchmark` | the same for matrix multiplication, in GFLOP/s | `benchmarks/blas/matmul_benchmark.cpp` |
 | `matvec_benchmark` | sequential vs parallel matrix-vector multiplication across thread counts | `benchmarks/blas/matvec_benchmark.cpp` |
@@ -129,8 +130,8 @@ links the harness and gives it the include paths for `src/` and `tests/reference
 7. **Build in Release.** The header prints a warning if `NDEBUG` is not defined. Do not turn on
    `MENSURFLOW_NATIVE` for numbers you report: it makes the build specific to your CPU.
 8. **Choose sizes on purpose.** 2^17 floats is 512 KB, about L2; much larger sizes measure memory
-   bandwidth. Include sizes around the parallel cutoff (32,768 elements) and one that is not a
-   multiple of 16 or of the SIMD width.
+   bandwidth. Include sizes around the operation's parallel cutoff (initially 32,768 elements)
+   and one that is not a multiple of 16 or of the SIMD width.
 
 ## Reading the table
 
@@ -197,6 +198,13 @@ The parser needs only Python's standard library. It validates matching rows and 
 times and ratios. Its drift column takes the larger of the two libraries' `abs(a-b)/min(a,b)*100`
 values; drift values above 10% are bold and the affected rows are counted in the summary.
 
+The cast benchmark uses buffers of the actual storage type, with input/output/reference page
+offsets 0/1024/2048 modulo 4 KB, matching the shared float-buffer spacing strategy.
+
+The same build option enables native references in `selection_benchmark` and `cast_benchmark`.
+Their logs use the same paired format and parser. See [SELECTION.md](SELECTION.md) and
+[CAST.md](CAST.md) for dtype, input-distribution and byte-count details.
+
 ## Before you report numbers
 
 - Release build, no `MENSURFLOW_NATIVE`, CMake from a clean build folder.
@@ -218,7 +226,9 @@ values; drift values above 10% are bold and the affected rows are counted in the
 
 ## Not done yet
 
-- Activation kernels use ordinary C++/OpenMP loops. The manual leaky ReLU AVX2 path was removed
-  at the user's request; no current activation benchmark establishes explicit SIMD gain.
+- Activation kernels use ordinary C++/OpenMP loops; no current activation benchmark establishes
+  explicit SIMD gain.
+- Per-operation elementwise cutoffs and measurement commands are described in
+  [PARALLEL_CUTOFFS.md](PARALLEL_CUTOFFS.md); final measurements are pending.
 - Results in BENCHMARKS.md were taken with the earlier kernel layout (`parallel_for` helpers, and a
   `scalar` no-SIMD baseline that has since been removed); its file paths refer to that layout.

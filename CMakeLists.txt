@@ -46,7 +46,9 @@ add_library(mensurflow
     src/backends/cpu/backend.cpp
     src/backends/cpu/ops/blas/blas.cpp
     src/backends/cpu/ops/blas/gemm_packed.cpp
+    src/backends/cpu/ops/elementwise/parallel_cutoffs.cpp
     src/backends/cpu/ops/elementwise/elementwise.cpp
+    src/backends/cpu/ops/elementwise/cast.cpp
     src/backends/cpu/ops/reduction/reduction.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
@@ -129,6 +131,8 @@ mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
 mensurflow_add_test(activation_test tests/ops/activation_test.cpp)
 mensurflow_add_test(selection_test tests/ops/selection_test.cpp)
+mensurflow_add_test(parallel_cutoff_test tests/ops/parallel_cutoff_test.cpp)
+mensurflow_add_test(cast_test tests/ops/cast_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 mensurflow_add_test(gemm_packed_test tests/ops/gemm_packed_test.cpp)
@@ -206,6 +210,7 @@ mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
 mensurflow_add_benchmark(selection_benchmark benchmarks/selection_benchmark.cpp)
+mensurflow_add_benchmark(cast_benchmark benchmarks/cast_benchmark.cpp)
 
 # LibTorch from a CPU PyTorch wheel is an optional native reference, not a core dependency.
 # Configure a separate build directory with Torch's CMake prefix when enabling this target.
@@ -221,6 +226,8 @@ if(MENSURFLOW_TORCH_BENCHMARK)
     target_link_libraries(activation_torch_benchmark PRIVATE ${TORCH_LIBRARIES})
     target_link_libraries(selection_benchmark PRIVATE ${TORCH_LIBRARIES})
     target_compile_definitions(selection_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
+    target_link_libraries(cast_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(cast_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
     # The imported torch target supplies the C++ standard its installed headers require.
 endif()
 

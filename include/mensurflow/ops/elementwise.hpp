@@ -7,7 +7,7 @@
 // row of a matrix, and so on. The result has the broadcast shape and is a new contiguous tensor;
 // inputs are never modified. Broadcast or strided inputs are expanded into a packed copy before
 // the kernel runs, so they cost extra memory traffic compared with two same-shape tensors.
-// Only float32 so far.
+// Arithmetic is float32; comparisons return Bool and cast supports the dtypes documented below.
 //
 // Throw invalid_argument for undefined tensors, mismatched dtypes or devices, and shapes that do
 // not broadcast. NotImplemented (a runtime_error) means the execution device has no kernel for
@@ -109,5 +109,13 @@ Tensor ge(const Tensor& a, const Tensor& b, Execution execution = Execution::Aut
 // NotImplemented even for empty results; invalid condition, devices or shapes throw invalid_argument.
 Tensor where(const Tensor& condition, const Tensor& x, const Tensor& y,
              Execution execution = Execution::Auto);
+
+// Convert between F32, I32, F16 and BF16, returning a fresh contiguous tensor of the same
+// shape and device, even when the dtype is unchanged. Views are packed before conversion.
+// Floating results round to nearest, ties to even. Floating-to-I32 truncates toward zero;
+// NaN, infinity or an out-of-range value produces INT32_MIN. Same-dtype casts preserve bits.
+// CPU forward only: no gradient graph is recorded. Unsupported source/target dtype or backend
+// throws NotImplemented, including empty inputs. Undefined input/invalid dtype throws invalid_argument.
+Tensor cast(const Tensor& x, DType dtype, Execution execution = Execution::Auto);
 
 } // namespace mensurflow

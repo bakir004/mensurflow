@@ -20,7 +20,8 @@ positive.copy_to_host(mask.data());
 An externally supplied mask can use `Tensor::from_host(bytes.data(), shape, DType::Bool)`.
 `Tensor::from_vector<std::uint8_t>` creates a U8 tensor, which is a different dtype and is rejected
 as a condition. Comparisons produce canonical bytes 0/1; `where` accepts any nonzero Bool byte as
-true. Bool conversion APIs and additional value dtypes are left to the later cast task.
+true. Bool conversion and additional selection value dtypes are currently unsupported.
+The separate [cast operation](CAST.md) supports F32/I32/F16/BF16.
 
 NaNs follow ordinary F32 comparison rules: `ne` is true when either operand is NaN; the other
 comparisons are false. Positive and negative zero compare equal. `where` selects a value without
@@ -34,8 +35,8 @@ gradients. Backward support remains outside this forward implementation.
 
 The operations follow the existing path: public API → shape/device validation and contiguous
 packing → dispatcher → CPU adapter → plain C++ loop with `MENSURFLOW_PARALLEL_FOR`. The six CPU
-comparison wrappers share a templated loop. `where` uses the same OpenMP cutoff of 32,768 elements.
-There are no hand-written intrinsics, new thread helpers or per-operation cutoff changes.
+comparison wrappers share a templated loop. Each comparison and `where` has its own OpenMP
+cutoff; see [PARALLEL_CUTOFFS.md](PARALLEL_CUTOFFS.md) for the policy and pending measurements.
 
 The dispatcher still keys on the first input's dtype. Comparisons use F32 inputs and a Bool output.
 Internally `where` supplies `{x, y, condition}` to `OpArgs`, so its key remains F32; its adapter reads
@@ -91,7 +92,7 @@ Comparison rates count 9 logical bytes per element (two F32 reads and a Bool wri
 rate counts an upper bound of 13 bytes (mask, both value branches and output); the implementation
 may load only the selected branch. Neither is a physical DRAM bandwidth measurement. The largest
 listed case exceeds this machine's L3 cache. Repeat cooled sessions and preserve both medians and
-drift; the copy-bandwidth ceiling remains dependent on Vedad's separate benchmark.
+drift; the copy-bandwidth ceiling has not been measured.
 
 The existing standard-library-only `benchmarks/reference/compare_native_activations.py` parser can
 compare the native selection logs too, since both use the same paired table format.

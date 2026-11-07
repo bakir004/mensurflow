@@ -2,6 +2,7 @@
 // Both sides share input/output addresses, parameters, thread settings, observer and timer.
 // ATen operator dispatch is timed; Tensor allocation/wrapping and Python are outside the timer.
 #include "bench.hpp"
+#include "elementwise_cutoffs.hpp"
 
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/threads.hpp"
@@ -9,6 +10,7 @@
 
 #include <ATen/ATen.h>
 #include <ATen/Parallel.h>
+#include <ATen/TensorIterator.h>
 #include <ATen/Version.h>
 #include <c10/core/InferenceMode.h>
 #include <torch/version.h>
@@ -82,15 +84,19 @@ int run(int argc, char** argv) {
     std::vector<int> threads = bench::thread_counts(maximum_threads);
     std::set<std::string> selected;
     bool reverse = false;
+    bench::ElementwiseCutoffOption cutoff;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help") {
             std::cout << "activation_torch_benchmark [operation ...] [--sizes=1000,32769,1000000] "
-                         "[--threads=1,2,6,12] [--reverse]\n"
+                         "[--threads=1,2,6,12] [--reverse] [--cutoff=n]\n"
                          "Operations: leaky_relu gelu gelu_tanh silu elu softplus\n"
                          "--reverse times ATen first; default times MensurFlow first.\n"
                          "Both libraries use preallocated F32 buffers; no Python is timed.\n";
             return 0;
+        }
+        if (cutoff.parse(arg)) {
+            continue;
         }
         if (arg == "--reverse") {
             reverse = true;
@@ -125,11 +131,21 @@ int run(int argc, char** argv) {
 
     c10::InferenceMode inference_guard;
     at::set_num_interop_threads(1);
+    std::string cutoff_notes = "MensurFlow cutoffs (parallel iff n > cutoff):";
+    for (const auto& op : operations) {
+        if (selected.empty() || selected.count(op.name) != 0) {
+            cutoff_notes += " " + cutoff.configure(op.name);
+        }
+    }
+
     bench::Config config;
     config.slow_repeats = config.repeats; // Keep nine samples even for slow reference rows.
     bench::print_header(
         "Native C++ CPU activation comparison with PyTorch", config,
         {std::string("LibTorch version: ") + TORCH_VERSION,
+         cutoff_notes,
+         "ATen TensorIterator GRAIN_SIZE=" + std::to_string(at::internal::GRAIN_SIZE) +
+             " elements; ATen retains its own scheduling policy",
          "scope: direct MensurFlow CPU calls vs preallocated C++ ATen out operator calls",
          "identical F32 input/output addresses; allocation, Tensor wrapping and Python excluded",
          "8 bytes/element; same requested intra-op threads; inter-op threads=1",

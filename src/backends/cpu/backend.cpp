@@ -6,6 +6,7 @@
 
 #include "backends/cpu/ops/blas/blas.hpp"
 #include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/elementwise/cast.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
 #include "backends/cpu/threads.hpp"
@@ -160,6 +161,26 @@ void where_kernel(const OpArgs& args, Stream&) {
                    data<float>(args.inputs[1]), data<float>(out), out.numel());
 }
 
+void* cast_data(const Tensor& tensor) {
+    switch (tensor.dtype()) {
+    case DType::F32:
+        return data<float>(tensor);
+    case DType::I32:
+        return data<std::int32_t>(tensor);
+    case DType::F16:
+    case DType::BF16:
+        return data<std::uint16_t>(tensor);
+    default:
+        throw NotImplemented("cast: unsupported dtype");
+    }
+}
+
+void cast_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    cpu::cast_buffer(cast_data(x), x.dtype(), cast_data(out), out.dtype(), out.numel());
+}
+
 void leaky_relu_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
     const Tensor& out = args.outputs[0];
@@ -283,6 +304,9 @@ class CpuBackend final : public Backend {
         add(OpId::Gt, comparison_kernel<gt_f32>);
         add(OpId::Ge, comparison_kernel<ge_f32>);
         add(OpId::Where, where_kernel);
+        for (DType type : {DType::F32, DType::I32, DType::F16, DType::BF16}) {
+            dispatcher.register_kernel({OpId::Cast, DeviceType::CPU, type}, cast_kernel);
+        }
         add(OpId::Axpy, axpy_kernel);
         add(OpId::BiasAdd, bias_add_kernel);
         add(OpId::Neg, unary_kernel<neg_f32>);
