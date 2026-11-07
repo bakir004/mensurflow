@@ -78,4 +78,19 @@ void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m,
 void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::int64_t m,
                                 std::int64_t n, std::int64_t k);
 
+// The same with strided operands, so a transposed, sliced or padded matrix needs no copy first.
+// Element (i, p) of A is a[i * rsa + p * csa], element (p, j) of B is b[p * rsb + j * csb], and element
+// (i, j) of C is c[i * ldc + j]. A row-major m x k matrix has (rsa, csa) = (k, 1), its transpose
+// (1, m); for a view with a leading dimension ld, (ld, 1). Packing reads the operands in place:
+// unit strides along the depth or along the other dimension take vectorized paths, any other stride
+// (including 0) a scalar one. On a CPU without AVX2 the operands are copied into contiguous
+// temporaries and the plain loops are used. C must not overlap A or B.
+void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
+                               std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
+                               std::int64_t m, std::int64_t n, std::int64_t k);
+void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
+                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
+                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        std::int64_t k);
+
 } // namespace mensurflow::cpu

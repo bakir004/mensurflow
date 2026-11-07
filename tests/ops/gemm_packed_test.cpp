@@ -52,6 +52,69 @@ void check_shape(Kernel kernel, const char* name, std::int64_t m, std::int64_t n
     }
 }
 
+// ---- Strided operands ----------------------------------------------------------------------------
+
+using StridedKernel = void (*)(const float*, std::int64_t, std::int64_t, const float*, std::int64_t,
+                               std::int64_t, float*, std::int64_t, std::int64_t, std::int64_t,
+                               std::int64_t);
+
+// How a rows x cols matrix is stored: element (i, j) is at i * rs + j * cs.
+//   0 row-major         1 row-major with padding        2 transposed (column-major)
+//   3 transposed with padding     4 no unit stride at all (elements interleaved with another matrix)
+void layout_strides(int kind, std::int64_t rows, std::int64_t cols, std::int64_t& rs,
+                    std::int64_t& cs) {
+    switch (kind) {
+    case 0: rs = cols; cs = 1; break;
+    case 1: rs = cols + 5; cs = 1; break;
+    case 2: rs = 1; cs = rows; break;
+    case 3: rs = 1; cs = rows + 3; break;
+    default: rs = 2; cs = 2 * rows; break;
+    }
+}
+
+// C = A * B with A (m x k) and B (k x n) stored as `kind_a` and `kind_b`, and C with a row stride
+// larger than n (the unused columns must keep their value). Against a float64 reference.
+void check_strided(StridedKernel kernel, const std::string& name, int kind_a, int kind_b,
+                   std::int64_t m, std::int64_t n, std::int64_t k) {
+    const std::string what = name + " A" + std::to_string(kind_a) + " B" + std::to_string(kind_b) +
+                             " m=" + std::to_string(m) + " n=" + std::to_string(n) +
+                             " k=" + std::to_string(k);
+    std::int64_t rsa, csa, rsb, csb;
+    layout_strides(kind_a, m, k, rsa, csa);
+    layout_strides(kind_b, k, n, rsb, csb);
+    const auto a = make_input((m - 1) * rsa + (k - 1) * csa + 1, 11);
+    const auto b = make_input((k - 1) * rsb + (n - 1) * csb + 1, 12);
+    const std::int64_t ldc = n + 7;
+    constexpr float poison = 12345.0f;
+    std::vector<float> c(static_cast<std::size_t>((m - 1) * ldc + n) + 16, poison);
+    kernel(a.data(), rsa, csa, b.data(), rsb, csb, c.data(), ldc, m, n, k);
+    for (std::int64_t i = 0; i < m; ++i) {
+        for (std::int64_t j = 0; j < ldc; ++j) {
+            const float got = c[static_cast<std::size_t>(i * ldc + j)];
+            if (j >= n) {
+                if (i * ldc + j < static_cast<std::int64_t>(c.size())) {
+                    test::require(got == poison, what + ": wrote outside the matrix at (" +
+                                                     std::to_string(i) + "," + std::to_string(j) + ")");
+                }
+                continue;
+            }
+            double expected = 0.0;
+            for (std::int64_t p = 0; p < k; ++p) {
+                expected += static_cast<double>(a[static_cast<std::size_t>(i * rsa + p * csa)]) *
+                            static_cast<double>(b[static_cast<std::size_t>(p * rsb + j * csb)]);
+            }
+            const double tolerance =
+                1e-5 * (1.0 + std::abs(expected)) * (1.0 + static_cast<double>(k) / 64.0);
+            test::require(std::abs(static_cast<double>(got) - expected) <= tolerance,
+                          what + ": wrong at (" + std::to_string(i) + "," + std::to_string(j) +
+                              "): got " + std::to_string(got) + " expected " + std::to_string(expected));
+        }
+    }
+    for (std::size_t i = c.size() - 16; i < c.size(); ++i) {
+        test::require(c[i] == poison, what + ": wrote past the end of C");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -155,6 +218,48 @@ int main() {
                     }
                 }
             }
+        }
+        cpu::set_packed_gemm_blocking(original);
+
+        // Strided operands (transposed, padded, interleaved) and a padded C, with the single-thread
+        // and the threaded kernel, with default and tiny block sizes.
+        const std::int64_t strided_shapes[][3] = {{1, 1, 1},     {5, 15, 7},    {13, 33, 255},
+                                                  {37, 50, 300}, {169, 17, 300}, {64, 64, 64},
+                                                  {200, 100, 70}, {9, 200, 5}};
+        for (int tiny = 0; tiny < 2; ++tiny) {
+            cpu::PackedGemmBlocking blocking = original;
+            if (tiny != 0) {
+                blocking.mc = 24;
+                blocking.kc = 20;
+                blocking.nc = 48;
+            }
+            cpu::set_packed_gemm_blocking(blocking);
+            const std::string suffix = tiny != 0 ? " tiny" : "";
+            for (int kind_a = 0; kind_a < 5; ++kind_a) {
+                for (int kind_b = 0; kind_b < 5; ++kind_b) {
+                    for (const auto& s : strided_shapes) {
+                        check_strided(cpu::matmul_f32_packed_strided, "strided" + suffix, kind_a,
+                                      kind_b, s[0], s[1], s[2]);
+                        for (int threads : {3, 24}) {
+                            cpu::set_max_threads(threads);
+                            check_strided(cpu::matmul_f32_packed_parallel_strided,
+                                          "strided parallel" + suffix, kind_a, kind_b, s[0], s[1],
+                                          s[2]);
+                        }
+                        cpu::set_max_threads(saved_threads);
+                    }
+                }
+            }
+        }
+        // One product big enough to be pinned (at least 8 million multiply-adds) in the layouts that
+        // matter: transposed A, transposed B, both, and a padded view.
+        cpu::set_packed_gemm_blocking(original);
+        for (int kinds : {0, 1, 2, 3}) {
+            cpu::set_max_threads(12);
+            check_strided(cpu::matmul_f32_packed_parallel_strided, "strided parallel large",
+                          kinds == 1 || kinds == 3 ? 2 : 1, kinds == 2 || kinds == 3 ? 2 : 1, 300,
+                          300, 300);
+            cpu::set_max_threads(saved_threads);
         }
         cpu::set_packed_gemm_blocking(original);
 

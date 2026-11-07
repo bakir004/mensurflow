@@ -39,21 +39,59 @@
 namespace mensurflow::cpu {
 
 // Packing: the AVX2 packers, or the scalar reference when blocking.scalar_pack is set.
-void pack_a(bool scalar, std::int64_t mr, const float* a, std::int64_t lda, std::int64_t mc,
-            std::int64_t kc, float* dst) {
+void pack_a(bool scalar, std::int64_t mr, const float* a, std::int64_t rsa, std::int64_t csa,
+            std::int64_t mc, std::int64_t kc, float* dst) {
     if (scalar) {
-        detail::pack_a_scalar(mr, a, lda, mc, kc, dst);
+        detail::pack_a_scalar(mr, a, rsa, csa, mc, kc, dst);
     } else {
-        detail::pack_a(mr, a, lda, mc, kc, dst);
+        detail::pack_a(mr, a, rsa, csa, mc, kc, dst);
     }
 }
 
-void pack_b(bool scalar, std::int64_t nr, const float* b, std::int64_t ldb, std::int64_t kc,
-            std::int64_t nc, float* dst) {
+void pack_b(bool scalar, std::int64_t nr, const float* b, std::int64_t rsb, std::int64_t csb,
+            std::int64_t kc, std::int64_t nc, float* dst) {
     if (scalar) {
-        detail::pack_b_scalar(nr, b, ldb, kc, nc, dst);
+        detail::pack_b_scalar(nr, b, rsb, csb, kc, nc, dst);
     } else {
-        detail::pack_b(nr, b, ldb, kc, nc, dst);
+        detail::pack_b(nr, b, rsb, csb, kc, nc, dst);
+    }
+}
+
+// The plain loops (matmul_f32_sequential / parallel) read contiguous row-major data. For a product the
+// packed kernel cannot run (no AVX2, or a non-x86 build) with strided operands, the operands are
+// copied into contiguous temporaries first and the result copied back.
+void matmul_strided_fallback(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
+                             std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
+                             std::int64_t m, std::int64_t n, std::int64_t k, bool parallel) {
+    const auto run = [&](const float* x, const float* y, float* z) {
+        if (parallel) {
+            matmul_f32_parallel(x, y, z, m, n, k);
+        } else {
+            matmul_f32_sequential(x, y, z, m, n, k);
+        }
+    };
+    if (rsa == k && csa == 1 && rsb == n && csb == 1 && ldc == n) {
+        run(a, b, c);
+        return;
+    }
+    std::vector<float> a_copy(static_cast<std::size_t>(m * k));
+    std::vector<float> b_copy(static_cast<std::size_t>(k * n));
+    std::vector<float> c_copy(static_cast<std::size_t>(m * n));
+    for (std::int64_t i = 0; i < m; ++i) {
+        for (std::int64_t p = 0; p < k; ++p) {
+            a_copy[static_cast<std::size_t>(i * k + p)] = a[i * rsa + p * csa];
+        }
+    }
+    for (std::int64_t p = 0; p < k; ++p) {
+        for (std::int64_t j = 0; j < n; ++j) {
+            b_copy[static_cast<std::size_t>(p * n + j)] = b[p * rsb + j * csb];
+        }
+    }
+    run(a_copy.data(), b_copy.data(), c_copy.data());
+    for (std::int64_t i = 0; i < m; ++i) {
+        for (std::int64_t j = 0; j < n; ++j) {
+            c[i * ldc + j] = c_copy[static_cast<std::size_t>(i * n + j)];
+        }
     }
 }
 
@@ -629,17 +667,20 @@ inline void make_grid(std::int64_t team, std::int64_t m, std::int64_t& ic_ways,
 
 } // namespace
 
-void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
-                       std::int64_t k) {
+void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
+                               std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
+                               std::int64_t m, std::int64_t n, std::int64_t k) {
     if (m == 0 || n == 0) {
         return;
     }
     if (k == 0) {
-        std::fill(c, c + m * n, 0.0f);
+        for (std::int64_t i = 0; i < m; ++i) {
+            std::fill(c + i * ldc, c + i * ldc + n, 0.0f);
+        }
         return;
     }
     if (!packed_gemm_supported()) {
-        matmul_f32_sequential(a, b, c, m, n, k);
+        matmul_strided_fallback(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, false);
         return;
     }
 
@@ -668,12 +709,12 @@ void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m,
         for (std::int64_t pc = 0; pc < k; pc += KC) {
             const std::int64_t kc = std::min(KC, k - pc);
             const bool accumulate = pc > 0;
-            pack_b(scalar_pack, NR, b + pc * n + jc, n, kc, nc, packed_b.data);
+            pack_b(scalar_pack, NR, b + pc * rsb + jc * csb, rsb, csb, kc, nc, packed_b.data);
             for (std::int64_t ic = 0; ic < m; ic += MC) {
                 const std::int64_t mc = std::min(MC, m - ic);
-                pack_a(scalar_pack, MR, a + ic * k + pc, k, mc, kc, packed_a.data);
+                pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, packed_a.data);
                 compute_block(shape, kc, packed_a.data, mc, packed_b.data, nc,
-                              c + ic * n + jc, n, accumulate, loop_order);
+                              c + ic * ldc + jc, ldc, accumulate, loop_order);
             }
         }
     }
@@ -692,8 +733,10 @@ PackedGemmProfile packed_gemm_profile() {
 // Strategy 1 is the same work inside one parallel region for the whole call (the team is woken once,
 // with a barrier between the steps). Strategy 2 also runs in one region, but each thread packs the
 // rows of A it will multiply into its own buffer, so A is written and read by the same core.
-void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::int64_t m,
-                                std::int64_t n, std::int64_t k) {
+void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
+                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
+                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        std::int64_t k) {
     // Small products get fewer threads: each thread should have at least min_macs_per_thread
     // multiply-adds, or waking and joining it costs more than it saves (measured: n = 128 is
     // fastest on 4 of 24 threads).
@@ -710,7 +753,8 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
     }
     const bool worth = threads > 1 && macs > static_cast<double>(parallel_work_threshold);
     if (!worth || !packed_gemm_supported()) {
-        matmul_f32_packed(a, b, c, m, n, k); // also handles m, n or k == 0
+        // Also handles m, n or k == 0, and a CPU without AVX2.
+        matmul_f32_packed_strided(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k);
         return;
     }
 
@@ -767,11 +811,11 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
         const double t0 = profile ? wall_seconds() : 0.0;
         if (t < b_panels) {
             const std::int64_t j = t * NR;
-            pack_b(scalar_pack, NR, b + pc * n + jc + j, n, kc, std::min(NR, nc - j),
+            pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc, std::min(NR, nc - j),
                    pb_base + t * kc * NR);
         } else {
             const std::int64_t i = (t - b_panels) * MR;
-            pack_a(scalar_pack, MR, a + i * k + pc, k, std::min(MR, m - i), kc,
+            pack_a(scalar_pack, MR, a + i * rsa + pc * csa, rsa, csa, std::min(MR, m - i), kc,
                    pa_base + (t - b_panels) * kc * MR);
         }
         if (profile) {
@@ -790,7 +834,7 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
         const std::int64_t last_panel = std::min(first_panel + panels_per_group, b_panels);
         const std::int64_t cols = std::min((last_panel - first_panel) * NR, nc - first_panel * NR);
         compute_block(shape, kc, pa_base + (ic / MR) * kc * MR, mc, pb_base + first_panel * kc * NR,
-                      cols, c + ic * n + jc + first_panel * NR, n, accumulate, loop_order);
+                      cols, c + ic * ldc + jc + first_panel * NR, ldc, accumulate, loop_order);
         if (profile) {
             clocks[static_cast<std::size_t>(thread_index())].compute += wall_seconds() - t0;
         }
@@ -922,7 +966,7 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
                     for (std::int64_t t = 0; t < b_panels; ++t) {
                         const double t0 = profile ? wall_seconds() : 0.0;
                         const std::int64_t j = t * NR;
-                        pack_b(scalar_pack, NR, b + pc * n + jc + j, n, kc, std::min(NR, nc - j),
+                        pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc, std::min(NR, nc - j),
                                pb_base + t * kc * NR);
                         if (profile) {
                             clocks[static_cast<std::size_t>(thread_index())].pack +=
@@ -936,10 +980,10 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
                         for (std::int64_t ic = r0; ic < r1; ic += MC) {
                             const std::int64_t mc = std::min(MC, r1 - ic);
                             const double t0 = profile ? wall_seconds() : 0.0;
-                            pack_a(scalar_pack, MR, a + ic * k + pc, k, mc, kc, my_a);
+                            pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, my_a);
                             const double t1 = profile ? wall_seconds() : 0.0;
                             compute_block(shape, kc, my_a, mc, pb_base + p0 * kc * NR, cols,
-                                          c + ic * n + jc + p0 * NR, n, accumulate, loop_order);
+                                          c + ic * ldc + jc + p0 * NR, ldc, accumulate, loop_order);
                             if (profile) {
                                 ThreadClock& clock = clocks[static_cast<std::size_t>(thread_index())];
                                 clock.pack += t1 - t0;
@@ -982,7 +1026,7 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
                     for (std::int64_t t = 0; t < b_panels; ++t) {
                         const double t0 = profile ? wall_seconds() : 0.0;
                         const std::int64_t j = t * NR;
-                        pack_b(scalar_pack, NR, b + pc * n + jc + j, n, kc, std::min(NR, nc - j),
+                        pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc, std::min(NR, nc - j),
                                pb_base + t * kc * NR);
                         if (profile) {
                             clocks[static_cast<std::size_t>(thread_index())].pack +=
@@ -1002,7 +1046,7 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
                             std::min((last_panel - first_panel) * NR, nc - first_panel * NR);
                         const double t0 = profile ? wall_seconds() : 0.0;
                         if (packed_ic != ic) {
-                            pack_a(scalar_pack, MR, a + ic * k + pc, k, mc, kc, my_a);
+                            pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, my_a);
                             packed_ic = ic;
                         }
                         const double t1 = profile ? wall_seconds() : 0.0;
@@ -1071,16 +1115,46 @@ PackedGemmBlocking packed_gemm_blocking() {
 
 void set_packed_gemm_blocking(PackedGemmBlocking) {}
 
+void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
+                               std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
+                               std::int64_t m, std::int64_t n, std::int64_t k) {
+    if (m == 0 || n == 0) {
+        return;
+    }
+    if (k == 0) {
+        for (std::int64_t i = 0; i < m; ++i) {
+            std::fill(c + i * ldc, c + i * ldc + n, 0.0f);
+        }
+        return;
+    }
+    matmul_strided_fallback(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, false);
+}
+
+void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
+                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
+                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        std::int64_t k) {
+    if (m == 0 || n == 0) {
+        return;
+    }
+    if (k == 0) {
+        matmul_f32_packed_strided(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k);
+        return;
+    }
+    matmul_strided_fallback(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, true);
+}
+
+#endif
+
+// Contiguous row-major operands: the layout most callers have.
 void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
                        std::int64_t k) {
-    matmul_f32_sequential(a, b, c, m, n, k);
+    matmul_f32_packed_strided(a, k, 1, b, n, 1, c, n, m, n, k);
 }
 
 void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::int64_t m,
                                 std::int64_t n, std::int64_t k) {
-    matmul_f32_parallel(a, b, c, m, n, k);
+    matmul_f32_packed_parallel_strided(a, k, 1, b, n, 1, c, n, m, n, k);
 }
-
-#endif
 
 } // namespace mensurflow::cpu

@@ -112,22 +112,30 @@ void gemv_kernel(const OpArgs& args, Stream&) {
                   a.size(0), a.size(1), args.alpha, args.beta, initial, args.transpose);
 }
 
-// Ops hand matmul contiguous [m,k] and [k,n] inputs and a [m,n] output.
+// Ops hand matmul [m,k] and [k,n] inputs with any strides (a transposed or sliced view is not copied)
+// and a contiguous [m,n] output. The packed kernel reads them in place; the plain kernels need
+// contiguous memory, so on a CPU without AVX2 the operands are made contiguous here.
 void matmul_kernel(const OpArgs& args, Stream&) {
     const Tensor& a = args.inputs[0];
     const Tensor& b = args.inputs[1];
     float* c = data<float>(args.outputs[0]);
+    const std::int64_t m = a.size(0), k = a.size(1), n = b.size(1);
     if (cpu::packed_gemm_supported()) {
         // The AVX2 + FMA packed kernel; it runs on one thread when the build has no OpenMP and for
         // products too small to split.
-        const auto kernel = use_parallel ? cpu::matmul_f32_packed_parallel : cpu::matmul_f32_packed;
-        kernel(data<float>(a), data<float>(b), c, a.size(0), b.size(1), a.size(1));
-    } else if (use_parallel) {
-        cpu::matmul_f32_parallel(data<float>(a), data<float>(b), c, a.size(0), b.size(1),
-                                 a.size(1));
+        const auto kernel = use_parallel ? cpu::matmul_f32_packed_parallel_strided
+                                         : cpu::matmul_f32_packed_strided;
+        const Strides& sa = a.strides();
+        const Strides& sb = b.strides();
+        kernel(data<float>(a), sa[0], sa[1], data<float>(b), sb[0], sb[1], c, n, m, n, k);
+        return;
+    }
+    const Tensor x = a.is_contiguous() ? a : a.contiguous();
+    const Tensor y = b.is_contiguous() ? b : b.contiguous();
+    if (use_parallel) {
+        cpu::matmul_f32_parallel(data<float>(x), data<float>(y), c, m, n, k);
     } else {
-        cpu::matmul_f32_sequential(data<float>(a), data<float>(b), c, a.size(0), b.size(1),
-                                   a.size(1));
+        cpu::matmul_f32_sequential(data<float>(x), data<float>(y), c, m, n, k);
     }
 }
 

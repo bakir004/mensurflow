@@ -27,6 +27,7 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 12 | Register-level analysis and measured FMA peak | Disassembly of every kernel plus a register-only FMA benchmark (`fma_peak_benchmark`) | 6x16 has no spills and runs at 90-93% of the measured 112 GFLOP/s per-core peak (the 135-145 estimate was wrong: the core holds about 3.5 GHz under AVX2); the unrolled variant spills, which explains its slowdown |
 | 13 | Hand-vectorized packing | AVX2 `pack_a` (8 x 8 register transpose) and `pack_b` (256-bit copies) replace scalar loops | Packing 3.0-3.6x (A) and 1.4-2.3x (B) faster alone; 1-6% faster matmul end to end; 106 GFLOP/s on 1 thread at n = 1024 (95% of peak) |
 | 14 | Threading: pinning, placement, loop order | Each thread pinned to its own physical core (adjacent cores first), strategy 1 (one parallel region), A panel kept in L1, 16 tiles per thread, no SMT threads for small products | Removes a random 40-45% slowdown (n = 2048, 12 threads: 597 -> 1036); placement on one chiplet +3-45% at 2-6 threads; loop order +4-7% at n = 2048; 4 strategies compared, 3 kept as options |
+| 15 | Strided operands | The packing step reads transposed, sliced and padded matrices in place (new fast paths for transposed A and B); `matmul` no longer copies them to contiguous memory on the CPU | Transposed operands 2.5-3.8x faster (one operand), 4.0-6.6x (both, the backward pass); same speed as contiguous; leading dimension (n, n+16, n+1) makes no difference |
 
 ## The improvements, explained
 
@@ -426,6 +427,85 @@ when the topology is known, MC = 240, KC = 1024, NC = 8160.
 running), so differences below about 5% are not meaningful. The Linux pinning code passes its tests on the GitHub Ubuntu runner but has no timings, and pinning on the
 i7 laptop has not been run. The cause of the private-A penalty after idle time is open.
 
+### 15. Strides: no copies for transposed, sliced or padded operands
+
+`matmul` used to turn every non-contiguous input into a contiguous copy before calling the kernel
+(`a.contiguous()` in `src/ops/blas.cpp`), and that copy is a single-threaded strided read. The backward
+pass is made of such inputs: `grad_a = grad x b^T` and `grad_b = a^T x grad`, where `grad` is often a
+broadcast view with stride 0; `gemm` with transposes goes through the same path. At n = 2048 the copy of
+one transposed matrix takes about as long as the multiplication itself.
+
+The packing step already reads every element of A and B once, so it can read them in place. Everything
+below takes strides: element (i, p) of A is `a[i * rsa + p * csa]`, element (p, j) of B is
+`b[p * rsb + j * csb]`, and C has a row stride `ldc`.
+
+| Operand layout | Packing path |
+|---|---|
+| A row-major, any leading dimension (`csa = 1`) | the 8 x 8 register transpose of section 13 |
+| A transposed (`rsa = 1`) | direct 6-float copy per depth step, no transpose; depth steps outermost so each source column is read as one run |
+| B row-major, any leading dimension (`csb = 1`) | 256-bit copies of section 13 |
+| B transposed (`rsb = 1`) | 8 x 8 register transposes, 8 depth steps at a time |
+| anything else (odd strides, stride 0) | generic scalar loops |
+
+- The new entry points are `matmul_f32_packed_strided` and `matmul_f32_packed_parallel_strided`; the old
+  contiguous ones call them with `(k, 1)`, `(n, 1)` and `ldc = n`.
+- `src/ops/blas.cpp` no longer makes inputs contiguous when the tensors are on the CPU; the CPU backend
+  reads `Tensor::strides()` and passes them on. Other devices still get contiguous copies.
+- On a CPU without AVX2 the strided entry points copy the operands into contiguous temporaries and use the
+  plain loops, so every CPU stays correct.
+
+**Result** (public API, GFLOP/s, all threads; "copy" is the old behaviour, `contiguous()` then `matmul`):
+
+| n | operands | copy first | in place | speedup |
+|---|---|---|---|---|
+| 512 | A B | 384 | 410 | 1.07x |
+| 512 | A^T B | 102 | 386 | 3.80x |
+| 512 | A B^T | 111 | 409 | 3.68x |
+| 512 | A^T B^T | 63 | 416 | 6.61x |
+| 1024 | A^T B | 217 | 766 | 3.52x |
+| 1024 | A B^T | 222 | 765 | 3.44x |
+| 1024 | A^T B^T | 118 | 762 | 6.49x |
+| 2048 | A B | 921 | 919 | 1.00x |
+| 2048 | A^T B | 364 | 920 | 2.53x |
+| 2048 | A B^T | 360 | 905 | 2.51x |
+| 2048 | A^T B^T | 226 | 904 | 4.00x |
+
+With one operand transposed the product is 2.5-3.8x faster, with both 4.0-6.6x (the backward pass). In
+place, a transposed product runs at the speed of a contiguous one (n = 2048: 919, 905 and 904 against
+919): the transposed packers cost nothing measurable. Contiguous products are unchanged.
+
+**Does the row stride matter?** A leading dimension that is a large power of two (n = 2048 floats =
+8 KB) makes the rows of a block map to the same cache sets, which is a known problem for strided code.
+Kernel-level sweep, row strides n, n + 16 and n + 1 for A, B and C (GFLOP/s):
+
+| n | ld = n | ld = n + 16 | ld = n + 1 |
+|---|---|---|---|
+| 512 | 622 | 626 | 628 |
+| 1024 | 945 | 942 | 940 |
+| 2048 | 1093 | 1090 | 1070 |
+
+Within 1-2%. The packing step absorbs the stride (every source row is read as a contiguous run and
+written to a panel), so there is nothing to gain from padding the matrices.
+
+**Tile layout.** The layouts were already contiguous where it matters: an A panel is `kc x 6` floats
+(24 KB at KC = 1024) and a B panel `kc x 16` (64 KB), each read front to back by the micro-kernel, and
+the panels sit one after the other. The sweep above shows no sensitivity to strides, the earlier sweeps
+(sections 7, 11, 14) cover the tile shape, the block sizes and the loop order inside a block, and the
+register-level analysis (section 12) shows the kernel at 90-95% of the FMA peak. I did not try padding
+the stride between packed panels; nothing measured points to a gain from it.
+
+**Tests.** `gemm_pack_test` compares every packer with the scalar reference for the row-major, padded,
+transposed and odd-stride layouts (guard words after each panel). `gemm_packed_test` runs 5 layouts for A
+times 5 for B (row-major, padded, transposed, transposed and padded, interleaved) on 8 shapes with both
+kernels and default and tiny block sizes, writes C with a larger row stride, and checks the unused
+columns and the memory after C are untouched; four large products also cover the pinned path.
+`matmul_test` multiplies large transposed, sliced and transposed-and-sliced views through the public API
+and checks the gradient of `sum(a x b)` exactly (the backward pass with the stride-0 gradient).
+
+**Not covered.** The GPU backends still receive contiguous copies. `gemm` applies alpha and beta as
+separate elementwise passes after the product. `contiguous()` itself is still single-threaded for the
+operations that need it.
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
 | n | Packed vs OpenBLAS, 1 to 24 threads |
@@ -458,12 +538,14 @@ Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's
 |---|---|
 | `src/backends/cpu/ops/blas/gemm_packed.hpp`, `.cpp` | The kernel, packing, threading, CPU detection and block sizes |
 | `src/backends/cpu/backend.cpp` | Selects the packed kernel for `matmul` |
-| `src/backends/cpu/ops/blas/gemm_pack.hpp` | Scalar and AVX2 packing |
+| `src/backends/cpu/ops/blas/gemm_pack.hpp` | Scalar and AVX2 packing, including the strided layouts |
+| `src/ops/blas.cpp`, `src/backends/cpu/backend.cpp` | `matmul` passes strided CPU views on without a copy |
 | `tests/ops/gemm_packed_test.cpp` | Correctness tests |
 | `tests/ops/gemm_pack_test.cpp` | Packers against the scalar reference, with guard words |
 | `benchmarks/blas/gemm_pack_benchmark.cpp` | Packing speed, scalar vs AVX2 |
 | `benchmarks/blas/matmul_openblas_benchmark.cpp` | Comparison against OpenBLAS |
 | `benchmarks/blas/gemm_tune_benchmark.cpp` | Block-size sweep |
+| `benchmarks/blas/gemm_stride_benchmark.cpp` | Transposed operands copied first vs read in place; row-stride sweep |
 | `benchmarks/blas/fma_peak_benchmark.cpp` | Register-only FMA throughput: the real per-core and per-chip peak; `ramp` shows the effect of thread placement |
 | `benchmarks/blas/gemm_thread_benchmark.cpp` | Compares parallelization strategies, pinning, loop order and tile size, with the time split per thread |
 | `src/backends/cpu/affinity.hpp`, `.cpp` | CPU topology and thread pinning |

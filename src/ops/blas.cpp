@@ -1,4 +1,5 @@
-// Validation and dispatch for BLAS operations. Kernels receive checked, contiguous inputs.
+// Validation and dispatch for BLAS operations. Kernels receive checked, contiguous inputs, except the
+// CPU matmul, which reads strided views in place.
 #include "mensurflow/ops/blas.hpp"
 
 #include "core/autograd.hpp"
@@ -207,9 +208,13 @@ Tensor matmul(const Tensor& a, const Tensor& b, Execution execution) {
         return Tensor::from_host(zeros.data(), {m, n}, a.dtype(), a.device());
     }
 
-    // Kernels read flat row-major memory, so a transposed or sliced input is packed first.
-    const Tensor x = a.is_contiguous() ? a : a.contiguous();
-    const Tensor y = b.is_contiguous() ? b : b.contiguous();
+    // The CPU kernel reads its inputs with any strides (its packing step walks every element once
+    // anyway), so a transposed or sliced view goes through as it is; the backward pass below is made
+    // of such views, and copying them would cost as much as the multiplication. The kernels of other
+    // devices read flat row-major memory, so those inputs are made contiguous first.
+    const bool reads_strides = a.device().type == DeviceType::CPU;
+    const Tensor x = reads_strides || a.is_contiguous() ? a : a.contiguous();
+    const Tensor y = reads_strides || b.is_contiguous() ? b : b.contiguous();
     detail::dispatch(detail::OpId::Matmul, {{x, y}, {out}}, execution);
     if (a.requires_grad() || b.requires_grad()) {
         detail::AutogradAccess::record(out, {a, b}, [a, b](const Tensor& gradient) {
