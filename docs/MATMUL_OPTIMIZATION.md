@@ -515,13 +515,14 @@ operations that need it.
 | 512 | 0.96x to 1.43x |
 | 1024 | 1.00x to 1.04x |
 | 2048 | 0.95x to 1.01x on 1-8 threads; 1.48x on 12 and 1.32x on 24 (OpenBLAS drops there: its 12-thread median is 709 GFLOP/s, and it varied between 600 and 1087 across runs, so treat those two as optimistic) |
+| 4096 | 0.97x to 1.19x (run with `matmul_openblas_benchmark 4096`): 1.00x-1.01x on 1-2 threads, 0.97x-0.98x on 4-8, 1.07x on 12, 1.19x on 16, 1.02x on 24. OpenBLAS's best single run is a little higher than ours on 12 and 24 threads (1200 against 1177 GFLOP/s on 24), its median is less stable |
 
-Of the 30 combinations in the table (5 sizes x 6 thread counts) the packed kernel is at or above OpenBLAS
+Of the 30 combinations from 128 to 2048 (5 sizes x 6 thread counts) the packed kernel is at or above OpenBLAS
 in 26. The four below are 0.98x (n = 128, 2 threads), 0.96x (n = 512, 4 threads), 0.97x and 0.95x
 (n = 2048, 4 and 8 threads).
 
 Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's measured 1333) and about
-1150 at n = 4096 on 24 threads (86%). One thread: 105 GFLOP/s (94% of the core's 112).
+1142 at n = 4096 on 24 threads (86%). One thread: 106 GFLOP/s (95% of the core's 112).
 
 ## Open items
 
