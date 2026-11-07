@@ -10,13 +10,16 @@
 //           and what the second SMT thread of a core adds.
 #include "bench.hpp"
 
+#include "backends/cpu/affinity.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <immintrin.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -72,7 +75,64 @@ template <int N> void row(const bench::Config& config) {
 
 } // namespace
 
-int main() {
+// `fma_peak_benchmark ramp`: how fast do 12 threads run after the machine was idle, with and without
+// pinning each thread to its own core? After a sleep, every
+// thread runs short slices (about 1 ms of work at full speed) of the FMA loop and records how long
+// each slice took; the table is the average over threads. A slice that takes longer than the ones
+// at the end shows the core running below its steady clock (or still waking up).
+void ramp_test(int threads, std::chrono::milliseconds idle, int pin) {
+    cpu::set_max_threads(threads);
+    constexpr int slices = 24;
+    constexpr std::int64_t slice_iterations = 280'000; // about 1 ms at 110 GFLOP/s with 12 chains
+    std::vector<double> sum(slices, 0.0);
+    const int trials = 10;
+    for (int trial = 0; trial < trials; ++trial) {
+        std::this_thread::sleep_for(idle);
+        std::vector<double> times(static_cast<std::size_t>(threads) * slices, 0.0);
+        std::vector<float> sinks(static_cast<std::size_t>(threads) * 16, 0.0f);
+        MENSURFLOW_PARALLEL_FOR(schedule(static, 1) num_threads(threads))
+        for (int t = 0; t < threads; ++t) {
+            if (pin != 0) {
+                cpu::set_thread_pin(t, pin);
+            }
+            float sink = 0.0f;
+            for (int s = 0; s < slices; ++s) {
+                const auto t0 = std::chrono::steady_clock::now();
+                sink += fma_chains<12>(slice_iterations, 1.0f);
+                times[static_cast<std::size_t>(t) * slices + s] =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            }
+            sinks[static_cast<std::size_t>(t) * 16] = sink;
+        }
+        bench::consume(double(sinks[0]));
+        for (int s = 0; s < slices; ++s) {
+            double slice_sum = 0.0;
+            for (int t = 0; t < threads; ++t) {
+                slice_sum += times[static_cast<std::size_t>(t) * slices + s];
+            }
+            sum[s] += slice_sum / threads;
+        }
+    }
+    std::printf("\n== %d thread%s, %s, %d ms idle before each trial: time of consecutive ~1 ms slices ==\n",
+                threads, threads == 1 ? "" : "s", pin != 0 ? "pinned" : "not pinned",
+                static_cast<int>(idle.count()));
+    for (int s = 0; s < slices; ++s) {
+        std::printf("%6.2f", sum[s] / trials * 1e3);
+        if (s % 12 == 11) {
+            std::printf("  ms\n");
+        }
+    }
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "ramp") {
+        for (int idle : {0, 5, 20, 100}) {
+            for (int pin : {0, 1}) {
+                ramp_test(12, std::chrono::milliseconds(idle), pin);
+            }
+        }
+        return 0;
+    }
     const bench::Config config;
     bench::print_header("AVX2 FMA throughput without memory traffic", config,
                         {"GFLOP/s counts 16 flops per FMA (8 floats, multiply and add)"});

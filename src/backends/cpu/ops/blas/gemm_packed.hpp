@@ -3,7 +3,8 @@
 // memory in order. Uses AVX2 + FMA, chosen at run time; on a CPU without them (or a non-x86 build)
 // it falls back to matmul_f32_sequential, so callers need no check of their own.
 //
-// This is the sequential building block. The threaded version and tuned block sizes come later.
+// matmul_f32_packed is the single-thread version; matmul_f32_packed_parallel splits the work over threads
+// (several strategies, see PackedGemmBlocking::parallel).
 #pragma once
 
 #include <cstdint>
@@ -26,6 +27,17 @@ struct PackedGemmBlocking {
     std::int64_t prefetch = 0;         // micro-kernel: 0 none, 1 prefetch the C tile, 2 also A and B
     std::int64_t shape = 0;            // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8
     std::int64_t scalar_pack = 0;      // 1 = use the scalar packers (to measure the AVX2 ones against)
+    // Parallel version only:
+    std::int64_t parallel = 0;   // strategy: 0 two parallel loops per step (shared packed A and B),
+                                 // 1 one parallel region per call (same split, fewer thread wake-ups),
+                                 // 2 one region, B packed together, A packed privately by each thread
+                                 // (BLIS-style rows x columns grid of threads),
+                                 // 3 one region, the tiles of 0 with A packed privately per tile
+    std::int64_t loop_order = 0; // inside a block: 0 B panel outer / A panel inner, 1 the other way round
+    std::int64_t pin = 0;        // 0 threads not pinned, 1 each thread pinned to its own physical core
+                                 // (either SMT half), 2 to one hardware thread of it, 3 only a preference
+                                 // for that core (the OS may still move the thread). See affinity.hpp
+    std::int64_t profile = 0;    // 1 = record where the threads spend their time (packed_gemm_profile)
 };
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.
@@ -38,6 +50,21 @@ CacheSizes cpu_cache_sizes();
 
 PackedGemmBlocking packed_gemm_blocking();
 void set_packed_gemm_blocking(PackedGemmBlocking blocking); // throws std::invalid_argument
+
+// Where the threads of the last matmul_f32_packed_parallel call spent their time, recorded when
+// PackedGemmBlocking::profile is 1. Times are summed over the K steps of the call. "Mean" and "max"
+// are over the threads; the wall time minus the busy time is what threads spent waiting (barriers,
+// uneven work, thread start-up).
+struct PackedGemmProfile {
+    double wall_s = 0.0;         // whole call
+    double pack_mean_s = 0.0;    // busy packing A and B
+    double pack_max_s = 0.0;
+    double compute_mean_s = 0.0; // busy in the micro-kernel
+    double compute_max_s = 0.0;
+    std::int64_t threads = 0;    // threads that took part
+    std::int64_t tiles = 0;      // work items handed out in the compute step(s)
+};
+PackedGemmProfile packed_gemm_profile();
 
 // Row-major C[m,n] = A[m,k] * B[k,n]. C is overwritten and must not overlap A or B. k == 0 fills C
 // with zeros. Products are accumulated with fused multiply-adds in increasing p, so results can

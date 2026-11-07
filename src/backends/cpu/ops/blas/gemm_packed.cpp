@@ -11,17 +11,20 @@
 //   B panel: for each p, 16 floats (B[p][j0..j0+15])
 #include "backends/cpu/ops/blas/gemm_packed.hpp"
 
+#include "backends/cpu/affinity.hpp"
 #include "backends/cpu/ops/blas/blas.hpp"
 #include "backends/cpu/ops/blas/gemm_pack.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <new>
 #include <stdexcept>
+#include <vector>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #define MENSURFLOW_PACKED_GEMM 1
@@ -63,6 +66,13 @@ constexpr std::int64_t NR6 = 16;
 
 // Multiply-adds a thread needs before it is worth waking (see matmul_f32_packed_parallel).
 constexpr double min_macs_per_thread = 512.0 * 1024.0;
+
+// Pinning costs a few system calls per thread, so it is only done for products with at least this many
+// multiply-adds (about n = 200).
+constexpr double min_macs_to_pin = 8.0 * 1024.0 * 1024.0;
+
+// Products with fewer multiply-adds than this use at most one thread per physical core (about n = 1024).
+constexpr double min_macs_for_smt = 1024.0 * 1024.0 * 1024.0;
 
 // How many depth steps ahead the optional in-loop prefetch looks (one B line per step).
 constexpr std::int64_t prefetch_steps = 8;
@@ -132,6 +142,17 @@ std::int64_t cache_bytes(int wanted_level) {
 //   the hardware prefetcher keeps up.
 //   Smaller or unknown L2: BLIS's Haswell values (168, 256, 4080, 4), which fit a 256 KB L2 and have
 //   not been re-measured on such a CPU.
+//
+// Loop order inside a block: the operand that stays in the L1 cache while the other streams past it
+// should be the one that fits. A packed B panel is KC x 16 floats; if that is larger than the L1
+// (KC = 1024 is 64 KB against 32 KB) the A panel (KC x 6 floats = 24 KB) is held instead: loop order 1.
+// Measured on the Ryzen: +4-7% at n = 2048 and 25% less loss on calls that follow other work.
+//
+// Parallel strategy 1 (see PackedGemmBlocking::parallel): same speed as strategy 0, one team wake-up
+// per call instead of two per K step, and the threads pin themselves when the team starts.
+//
+// Pinning: one thread per physical core removes a variable 20-40% slowdown (the OS sometimes puts
+// two of our threads on the two halves of one core). It is on when the topology can be read.
 PackedGemmBlocking initial_blocking() {
     PackedGemmBlocking blocking; // 168, 256, 4080, 4
     if (cache_bytes(2) >= 512 * 1024) {
@@ -144,6 +165,10 @@ PackedGemmBlocking initial_blocking() {
             blocking.nc = std::min<std::int64_t>(std::max<std::int64_t>(nc, 4080), 8160);
         }
     }
+    const std::int64_t l1d = cache_bytes(1);
+    blocking.loop_order = (l1d > 0 && blocking.kc * 16 * 4 > l1d) ? 1 : 0;
+    blocking.pin = physical_core_count() > 0 ? 1 : 0;
+    blocking.parallel = 1; // one parallel region per call: the team is woken once, and pins itself
     return blocking;
 }
 
@@ -496,6 +521,7 @@ bool cpu_supports_avx2_fma() {
 
 } // namespace
 
+
 bool packed_gemm_supported() {
     static const bool supported = cpu_supports_avx2_fma();
     return supported;
@@ -512,12 +538,96 @@ PackedGemmBlocking packed_gemm_blocking() {
 void set_packed_gemm_blocking(PackedGemmBlocking blocking) {
     if (blocking.mc <= 0 || blocking.kc <= 0 || blocking.nc <= 0 || blocking.tiles_per_thread <= 0 ||
         blocking.prefetch < 0 || blocking.prefetch > 2 || blocking.shape < 0 || blocking.shape > 3 ||
-        blocking.scalar_pack < 0 || blocking.scalar_pack > 1) {
+        blocking.scalar_pack < 0 || blocking.scalar_pack > 1 || blocking.parallel < 0 ||
+        blocking.parallel > 3 || blocking.loop_order < 0 || blocking.loop_order > 1 ||
+        blocking.profile < 0 || blocking.profile > 1 || blocking.pin < 0 || blocking.pin > 3) {
         throw std::invalid_argument("packed gemm blocking: mc, kc, nc and tiles_per_thread must be "
-                                    "positive, prefetch 0-2, shape 0-3");
+                                    "positive, prefetch 0-2, shape 0-3, scalar_pack 0-1, parallel "
+                                    "0-3, loop_order 0-1, profile 0-1, pin 0-3");
     }
     blocking_state() = blocking;
 }
+
+namespace {
+
+PackedGemmProfile g_profile;
+std::atomic<bool> g_workers_pinned{false}; // some worker threads were pinned by an earlier call
+std::atomic<bool> g_pin_busy{false};       // a call is pinning the threads right now
+
+// Busy time of one thread, for the profile; padded to a cache line so threads do not share one.
+struct alignas(64) ThreadClock {
+    double pack = 0.0;
+    double compute = 0.0;
+    double padding[6] = {};
+};
+
+// C[0..mc, 0..cols) (row stride ldc) = or += the product of the mc rows of packed A (first panel at
+// pa) and the `cols` columns of packed B (first panel at pb), over a depth of kc. Partial tiles at the
+// right and bottom edges are computed in full into a scratch tile and copied.
+//
+// loop_order 0: for each B panel, all A panels (the B panel is reused while it is in L1/L2).
+// loop_order 1: for each A panel, all B panels (the A panel is reused).
+inline void compute_block(const Shape& shape, std::int64_t kc, const float* pa, std::int64_t mc,
+                          const float* pb, std::int64_t cols, float* c, std::int64_t ldc,
+                          bool accumulate, std::int64_t loop_order) {
+    const std::int64_t MR = shape.mr;
+    const std::int64_t NR = shape.nr;
+    const KernelFn kernel = shape.kernel;
+    alignas(64) float edge[max_tile_floats];
+    const auto tile = [&](std::int64_t ir, std::int64_t jr) {
+        const std::int64_t rows = std::min(MR, mc - ir);
+        const std::int64_t cols_here = std::min(NR, cols - jr);
+        const float* pa_tile = pa + (ir / MR) * kc * MR;
+        const float* pb_tile = pb + (jr / NR) * kc * NR;
+        float* ctile = c + ir * ldc + jr;
+        if (rows == MR && cols_here == NR) {
+            kernel(kc, pa_tile, pb_tile, ctile, ldc, accumulate);
+        } else {
+            kernel(kc, pa_tile, pb_tile, edge, NR, false);
+            for (std::int64_t r = 0; r < rows; ++r) {
+                for (std::int64_t q = 0; q < cols_here; ++q) {
+                    if (accumulate) {
+                        ctile[r * ldc + q] += edge[r * NR + q];
+                    } else {
+                        ctile[r * ldc + q] = edge[r * NR + q];
+                    }
+                }
+            }
+        }
+    };
+    if (loop_order == 0) {
+        for (std::int64_t jr = 0; jr < cols; jr += NR) {
+            for (std::int64_t ir = 0; ir < mc; ir += MR) {
+                tile(ir, jr);
+            }
+        }
+    } else {
+        for (std::int64_t ir = 0; ir < mc; ir += MR) {
+            for (std::int64_t jr = 0; jr < cols; jr += NR) {
+                tile(ir, jr);
+            }
+        }
+    }
+}
+
+// Strategy 2 gives each thread a block of rows and a range of B panels: team threads become
+// ic_ways x jr_ways. Prefer all threads on rows (each packs its own A rows once); when there are too
+// few rows for that (fewer than 48 per thread), split the columns as well, which makes the threads
+// of one row group pack the same A rows redundantly. Only exact divisors of the team are used.
+inline void make_grid(std::int64_t team, std::int64_t m, std::int64_t& ic_ways,
+                      std::int64_t& jr_ways) {
+    constexpr std::int64_t min_rows_per_thread = 48;
+    ic_ways = 1;
+    for (std::int64_t ways = team; ways >= 1; --ways) {
+        if (team % ways == 0 && (ways == 1 || m / ways >= min_rows_per_thread)) {
+            ic_ways = ways;
+            break;
+        }
+    }
+    jr_ways = team / ic_ways;
+}
+
+} // namespace
 
 void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
                        std::int64_t k) {
@@ -536,8 +646,8 @@ void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m,
     const Shape shape = select_shape(blocking_state());
     const std::int64_t MR = shape.mr;
     const std::int64_t NR = shape.nr;
-    const KernelFn kernel = shape.kernel;
     const bool scalar_pack = blocking_state().scalar_pack != 0;
+    const std::int64_t loop_order = blocking_state().loop_order;
     // Block sizes are rounded down to whole tiles (at least one).
     const std::int64_t MC = std::max(MR, blocking_state().mc / MR * MR);
     const std::int64_t KC = blocking_state().kc;
@@ -552,7 +662,6 @@ void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m,
     packed_a.reserve(static_cast<std::size_t>(mc_max * kc_max));
     ScratchBuffer& packed_b = scratch_b();
     packed_b.reserve(static_cast<std::size_t>(kc_max * nc_max));
-    alignas(64) float edge[max_tile_floats];
 
     for (std::int64_t jc = 0; jc < n; jc += NC) {
         const std::int64_t nc = std::min(NC, n - jc);
@@ -563,65 +672,60 @@ void matmul_f32_packed(const float* a, const float* b, float* c, std::int64_t m,
             for (std::int64_t ic = 0; ic < m; ic += MC) {
                 const std::int64_t mc = std::min(MC, m - ic);
                 pack_a(scalar_pack, MR, a + ic * k + pc, k, mc, kc, packed_a.data);
-                for (std::int64_t jr = 0; jr < nc; jr += NR) {
-                    const std::int64_t cols = std::min(NR, nc - jr);
-                    const float* pb = packed_b.data + (jr / NR) * kc * NR;
-                    for (std::int64_t ir = 0; ir < mc; ir += MR) {
-                        const std::int64_t rows = std::min(MR, mc - ir);
-                        const float* pa = packed_a.data + (ir / MR) * kc * MR;
-                        float* ctile = c + (ic + ir) * n + jc + jr;
-                        if (rows == MR && cols == NR) {
-                            kernel(kc, pa, pb, ctile, n, accumulate);
-                        } else {
-                            // Edge tile: compute a full tile into scratch, copy the valid part.
-                            kernel(kc, pa, pb, edge, NR, false);
-                            for (std::int64_t r = 0; r < rows; ++r) {
-                                for (std::int64_t q = 0; q < cols; ++q) {
-                                    if (accumulate) {
-                                        ctile[r * n + q] += edge[r * NR + q];
-                                    } else {
-                                        ctile[r * n + q] = edge[r * NR + q];
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                compute_block(shape, kc, packed_a.data, mc, packed_b.data, nc,
+                              c + ic * n + jc, n, accumulate, loop_order);
             }
         }
     }
 }
 
-// The same five loops, with the work split across threads. Per (jc, pc) step:
-//   1. one parallel loop packs every 16-column panel of B and every 6-row panel of A (all m rows),
-//   2. one parallel loop over tiles of C: a tile is one MC-row block times a group of B panels. A
-//      thread reads the shared packed A and B and writes only its own tile of C, so tiles need no
-//      locking. Dynamic scheduling evens out uneven tiles (edges, busy cores).
-// Tile groups are sized so there are about 4 tiles per thread, which is also why small matrices
-// (a single MC block of rows) split along the columns instead.
+// ---- Threaded version ---------------------------------------------------------------------------
+
+PackedGemmProfile packed_gemm_profile() {
+    return g_profile;
+}
+
+// The same five loops, with the work split across threads. Per (jc, pc) step the threads
+//   1. pack B (and, in strategies 0 and 1, all of A) together, then
+//   2. compute their parts of C. Every thread writes only its own part, so nothing is locked.
+// Strategy 0 does each of those as its own parallel loop, so the team is woken twice per step.
+// Strategy 1 is the same work inside one parallel region for the whole call (the team is woken once,
+// with a barrier between the steps). Strategy 2 also runs in one region, but each thread packs the
+// rows of A it will multiply into its own buffer, so A is written and read by the same core.
 void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::int64_t m,
                                 std::int64_t n, std::int64_t k) {
     // Small products get fewer threads: each thread should have at least min_macs_per_thread
     // multiply-adds, or waking and joining it costs more than it saves (measured: n = 128 is
     // fastest on 4 of 24 threads).
     const double macs = static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k);
-    const std::int64_t threads = std::min<std::int64_t>(
+    std::int64_t threads = std::min<std::int64_t>(
         max_threads(), std::max<std::int64_t>(1, static_cast<std::int64_t>(macs / min_macs_per_thread)));
+    // The second hardware thread of a core adds no FMA throughput, only barrier and packing overhead
+    // (n = 256: 266 GFLOP/s on 12 threads, 185 on 24), so below min_macs_for_smt stay at one thread per
+    // physical core. For large products the extra threads help a little (+5% at n = 4096): they fill
+    // the gaps while the other thread of the core waits for memory.
+    const int physical_cores = physical_core_count();
+    if (physical_cores > 0 && macs < min_macs_for_smt) {
+        threads = std::min<std::int64_t>(threads, physical_cores);
+    }
     const bool worth = threads > 1 && macs > static_cast<double>(parallel_work_threshold);
     if (!worth || !packed_gemm_supported()) {
         matmul_f32_packed(a, b, c, m, n, k); // also handles m, n or k == 0
         return;
     }
 
-    const Shape shape = select_shape(blocking_state());
+    const PackedGemmBlocking settings = blocking_state();
+    const Shape shape = select_shape(settings);
     const std::int64_t MR = shape.mr;
     const std::int64_t NR = shape.nr;
-    const KernelFn kernel = shape.kernel;
-    const bool scalar_pack = blocking_state().scalar_pack != 0;
+    const bool scalar_pack = settings.scalar_pack != 0;
+    const std::int64_t strategy = settings.parallel;
+    const std::int64_t loop_order = settings.loop_order;
+    const bool profile = settings.profile != 0;
     // Block sizes are rounded down to whole tiles (at least one).
-    const std::int64_t MC = std::max(MR, blocking_state().mc / MR * MR);
-    const std::int64_t KC = blocking_state().kc;
-    const std::int64_t NC = std::max(NR, blocking_state().nc / NR * NR);
+    const std::int64_t MC = std::max(MR, settings.mc / MR * MR);
+    const std::int64_t KC = settings.kc;
+    const std::int64_t NC = std::max(NR, settings.nc / NR * NR);
     const auto round_up = [](std::int64_t value, std::int64_t multiple) {
         return (value + multiple - 1) / multiple * multiple;
     };
@@ -631,84 +735,334 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
     const std::int64_t m_padded = round_up(m, MR);
     const std::int64_t kc_max = std::min(KC, k);
     const std::int64_t nc_max = std::min(NC, round_up(n, NR));
-    ScratchBuffer& packed_a = scratch_a();
-    packed_a.reserve(static_cast<std::size_t>(m_padded * kc_max));
     ScratchBuffer& packed_b = scratch_b();
     packed_b.reserve(static_cast<std::size_t>(kc_max * nc_max));
-    float* const pa_base = packed_a.data;
     float* const pb_base = packed_b.data;
+    float* pa_base = nullptr; // the shared packed A of strategies 0 and 1
+    if (strategy <= 1) {
+        ScratchBuffer& packed_a = scratch_a();
+        packed_a.reserve(static_cast<std::size_t>(m_padded * kc_max));
+        pa_base = packed_a.data;
+    }
     const std::int64_t a_panels = m_padded / MR;
     const std::int64_t ic_blocks = ceil_div(m, MC);
 
-    for (std::int64_t jc = 0; jc < n; jc += NC) {
-        const std::int64_t nc = std::min(NC, n - jc);
-        const std::int64_t b_panels = ceil_div(nc, NR);
-        const std::int64_t wanted_groups = ceil_div(blocking_state().tiles_per_thread * threads, ic_blocks);
-        const std::int64_t panels_per_group =
+    std::vector<ThreadClock> clocks(profile ? static_cast<std::size_t>(max_threads()) : 0);
+    std::int64_t tiles_total = 0;
+    const double wall_start = profile ? wall_seconds() : 0.0;
+
+    // Work items of strategies 0 and 1: a tile is one MC-row block times a group of B panels.
+    // About tiles_per_thread of them per thread.
+    const auto tile_layout = [&](std::int64_t b_panels, std::int64_t& panels_per_group,
+                                 std::int64_t& tiles) {
+        const std::int64_t wanted_groups = ceil_div(settings.tiles_per_thread * threads, ic_blocks);
+        panels_per_group =
             ceil_div(b_panels, std::min(std::max<std::int64_t>(wanted_groups, 1), b_panels));
-        const std::int64_t groups = ceil_div(b_panels, panels_per_group);
-        const std::int64_t tiles = ic_blocks * groups;
+        tiles = ic_blocks * ceil_div(b_panels, panels_per_group);
+    };
 
-        for (std::int64_t pc = 0; pc < k; pc += KC) {
-            const std::int64_t kc = std::min(KC, k - pc);
-            const bool accumulate = pc > 0;
+    // One pack work item (strategies 0 and 1): panel t of B, or panel t - b_panels of A.
+    const auto pack_item = [&](std::int64_t t, std::int64_t jc, std::int64_t pc, std::int64_t kc,
+                               std::int64_t nc, std::int64_t b_panels) {
+        const double t0 = profile ? wall_seconds() : 0.0;
+        if (t < b_panels) {
+            const std::int64_t j = t * NR;
+            pack_b(scalar_pack, NR, b + pc * n + jc + j, n, kc, std::min(NR, nc - j),
+                   pb_base + t * kc * NR);
+        } else {
+            const std::int64_t i = (t - b_panels) * MR;
+            pack_a(scalar_pack, MR, a + i * k + pc, k, std::min(MR, m - i), kc,
+                   pa_base + (t - b_panels) * kc * MR);
+        }
+        if (profile) {
+            clocks[static_cast<std::size_t>(thread_index())].pack += wall_seconds() - t0;
+        }
+    };
 
-            MENSURFLOW_PARALLEL_FOR(schedule(static) num_threads(static_cast<int>(threads)))
-            for (std::int64_t t = 0; t < b_panels + a_panels; ++t) {
-                if (t < b_panels) {
-                    const std::int64_t j = t * NR;
-                    pack_b(scalar_pack, NR, b + pc * n + jc + j, n, kc, std::min(NR, nc - j), pb_base + t * kc * NR);
-                } else {
-                    const std::int64_t i = (t - b_panels) * MR;
-                    pack_a(scalar_pack, MR, a + i * k + pc, k, std::min(MR, m - i), kc, pa_base + (t - b_panels) * kc * MR);
+    // One compute work item (strategies 0 and 1).
+    const auto tile_item = [&](std::int64_t t, std::int64_t jc, std::int64_t kc, std::int64_t nc,
+                               std::int64_t b_panels, std::int64_t panels_per_group,
+                               bool accumulate) {
+        const double t0 = profile ? wall_seconds() : 0.0;
+        const std::int64_t ic = (t % ic_blocks) * MC;
+        const std::int64_t mc = std::min(MC, m - ic);
+        const std::int64_t first_panel = (t / ic_blocks) * panels_per_group;
+        const std::int64_t last_panel = std::min(first_panel + panels_per_group, b_panels);
+        const std::int64_t cols = std::min((last_panel - first_panel) * NR, nc - first_panel * NR);
+        compute_block(shape, kc, pa_base + (ic / MR) * kc * MR, mc, pb_base + first_panel * kc * NR,
+                      cols, c + ic * n + jc + first_panel * NR, n, accumulate, loop_order);
+        if (profile) {
+            clocks[static_cast<std::size_t>(thread_index())].compute += wall_seconds() - t0;
+        }
+    };
+
+    // Thread placement (see affinity.hpp). The calling thread is thread 0 of the team: it is pinned for
+    // the duration of the call and gets its old restriction back at the end. The worker threads stay
+    // pinned until a call asks for no pinning, which releases them once.
+    const int pin = static_cast<int>(settings.pin);
+    // Only one call pins at a time (threads that call matmul concurrently would otherwise all pin
+    // their calling thread to core 0), and never from inside another parallel region.
+    const bool want_pin = pin != 0 && macs >= min_macs_to_pin && !in_parallel_region();
+    const bool do_pin = want_pin && !g_pin_busy.exchange(true);
+    if (do_pin) {
+        set_thread_pin(0, pin);
+        g_workers_pinned = true;
+        if (strategy == 0) { // the other strategies pin at the start of their own region
+            MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
+            {
+                set_thread_pin(thread_index(), pin);
+            }
+        }
+    } else if (pin == 0 && g_workers_pinned) {
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(max_threads())))
+        {
+            set_thread_pin(thread_index(), 0);
+        }
+        g_workers_pinned = false;
+    }
+
+    if (strategy == 0) {
+        for (std::int64_t jc = 0; jc < n; jc += NC) {
+            const std::int64_t nc = std::min(NC, n - jc);
+            const std::int64_t b_panels = ceil_div(nc, NR);
+            std::int64_t panels_per_group = 0;
+            std::int64_t tiles = 0;
+            tile_layout(b_panels, panels_per_group, tiles);
+            for (std::int64_t pc = 0; pc < k; pc += KC) {
+                const std::int64_t kc = std::min(KC, k - pc);
+                const bool accumulate = pc > 0;
+                tiles_total += tiles;
+
+                MENSURFLOW_PARALLEL_FOR(schedule(static) num_threads(static_cast<int>(threads)))
+                for (std::int64_t t = 0; t < b_panels + a_panels; ++t) {
+                    pack_item(t, jc, pc, kc, nc, b_panels);
+                }
+
+                MENSURFLOW_PARALLEL_FOR(schedule(dynamic) num_threads(static_cast<int>(threads)))
+                for (std::int64_t t = 0; t < tiles; ++t) {
+                    tile_item(t, jc, kc, nc, b_panels, panels_per_group, accumulate);
                 }
             }
+        }
+    } else if (strategy == 1) {
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
+        {
+            if (do_pin) {
+                set_thread_pin(thread_index(), pin);
+            }
+            for (std::int64_t jc = 0; jc < n; jc += NC) {
+                const std::int64_t nc = std::min(NC, n - jc);
+                const std::int64_t b_panels = ceil_div(nc, NR);
+                std::int64_t panels_per_group = 0;
+                std::int64_t tiles = 0;
+                tile_layout(b_panels, panels_per_group, tiles);
+                for (std::int64_t pc = 0; pc < k; pc += KC) {
+                    const std::int64_t kc = std::min(KC, k - pc);
+                    const bool accumulate = pc > 0;
 
-            MENSURFLOW_PARALLEL_FOR(schedule(dynamic) num_threads(static_cast<int>(threads)))
-            for (std::int64_t t = 0; t < tiles; ++t) {
-                alignas(64) float edge[max_tile_floats];
-                const std::int64_t ic = (t % ic_blocks) * MC;
-                const std::int64_t mc = std::min(MC, m - ic);
-                const std::int64_t first_panel = (t / ic_blocks) * panels_per_group;
-                const std::int64_t last_panel = std::min(first_panel + panels_per_group, b_panels);
-                for (std::int64_t jp = first_panel; jp < last_panel; ++jp) {
-                    const std::int64_t jr = jp * NR;
-                    const std::int64_t cols = std::min(NR, nc - jr);
-                    const float* pb = pb_base + jp * kc * NR;
-                    for (std::int64_t ir = 0; ir < mc; ir += MR) {
-                        const std::int64_t rows = std::min(MR, mc - ir);
-                        const float* pa = pa_base + ((ic + ir) / MR) * kc * MR;
-                        float* ctile = c + (ic + ir) * n + jc + jr;
-                        if (rows == MR && cols == NR) {
-                            kernel(kc, pa, pb, ctile, n, accumulate);
-                        } else {
-                            kernel(kc, pa, pb, edge, NR, false);
-                            for (std::int64_t r = 0; r < rows; ++r) {
-                                for (std::int64_t q = 0; q < cols; ++q) {
-                                    if (accumulate) {
-                                        ctile[r * n + q] += edge[r * NR + q];
-                                    } else {
-                                        ctile[r * n + q] = edge[r * NR + q];
-                                    }
-                                }
+                    MENSURFLOW_FOR(schedule(static))
+                    for (std::int64_t t = 0; t < b_panels + a_panels; ++t) {
+                        pack_item(t, jc, pc, kc, nc, b_panels);
+                    }
+
+                    MENSURFLOW_FOR(schedule(dynamic))
+                    for (std::int64_t t = 0; t < tiles; ++t) {
+                        tile_item(t, jc, kc, nc, b_panels, panels_per_group, accumulate);
+                    }
+                }
+            }
+        }
+        for (std::int64_t jc = 0; jc < n; jc += NC) {
+            std::int64_t panels_per_group = 0;
+            std::int64_t tiles = 0;
+            tile_layout(ceil_div(std::min(NC, n - jc), NR), panels_per_group, tiles);
+            tiles_total += tiles * ceil_div(k, KC);
+        }
+    } else if (strategy == 2) {
+        std::int64_t workers = 0;
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
+        {
+            if (do_pin) {
+                set_thread_pin(thread_index(), pin);
+            }
+            const std::int64_t team = team_size();
+            const std::int64_t tid = thread_index();
+            std::int64_t ic_ways = 1;
+            std::int64_t jr_ways = 1;
+            make_grid(team, m, ic_ways, jr_ways);
+            const bool active = tid < ic_ways * jr_ways;
+            const std::int64_t ti = active ? tid / jr_ways : 0;
+            const std::int64_t tj = active ? tid % jr_ways : 0;
+            // My rows (whole 6-row panels) and, per column block, my range of B panels.
+            const std::int64_t row_units = ceil_div(m, MR);
+            const std::int64_t r0 = ti * row_units / ic_ways * MR;
+            const std::int64_t r1 = std::min(m, (ti + 1) * row_units / ic_ways * MR);
+            float* my_a = nullptr;
+            if (active && r1 > r0) {
+                ScratchBuffer& buffer = scratch_a();
+                // Whole panels: the last panel of a block is padded with zero rows up to MR.
+                buffer.reserve(static_cast<std::size_t>(round_up(std::min(MC, r1 - r0), MR) * kc_max));
+                my_a = buffer.data;
+            }
+            if (thread_index() == 0) {
+                workers = ic_ways * jr_ways;
+            }
+
+            for (std::int64_t jc = 0; jc < n; jc += NC) {
+                const std::int64_t nc = std::min(NC, n - jc);
+                const std::int64_t b_panels = ceil_div(nc, NR);
+                const std::int64_t p0 = tj * b_panels / jr_ways;
+                const std::int64_t p1 = (tj + 1) * b_panels / jr_ways;
+                for (std::int64_t pc = 0; pc < k; pc += KC) {
+                    const std::int64_t kc = std::min(KC, k - pc);
+                    const bool accumulate = pc > 0;
+
+                    // B is packed by the whole team (the loop ends with a barrier) ...
+                    MENSURFLOW_FOR(schedule(static))
+                    for (std::int64_t t = 0; t < b_panels; ++t) {
+                        const double t0 = profile ? wall_seconds() : 0.0;
+                        const std::int64_t j = t * NR;
+                        pack_b(scalar_pack, NR, b + pc * n + jc + j, n, kc, std::min(NR, nc - j),
+                               pb_base + t * kc * NR);
+                        if (profile) {
+                            clocks[static_cast<std::size_t>(thread_index())].pack +=
+                                wall_seconds() - t0;
+                        }
+                    }
+
+                    // ... then each thread packs its own rows of A and multiplies them.
+                    if (my_a != nullptr && p1 > p0) {
+                        const std::int64_t cols = std::min((p1 - p0) * NR, nc - p0 * NR);
+                        for (std::int64_t ic = r0; ic < r1; ic += MC) {
+                            const std::int64_t mc = std::min(MC, r1 - ic);
+                            const double t0 = profile ? wall_seconds() : 0.0;
+                            pack_a(scalar_pack, MR, a + ic * k + pc, k, mc, kc, my_a);
+                            const double t1 = profile ? wall_seconds() : 0.0;
+                            compute_block(shape, kc, my_a, mc, pb_base + p0 * kc * NR, cols,
+                                          c + ic * n + jc + p0 * NR, n, accumulate, loop_order);
+                            if (profile) {
+                                ThreadClock& clock = clocks[static_cast<std::size_t>(thread_index())];
+                                clock.pack += t1 - t0;
+                                clock.compute += wall_seconds() - t1;
                             }
+                        }
+                    }
+                    // Nobody may repack B while another thread is still reading it.
+                    MENSURFLOW_BARRIER()
+                }
+            }
+        }
+        tiles_total = workers;
+    } else {
+        // Strategy 3: the tiles of strategies 0 and 1 (dynamically scheduled, so a slow core simply
+        // takes fewer of them), but A is packed privately: a thread packs the MC rows of a tile into
+        // its own buffer and keeps them for the next tile it takes from the same rows. Tiles are
+        // numbered row block first, so neighbouring tiles share their rows.
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
+        {
+            if (do_pin) {
+                set_thread_pin(thread_index(), pin);
+            }
+            ScratchBuffer& buffer = scratch_a();
+            buffer.reserve(static_cast<std::size_t>(MC * kc_max));
+            float* const my_a = buffer.data;
+
+            for (std::int64_t jc = 0; jc < n; jc += NC) {
+                const std::int64_t nc = std::min(NC, n - jc);
+                const std::int64_t b_panels = ceil_div(nc, NR);
+                std::int64_t panels_per_group = 0;
+                std::int64_t tiles = 0;
+                tile_layout(b_panels, panels_per_group, tiles);
+                const std::int64_t groups = ceil_div(b_panels, panels_per_group);
+                for (std::int64_t pc = 0; pc < k; pc += KC) {
+                    const std::int64_t kc = std::min(KC, k - pc);
+                    const bool accumulate = pc > 0;
+
+                    MENSURFLOW_FOR(schedule(static))
+                    for (std::int64_t t = 0; t < b_panels; ++t) {
+                        const double t0 = profile ? wall_seconds() : 0.0;
+                        const std::int64_t j = t * NR;
+                        pack_b(scalar_pack, NR, b + pc * n + jc + j, n, kc, std::min(NR, nc - j),
+                               pb_base + t * kc * NR);
+                        if (profile) {
+                            clocks[static_cast<std::size_t>(thread_index())].pack +=
+                                wall_seconds() - t0;
+                        }
+                    }
+
+                    std::int64_t packed_ic = -1; // the rows now in my_a (private to this thread)
+                    MENSURFLOW_FOR(schedule(dynamic))
+                    for (std::int64_t t = 0; t < tiles; ++t) {
+                        const std::int64_t ic = (t / groups) * MC;
+                        const std::int64_t mc = std::min(MC, m - ic);
+                        const std::int64_t first_panel = (t % groups) * panels_per_group;
+                        const std::int64_t last_panel =
+                            std::min(first_panel + panels_per_group, b_panels);
+                        const std::int64_t cols =
+                            std::min((last_panel - first_panel) * NR, nc - first_panel * NR);
+                        const double t0 = profile ? wall_seconds() : 0.0;
+                        if (packed_ic != ic) {
+                            pack_a(scalar_pack, MR, a + ic * k + pc, k, mc, kc, my_a);
+                            packed_ic = ic;
+                        }
+                        const double t1 = profile ? wall_seconds() : 0.0;
+                        compute_block(shape, kc, my_a, mc, pb_base + first_panel * kc * NR, cols,
+                                      c + ic * n + jc + first_panel * NR, n, accumulate, loop_order);
+                        if (profile) {
+                            ThreadClock& clock = clocks[static_cast<std::size_t>(thread_index())];
+                            clock.pack += t1 - t0;
+                            clock.compute += wall_seconds() - t1;
                         }
                     }
                 }
             }
         }
+        for (std::int64_t jc = 0; jc < n; jc += NC) {
+            std::int64_t panels_per_group = 0;
+            std::int64_t tiles = 0;
+            tile_layout(ceil_div(std::min(NC, n - jc), NR), panels_per_group, tiles);
+            tiles_total += tiles * ceil_div(k, KC);
+        }
+    }
+
+    if (do_pin) {
+        set_thread_pin(0, 0); // give the calling thread its old placement back
+        g_pin_busy.store(false);
+    }
+
+    if (profile) {
+        PackedGemmProfile result;
+        result.wall_s = wall_seconds() - wall_start;
+        result.tiles = tiles_total;
+        for (const ThreadClock& clock : clocks) {
+            if (clock.pack > 0.0 || clock.compute > 0.0) {
+                ++result.threads;
+                result.pack_mean_s += clock.pack;
+                result.compute_mean_s += clock.compute;
+                result.pack_max_s = std::max(result.pack_max_s, clock.pack);
+                result.compute_max_s = std::max(result.compute_max_s, clock.compute);
+            }
+        }
+        if (result.threads > 0) {
+            result.pack_mean_s /= static_cast<double>(result.threads);
+            result.compute_mean_s /= static_cast<double>(result.threads);
+        }
+        g_profile = result;
     }
 }
 
 #else // not x86-64: no AVX2 kernel, use the plain loop
-CacheSizes cpu_cache_sizes() {    return {};}
 
 bool packed_gemm_supported() {
     return false;
 }
 
 CacheSizes cpu_cache_sizes() {
-    return {cache_bytes(1), cache_bytes(2), cache_bytes(3)};
+    return {};
+}
+
+PackedGemmProfile packed_gemm_profile() {
+    return {};
 }
 
 PackedGemmBlocking packed_gemm_blocking() {

@@ -117,6 +117,47 @@ int main() {
         }
         cpu::set_packed_gemm_blocking(original);
 
+        // The ways of parallelizing the loops (strategy 0 to 3), with and without pinning the threads
+        // to cores, in both loop orders, with the default block sizes and with tiny ones, on a thread
+        // count below and one above the number of cores. Two larger shapes are included because
+        // pinning is only done for products of at least 8 million multiply-adds.
+        const std::int64_t large[][3] = {{300, 300, 300}, {97, 257, 901}};
+        for (int strategy = 0; strategy < 4; ++strategy) {
+            for (int pin : {0, 1}) {
+                for (int loop : {0, 1}) {
+                    for (int tiny = 0; tiny < 2; ++tiny) {
+                        cpu::PackedGemmBlocking blocking = original;
+                        blocking.parallel = strategy;
+                        blocking.pin = pin;
+                        blocking.loop_order = loop;
+                        if (tiny != 0) {
+                            blocking.mc = 24;
+                            blocking.kc = 20;
+                            blocking.nc = 48;
+                        }
+                        cpu::set_packed_gemm_blocking(blocking);
+                        const std::string name = "packed parallel strategy " + std::to_string(strategy) +
+                                                 " pin " + std::to_string(pin) + " loop " +
+                                                 std::to_string(loop) + (tiny != 0 ? " tiny" : "");
+                        for (int threads : {3, 24}) {
+                            cpu::set_max_threads(threads);
+                            for (const auto& s : big) {
+                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1], s[2]);
+                            }
+                            for (const auto& s : extra) {
+                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1], s[2]);
+                            }
+                            for (const auto& s : large) {
+                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1], s[2]);
+                            }
+                        }
+                        cpu::set_max_threads(saved_threads);
+                    }
+                }
+            }
+        }
+        cpu::set_packed_gemm_blocking(original);
+
         // Degenerate sizes: k == 0 fills C with zeros, m or n == 0 touches nothing.
         std::vector<float> c(6, 7.0f);
         cpu::matmul_f32_packed(nullptr, nullptr, c.data(), 2, 3, 0);

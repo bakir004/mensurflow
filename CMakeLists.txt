@@ -44,6 +44,7 @@ add_library(mensurflow
     src/ops/elementwise.cpp
     src/ops/reduction.cpp
     src/backends/cpu/backend.cpp
+    src/backends/cpu/affinity.cpp
     src/backends/cpu/ops/blas/blas.cpp
     src/backends/cpu/ops/blas/gemm_packed.cpp
     src/backends/cpu/ops/elementwise/elementwise.cpp
@@ -129,6 +130,7 @@ mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
+mensurflow_add_test(affinity_test tests/core/affinity_test.cpp)
 mensurflow_add_test(gemm_packed_test tests/ops/gemm_packed_test.cpp)
 mensurflow_add_test(gemm_pack_test tests/ops/gemm_pack_test.cpp)
 mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
@@ -198,6 +200,7 @@ endif()
 
 mensurflow_add_benchmark(gemm_tune_benchmark benchmarks/blas/gemm_tune_benchmark.cpp)
 mensurflow_add_benchmark(gemm_pack_benchmark benchmarks/blas/gemm_pack_benchmark.cpp)
+mensurflow_add_benchmark(gemm_thread_benchmark benchmarks/blas/gemm_thread_benchmark.cpp)
 mensurflow_add_benchmark(fma_peak_benchmark benchmarks/blas/fma_peak_benchmark.cpp)
 mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
