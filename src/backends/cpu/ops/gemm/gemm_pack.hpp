@@ -168,7 +168,7 @@ MENSURFLOW_TARGET_AVX2 inline void pack_a_panel6_avx2(const float* a, std::int64
             const __m256 c7 = _mm256_permute2f128_ps(s3, s7, 0x31);              // column 7
             _mm_storeu_ps(out + 7 * 6, _mm256_castps256_ps128(c7));              // rows 0..3
             _mm_storel_pi(reinterpret_cast<__m64*>(out + 7 * 6 + 4),
-                          _mm256_extractf128_ps(c7, 1));                         // rows 4, 5
+                          _mm256_extractf128_ps(c7, 1)); // rows 4, 5
         }
     }
     // Depth tail (kc % 8) and partial panels (fewer than 6 rows): scalar, with zero padding.
@@ -178,7 +178,6 @@ MENSURFLOW_TARGET_AVX2 inline void pack_a_panel6_avx2(const float* a, std::int64
         }
     }
 }
-
 
 // One full panel of NV * 8 columns of B: 4 depth steps at a time, NV vectors per step, loads first
 // and stores after (4 * NV <= 12 registers in flight).
@@ -206,7 +205,6 @@ MENSURFLOW_TARGET_AVX2 inline void pack_b_panel_avx2(const float* b, std::int64_
         }
     }
 }
-
 
 // Transposes an 8 x 8 block held in eight registers: afterwards r_q holds what was column q.
 // Three steps (unpack, shuffle, permute) that each consume their inputs, so it fits the 16 registers.

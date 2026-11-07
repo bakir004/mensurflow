@@ -42,7 +42,7 @@ option `MENSURFLOW_OPENBLAS`). How to set it up: [BENCHMARKING.md](BENCHMARKING.
 ### 2. Packed 6x16 AVX2/FMA micro-kernel (the Goto/BLIS design)
 
 The old kernel computed one row of C at a time, loading and storing C for every product. The new one
-(`src/backends/cpu/ops/blas/gemm_packed.cpp`) works like BLIS and OpenBLAS:
+(`src/backends/cpu/ops/gemm/gemm_packed.cpp`) works like BLIS and OpenBLAS:
 
 | Piece | What it is | Why it is fast |
 |---|---|---|
@@ -276,7 +276,7 @@ and compute for every K block, and tile balance.
 
 The disassembly (section 12) showed both packing loops were plain scalar code: one `mov` load and one `mov`
 store per float, an `imul` per element for the strided A writes, and a `memset` call for padding. They are
-now written with AVX2 intrinsics in `src/backends/cpu/ops/blas/gemm_pack.hpp`.
+now written with AVX2 intrinsics in `src/backends/cpu/ops/gemm/gemm_pack.hpp`.
 
 | Packer | Technique | Registers |
 |---|---|---|
@@ -538,9 +538,9 @@ Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's
 
 | File | Role |
 |---|---|
-| `src/backends/cpu/ops/blas/gemm_packed.hpp`, `.cpp` | The kernel, packing, threading, CPU detection and block sizes |
+| `src/backends/cpu/ops/gemm/gemm_packed.hpp`, `.cpp` | The kernel, packing, threading, CPU detection and block sizes |
 | `src/backends/cpu/backend.cpp` | Selects the packed kernel for `matmul` |
-| `src/backends/cpu/ops/blas/gemm_pack.hpp` | Scalar and AVX2 packing, including the strided layouts |
+| `src/backends/cpu/ops/gemm/gemm_pack.hpp` | Scalar and AVX2 packing, including the strided layouts |
 | `src/ops/blas.cpp`, `src/backends/cpu/backend.cpp` | `matmul` passes strided CPU views on without a copy |
 | `tests/ops/gemm_packed_test.cpp` | Correctness tests |
 | `tests/ops/gemm_pack_test.cpp` | Packers against the scalar reference, with guard words |

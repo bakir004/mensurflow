@@ -11,7 +11,7 @@
 //   gemm_stride_benchmark [sizes...]      (default 512 1024 2048)
 #include "bench.hpp"
 
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/threads.hpp"
 #include "mensurflow/mensurflow.hpp"
 
@@ -28,9 +28,7 @@ namespace cpu = mensurflow::cpu;
 
 namespace {
 
-void settle() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-}
+void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(300)); }
 
 } // namespace
 
@@ -48,11 +46,12 @@ int main(int argc, char** argv) {
                         {"part 1 through the public API (Tensor), part 2 on the kernel"});
 
     // ---- Part 1: transposed operands, copy first vs in place ------------------------------------
-    std::printf("\n== 1. Transposed operands: copy first (old) vs read in place (new), GFLOP/s ==\n");
+    std::printf(
+        "\n== 1. Transposed operands: copy first (old) vs read in place (new), GFLOP/s ==\n");
     std::printf("%6s  %-14s %10s %10s %9s\n", "n", "operands", "copy", "in place", "speedup");
     for (std::int64_t n : sizes) {
-        const double flops = 2.0 * static_cast<double>(n) * static_cast<double>(n) *
-                             static_cast<double>(n);
+        const double flops =
+            2.0 * static_cast<double>(n) * static_cast<double>(n) * static_cast<double>(n);
         std::vector<float> a_values(static_cast<std::size_t>(n * n)), b_values(a_values.size());
         bench::fill_a(a_values.data(), a_values.size());
         bench::fill_b(b_values.data(), b_values.size());
@@ -66,7 +65,9 @@ int main(int argc, char** argv) {
             const Tensor* left;
             const Tensor* right;
         };
-        const Case cases[] = {{"A B", &a, &b}, {"A^T B", &at, &b}, {"A B^T", &a, &bt}, {"A^T B^T", &at, &bt}};
+
+        const Case cases[] = {
+            {"A B", &a, &b}, {"A^T B", &at, &b}, {"A B^T", &a, &bt}, {"A^T B^T", &at, &bt}};
         for (const Case& c : cases) {
             Tensor result;
             const auto observe = [&] { return static_cast<double>(result.to_vector<float>()[0]); };
@@ -92,8 +93,8 @@ int main(int argc, char** argv) {
     std::printf("\n== 2. Row stride of A, B and C (kernel level, all threads), GFLOP/s ==\n");
     std::printf("%6s  %12s %12s %12s\n", "n", "ld = n", "ld = n + 16", "ld = n + 1");
     for (std::int64_t n : sizes) {
-        const double flops = 2.0 * static_cast<double>(n) * static_cast<double>(n) *
-                             static_cast<double>(n);
+        const double flops =
+            2.0 * static_cast<double>(n) * static_cast<double>(n) * static_cast<double>(n);
         double rate[3] = {0, 0, 0};
         const std::int64_t pads[3] = {0, 16, 1};
         for (int variant = 0; variant < 3; ++variant) {
@@ -107,7 +108,10 @@ int main(int argc, char** argv) {
             bench::fill_b(b, len);
             settle();
             const bench::Sample sample = bench::measure(
-                config, [&] { cpu::matmul_f32_packed_parallel_strided(a, ld, 1, b, ld, 1, c, ld, n, n, n); },
+                config,
+                [&] {
+                    cpu::matmul_f32_packed_parallel_strided(a, ld, 1, b, ld, 1, c, ld, n, n, n);
+                },
                 [&] { return bench::checksum(c, len); });
             rate[variant] = flops / sample.median_s / 1e9;
         }

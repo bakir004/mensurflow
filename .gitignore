@@ -3,3 +3,5 @@ build/
 build-*/
 # Local macOS metadata.
 .DS_Store
+# Python bytecode from the reference scripts.
+__pycache__/

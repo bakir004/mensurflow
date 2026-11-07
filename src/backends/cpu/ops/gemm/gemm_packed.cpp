@@ -9,11 +9,11 @@
 // Packed layouts, both zero-padded to full panels so the kernel never branches on edges:
 //   A panel: for each p, 6 floats  (A[i0..i0+5][p])
 //   B panel: for each p, 16 floats (B[p][j0..j0+15])
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 
 #include "backends/cpu/affinity.hpp"
 #include "backends/cpu/ops/blas/blas.hpp"
-#include "backends/cpu/ops/blas/gemm_pack.hpp"
+#include "backends/cpu/ops/gemm/gemm_pack.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>
@@ -152,7 +152,8 @@ std::int64_t cache_bytes(int wanted_level) {
     }
     for (int sub = 0; sub < 16; ++sub) {
         cpuid(leaf, sub);
-        const int type = regs[0] & 0x1f; // 0 = no more caches, 1 = data, 2 = instruction, 3 = unified
+        const int type =
+            regs[0] & 0x1f; // 0 = no more caches, 1 = data, 2 = instruction, 3 = unified
         const int level = (regs[0] >> 5) & 0x7;
         if (type == 0) {
             break;
@@ -215,13 +216,12 @@ PackedGemmBlocking& blocking_state() {
     return state;
 }
 
-
 // C[6,16] (row stride ldc) = or += sum over p < kc of pa[p*6 + r] * pb[p*16 + j].
 // Prefetch: 0 none; 1 also prefetch the C tile before the loop (it is read and written after it);
 // 2 also prefetch the packed A and B panels PrefetchSteps depth steps ahead inside the loop.
 template <int Prefetch>
-MENSURFLOW_TARGET_AVX2 void kernel_6x16(std::int64_t kc, const float* pa, const float* pb,
-                                        float* c, std::int64_t ldc, bool accumulate) {
+MENSURFLOW_TARGET_AVX2 void kernel_6x16(std::int64_t kc, const float* pa, const float* pb, float* c,
+                                        std::int64_t ldc, bool accumulate) {
     if constexpr (Prefetch >= 1) {
         for (int r = 0; r < 6; ++r) {
             _mm_prefetch(reinterpret_cast<const char*>(c + r * ldc), _MM_HINT_T0);
@@ -288,30 +288,30 @@ MENSURFLOW_TARGET_AVX2 void kernel_6x16(std::int64_t kc, const float* pa, const 
 //   4 x 24: 12 accumulators + 3 + 1 = 16 registers, 12 FMAs, 7 loads
 //  12 x  8: 12 accumulators + 1 + 1 = 14 registers, 12 FMAs, 13 loads
 
-#define MENSURFLOW_STEP_6X16(i)                                                                  \
-    {                                                                                            \
-        const float* a_ = pa + 6 * (i);                                                          \
-        const float* b_ = pb + 16 * (i);                                                         \
-        const __m256 b0 = _mm256_load_ps(b_);                                                    \
-        const __m256 b1 = _mm256_load_ps(b_ + 8);                                                \
-        __m256 a = _mm256_broadcast_ss(a_ + 0);                                                  \
-        c00 = _mm256_fmadd_ps(a, b0, c00);                                                       \
-        c01 = _mm256_fmadd_ps(a, b1, c01);                                                       \
-        a = _mm256_broadcast_ss(a_ + 1);                                                         \
-        c10 = _mm256_fmadd_ps(a, b0, c10);                                                       \
-        c11 = _mm256_fmadd_ps(a, b1, c11);                                                       \
-        a = _mm256_broadcast_ss(a_ + 2);                                                         \
-        c20 = _mm256_fmadd_ps(a, b0, c20);                                                       \
-        c21 = _mm256_fmadd_ps(a, b1, c21);                                                       \
-        a = _mm256_broadcast_ss(a_ + 3);                                                         \
-        c30 = _mm256_fmadd_ps(a, b0, c30);                                                       \
-        c31 = _mm256_fmadd_ps(a, b1, c31);                                                       \
-        a = _mm256_broadcast_ss(a_ + 4);                                                         \
-        c40 = _mm256_fmadd_ps(a, b0, c40);                                                       \
-        c41 = _mm256_fmadd_ps(a, b1, c41);                                                       \
-        a = _mm256_broadcast_ss(a_ + 5);                                                         \
-        c50 = _mm256_fmadd_ps(a, b0, c50);                                                       \
-        c51 = _mm256_fmadd_ps(a, b1, c51);                                                       \
+#define MENSURFLOW_STEP_6X16(i)                                                                    \
+    {                                                                                              \
+        const float* a_ = pa + 6 * (i);                                                            \
+        const float* b_ = pb + 16 * (i);                                                           \
+        const __m256 b0 = _mm256_load_ps(b_);                                                      \
+        const __m256 b1 = _mm256_load_ps(b_ + 8);                                                  \
+        __m256 a = _mm256_broadcast_ss(a_ + 0);                                                    \
+        c00 = _mm256_fmadd_ps(a, b0, c00);                                                         \
+        c01 = _mm256_fmadd_ps(a, b1, c01);                                                         \
+        a = _mm256_broadcast_ss(a_ + 1);                                                           \
+        c10 = _mm256_fmadd_ps(a, b0, c10);                                                         \
+        c11 = _mm256_fmadd_ps(a, b1, c11);                                                         \
+        a = _mm256_broadcast_ss(a_ + 2);                                                           \
+        c20 = _mm256_fmadd_ps(a, b0, c20);                                                         \
+        c21 = _mm256_fmadd_ps(a, b1, c21);                                                         \
+        a = _mm256_broadcast_ss(a_ + 3);                                                           \
+        c30 = _mm256_fmadd_ps(a, b0, c30);                                                         \
+        c31 = _mm256_fmadd_ps(a, b1, c31);                                                         \
+        a = _mm256_broadcast_ss(a_ + 4);                                                           \
+        c40 = _mm256_fmadd_ps(a, b0, c40);                                                         \
+        c41 = _mm256_fmadd_ps(a, b1, c41);                                                         \
+        a = _mm256_broadcast_ss(a_ + 5);                                                           \
+        c50 = _mm256_fmadd_ps(a, b0, c50);                                                         \
+        c51 = _mm256_fmadd_ps(a, b1, c51);                                                         \
     }
 
 // 6 x 16 with the depth loop unrolled four times (fewer loop-control instructions).
@@ -399,8 +399,8 @@ MENSURFLOW_TARGET_AVX2 void kernel_4x24(std::int64_t kc, const float* pa, const 
     store_row(c + 3 * ldc, c30, c31, c32);
 }
 
-#define MENSURFLOW_FMA_ROW(r)                                                                    \
-    a = _mm256_broadcast_ss(pa + (r));                                                           \
+#define MENSURFLOW_FMA_ROW(r)                                                                      \
+    a = _mm256_broadcast_ss(pa + (r));                                                             \
     c##r = _mm256_fmadd_ps(a, b, c##r);
 
 // 12 x 8: C[12,8] = or += sum over p < kc of pa[p*12 + r] * pb[p*8 + j].
@@ -457,6 +457,7 @@ struct Shape {
     std::int64_t nr;
     KernelFn kernel;
 };
+
 constexpr std::int64_t max_tile_floats = 96;
 
 Shape select_shape(const PackedGemmBlocking& blocking) {
@@ -479,14 +480,15 @@ Shape select_shape(const PackedGemmBlocking& blocking) {
     }
 }
 
-
 // 64-byte aligned scratch memory that grows on demand and is kept between calls, so a matmul does
 // not pay for allocating and page-faulting its packing buffers every time (that dominated small
 // products). One pair per calling thread, freed when that thread exits. The contents are not kept:
 // reserve() only guarantees room for `floats` floats.
 struct ScratchBuffer {
     ScratchBuffer() = default;
+
     ~ScratchBuffer() { release(); }
+
     ScratchBuffer(const ScratchBuffer&) = delete;
     ScratchBuffer& operator=(const ScratchBuffer&) = delete;
 
@@ -559,26 +561,22 @@ bool cpu_supports_avx2_fma() {
 
 } // namespace
 
-
 bool packed_gemm_supported() {
     static const bool supported = cpu_supports_avx2_fma();
     return supported;
 }
 
-CacheSizes cpu_cache_sizes() {
-    return {cache_bytes(1), cache_bytes(2), cache_bytes(3)};
-}
+CacheSizes cpu_cache_sizes() { return {cache_bytes(1), cache_bytes(2), cache_bytes(3)}; }
 
-PackedGemmBlocking packed_gemm_blocking() {
-    return blocking_state();
-}
+PackedGemmBlocking packed_gemm_blocking() { return blocking_state(); }
 
 void set_packed_gemm_blocking(PackedGemmBlocking blocking) {
-    if (blocking.mc <= 0 || blocking.kc <= 0 || blocking.nc <= 0 || blocking.tiles_per_thread <= 0 ||
-        blocking.prefetch < 0 || blocking.prefetch > 2 || blocking.shape < 0 || blocking.shape > 3 ||
-        blocking.scalar_pack < 0 || blocking.scalar_pack > 1 || blocking.parallel < 0 ||
-        blocking.parallel > 3 || blocking.loop_order < 0 || blocking.loop_order > 1 ||
-        blocking.profile < 0 || blocking.profile > 1 || blocking.pin < 0 || blocking.pin > 3) {
+    if (blocking.mc <= 0 || blocking.kc <= 0 || blocking.nc <= 0 ||
+        blocking.tiles_per_thread <= 0 || blocking.prefetch < 0 || blocking.prefetch > 2 ||
+        blocking.shape < 0 || blocking.shape > 3 || blocking.scalar_pack < 0 ||
+        blocking.scalar_pack > 1 || blocking.parallel < 0 || blocking.parallel > 3 ||
+        blocking.loop_order < 0 || blocking.loop_order > 1 || blocking.profile < 0 ||
+        blocking.profile > 1 || blocking.pin < 0 || blocking.pin > 3) {
         throw std::invalid_argument("packed gemm blocking: mc, kc, nc and tiles_per_thread must be "
                                     "positive, prefetch 0-2, shape 0-3, scalar_pack 0-1, parallel "
                                     "0-3, loop_order 0-1, profile 0-1, pin 0-3");
@@ -713,8 +711,8 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
             for (std::int64_t ic = 0; ic < m; ic += MC) {
                 const std::int64_t mc = std::min(MC, m - ic);
                 pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, packed_a.data);
-                compute_block(shape, kc, packed_a.data, mc, packed_b.data, nc,
-                              c + ic * ldc + jc, ldc, accumulate, loop_order);
+                compute_block(shape, kc, packed_a.data, mc, packed_b.data, nc, c + ic * ldc + jc,
+                              ldc, accumulate, loop_order);
             }
         }
     }
@@ -722,9 +720,7 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
 
 // ---- Threaded version ---------------------------------------------------------------------------
 
-PackedGemmProfile packed_gemm_profile() {
-    return g_profile;
-}
+PackedGemmProfile packed_gemm_profile() { return g_profile; }
 
 // The same five loops, with the work split across threads. Per (jc, pc) step the threads
 //   1. pack B (and, in strategies 0 and 1, all of A) together, then
@@ -734,15 +730,16 @@ PackedGemmProfile packed_gemm_profile() {
 // with a barrier between the steps). Strategy 2 also runs in one region, but each thread packs the
 // rows of A it will multiply into its own buffer, so A is written and read by the same core.
 void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
-                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
-                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        const float* b, std::int64_t rsb, std::int64_t csb,
+                                        float* c, std::int64_t ldc, std::int64_t m, std::int64_t n,
                                         std::int64_t k) {
     // Small products get fewer threads: each thread should have at least min_macs_per_thread
     // multiply-adds, or waking and joining it costs more than it saves (measured: n = 128 is
     // fastest on 4 of 24 threads).
     const double macs = static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k);
     std::int64_t threads = std::min<std::int64_t>(
-        max_threads(), std::max<std::int64_t>(1, static_cast<std::int64_t>(macs / min_macs_per_thread)));
+        max_threads(),
+        std::max<std::int64_t>(1, static_cast<std::int64_t>(macs / min_macs_per_thread)));
     // The second hardware thread of a core adds no FMA throughput, only barrier and packing overhead
     // (n = 256: 266 GFLOP/s on 12 threads, 185 on 24), so below min_macs_for_smt stay at one thread per
     // physical core. For large products the extra threads help a little (+5% at n = 4096): they fill
@@ -811,8 +808,8 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         const double t0 = profile ? wall_seconds() : 0.0;
         if (t < b_panels) {
             const std::int64_t j = t * NR;
-            pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc, std::min(NR, nc - j),
-                   pb_base + t * kc * NR);
+            pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc,
+                   std::min(NR, nc - j), pb_base + t * kc * NR);
         } else {
             const std::int64_t i = (t - b_panels) * MR;
             pack_a(scalar_pack, MR, a + i * rsa + pc * csa, rsa, csa, std::min(MR, m - i), kc,
@@ -852,14 +849,12 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         set_thread_pin(0, pin);
         g_workers_pinned = true;
         if (strategy == 0) { // the other strategies pin at the start of their own region
-            MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
-            {
+            MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads))) {
                 set_thread_pin(thread_index(), pin);
             }
         }
     } else if (pin == 0 && g_workers_pinned) {
-        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(max_threads())))
-        {
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(max_threads()))) {
             set_thread_pin(thread_index(), 0);
         }
         g_workers_pinned = false;
@@ -889,8 +884,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             }
         }
     } else if (strategy == 1) {
-        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
-        {
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads))) {
             if (do_pin) {
                 set_thread_pin(thread_index(), pin);
             }
@@ -924,8 +918,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         }
     } else if (strategy == 2) {
         std::int64_t workers = 0;
-        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
-        {
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads))) {
             if (do_pin) {
                 set_thread_pin(thread_index(), pin);
             }
@@ -945,7 +938,8 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             if (active && r1 > r0) {
                 ScratchBuffer& buffer = scratch_a();
                 // Whole panels: the last panel of a block is padded with zero rows up to MR.
-                buffer.reserve(static_cast<std::size_t>(round_up(std::min(MC, r1 - r0), MR) * kc_max));
+                buffer.reserve(
+                    static_cast<std::size_t>(round_up(std::min(MC, r1 - r0), MR) * kc_max));
                 my_a = buffer.data;
             }
             if (thread_index() == 0) {
@@ -966,8 +960,8 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                     for (std::int64_t t = 0; t < b_panels; ++t) {
                         const double t0 = profile ? wall_seconds() : 0.0;
                         const std::int64_t j = t * NR;
-                        pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc, std::min(NR, nc - j),
-                               pb_base + t * kc * NR);
+                        pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc,
+                               std::min(NR, nc - j), pb_base + t * kc * NR);
                         if (profile) {
                             clocks[static_cast<std::size_t>(thread_index())].pack +=
                                 wall_seconds() - t0;
@@ -980,12 +974,14 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                         for (std::int64_t ic = r0; ic < r1; ic += MC) {
                             const std::int64_t mc = std::min(MC, r1 - ic);
                             const double t0 = profile ? wall_seconds() : 0.0;
-                            pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, my_a);
+                            pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc,
+                                   my_a);
                             const double t1 = profile ? wall_seconds() : 0.0;
                             compute_block(shape, kc, my_a, mc, pb_base + p0 * kc * NR, cols,
                                           c + ic * ldc + jc + p0 * NR, ldc, accumulate, loop_order);
                             if (profile) {
-                                ThreadClock& clock = clocks[static_cast<std::size_t>(thread_index())];
+                                ThreadClock& clock =
+                                    clocks[static_cast<std::size_t>(thread_index())];
                                 clock.pack += t1 - t0;
                                 clock.compute += wall_seconds() - t1;
                             }
@@ -1002,8 +998,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         // takes fewer of them), but A is packed privately: a thread packs the MC rows of a tile into
         // its own buffer and keeps them for the next tile it takes from the same rows. Tiles are
         // numbered row block first, so neighbouring tiles share their rows.
-        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
-        {
+        MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads))) {
             if (do_pin) {
                 set_thread_pin(thread_index(), pin);
             }
@@ -1026,8 +1021,8 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                     for (std::int64_t t = 0; t < b_panels; ++t) {
                         const double t0 = profile ? wall_seconds() : 0.0;
                         const std::int64_t j = t * NR;
-                        pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc, std::min(NR, nc - j),
-                               pb_base + t * kc * NR);
+                        pack_b(scalar_pack, NR, b + pc * rsb + (jc + j) * csb, rsb, csb, kc,
+                               std::min(NR, nc - j), pb_base + t * kc * NR);
                         if (profile) {
                             clocks[static_cast<std::size_t>(thread_index())].pack +=
                                 wall_seconds() - t0;
@@ -1046,12 +1041,14 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                             std::min((last_panel - first_panel) * NR, nc - first_panel * NR);
                         const double t0 = profile ? wall_seconds() : 0.0;
                         if (packed_ic != ic) {
-                            pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, my_a);
+                            pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc,
+                                   my_a);
                             packed_ic = ic;
                         }
                         const double t1 = profile ? wall_seconds() : 0.0;
                         compute_block(shape, kc, my_a, mc, pb_base + first_panel * kc * NR, cols,
-                                      c + ic * n + jc + first_panel * NR, n, accumulate, loop_order);
+                                      c + ic * n + jc + first_panel * NR, n, accumulate,
+                                      loop_order);
                         if (profile) {
                             ThreadClock& clock = clocks[static_cast<std::size_t>(thread_index())];
                             clock.pack += t1 - t0;
@@ -1097,21 +1094,13 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
 
 #else // not x86-64: no AVX2 kernel, use the plain loop
 
-bool packed_gemm_supported() {
-    return false;
-}
+bool packed_gemm_supported() { return false; }
 
-CacheSizes cpu_cache_sizes() {
-    return {};
-}
+CacheSizes cpu_cache_sizes() { return {}; }
 
-PackedGemmProfile packed_gemm_profile() {
-    return {};
-}
+PackedGemmProfile packed_gemm_profile() { return {}; }
 
-PackedGemmBlocking packed_gemm_blocking() {
-    return {};
-}
+PackedGemmBlocking packed_gemm_blocking() { return {}; }
 
 void set_packed_gemm_blocking(PackedGemmBlocking) {}
 
@@ -1131,8 +1120,8 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
 }
 
 void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
-                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
-                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        const float* b, std::int64_t rsb, std::int64_t csb,
+                                        float* c, std::int64_t ldc, std::int64_t m, std::int64_t n,
                                         std::int64_t k) {
     if (m == 0 || n == 0) {
         return;

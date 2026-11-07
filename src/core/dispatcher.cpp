@@ -91,6 +91,14 @@ const char* op_name(OpId op) {
         return "prod_axis";
     case OpId::Argmax:
         return "argmax";
+    case OpId::GemmBatched:
+        return "gemm_strided_batched";
+    case OpId::Ger:
+        return "ger";
+    case OpId::Concat:
+        return "concat";
+    case OpId::Pad:
+        return "pad";
     }
     throw std::invalid_argument("invalid OpId");
 }

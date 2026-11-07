@@ -42,12 +42,15 @@ add_library(mensurflow
     src/core/tensor.cpp
     src/ops/blas.cpp
     src/ops/elementwise.cpp
+    src/ops/movement.cpp
     src/ops/reduction.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/affinity.cpp
     src/backends/cpu/ops/blas/blas.cpp
-    src/backends/cpu/ops/blas/gemm_packed.cpp
+    src/backends/cpu/ops/gemm/gemm_batched.cpp
+    src/backends/cpu/ops/gemm/gemm_packed.cpp
     src/backends/cpu/ops/elementwise/elementwise.cpp
+    src/backends/cpu/ops/movement/movement.cpp
     src/backends/cpu/ops/reduction/reduction.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
@@ -137,6 +140,9 @@ mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
 mensurflow_add_test(argmax_test tests/ops/argmax_test.cpp)
 mensurflow_add_test(reduction_test tests/ops/reduction_test.cpp)
 mensurflow_add_test(p0_extended_test tests/ops/p0_extended_test.cpp)
+mensurflow_add_test(gemm_batched_test tests/ops/gemm_batched_test.cpp)
+mensurflow_add_test(ger_test tests/ops/ger_test.cpp)
+mensurflow_add_test(movement_test tests/ops/movement_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -207,9 +213,15 @@ mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
+mensurflow_add_benchmark(gemm_batched_benchmark benchmarks/blas/gemm_batched_benchmark.cpp)
+mensurflow_add_benchmark(ger_benchmark benchmarks/blas/ger_benchmark.cpp)
+mensurflow_add_benchmark(movement_benchmark benchmarks/movement_benchmark.cpp)
 
 add_executable(mlp_xor examples/mlp_xor.cpp)
 target_link_libraries(mlp_xor PRIVATE mensurflow)
 
 add_executable(client client/main.cpp)
 target_link_libraries(client PRIVATE mensurflow)
+
+add_executable(client_perf client/perf.cpp)
+target_link_libraries(client_perf PRIVATE mensurflow)

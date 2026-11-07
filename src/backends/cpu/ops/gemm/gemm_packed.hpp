@@ -24,21 +24,23 @@ struct PackedGemmBlocking {
     std::int64_t kc = 256;
     std::int64_t nc = 4080;
     std::int64_t tiles_per_thread = 4; // parallel version: tiles of C handed out per thread
-    std::int64_t prefetch = 0;         // micro-kernel: 0 none, 1 prefetch the C tile, 2 also A and B
-    std::int64_t shape = 0;            // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8
-    std::int64_t scalar_pack = 0;      // 1 = use the scalar packers (to measure the AVX2 ones against)
+    std::int64_t prefetch = 0;    // micro-kernel: 0 none, 1 prefetch the C tile, 2 also A and B
+    std::int64_t shape = 0;       // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8
+    std::int64_t scalar_pack = 0; // 1 = use the scalar packers (to measure the AVX2 ones against)
     // Parallel version only:
-    std::int64_t parallel = 0;   // strategy: 0 two parallel loops per step (shared packed A and B),
-                                 // 1 one parallel region per call (same split, fewer thread wake-ups),
-                                 // 2 one region, B packed together, A packed privately by each thread
-                                 // (BLIS-style rows x columns grid of threads),
-                                 // 3 one region, the tiles of 0 with A packed privately per tile
-    std::int64_t loop_order = 0; // inside a block: 0 B panel outer / A panel inner, 1 the other way round
-    std::int64_t pin = 0;        // 0 threads not pinned, 1 each thread pinned to its own physical core
-                                 // (either SMT half), 2 to one hardware thread of it, 3 only a preference
-                                 // for that core (the OS may still move the thread). See affinity.hpp
-    std::int64_t profile = 0;    // 1 = record where the threads spend their time (packed_gemm_profile)
+    std::int64_t parallel = 0; // strategy: 0 two parallel loops per step (shared packed A and B),
+    // 1 one parallel region per call (same split, fewer thread wake-ups),
+    // 2 one region, B packed together, A packed privately by each thread
+    // (BLIS-style rows x columns grid of threads),
+    // 3 one region, the tiles of 0 with A packed privately per tile
+    std::int64_t loop_order =
+        0;                // inside a block: 0 B panel outer / A panel inner, 1 the other way round
+    std::int64_t pin = 0; // 0 threads not pinned, 1 each thread pinned to its own physical core
+                          // (either SMT half), 2 to one hardware thread of it, 3 only a preference
+                          // for that core (the OS may still move the thread). See affinity.hpp
+    std::int64_t profile = 0; // 1 = record where the threads spend their time (packed_gemm_profile)
 };
+
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.
 struct CacheSizes {
@@ -46,6 +48,7 @@ struct CacheSizes {
     std::int64_t l2 = 0;
     std::int64_t l3 = 0;
 };
+
 CacheSizes cpu_cache_sizes();
 
 PackedGemmBlocking packed_gemm_blocking();
@@ -56,14 +59,15 @@ void set_packed_gemm_blocking(PackedGemmBlocking blocking); // throws std::inval
 // are over the threads; the wall time minus the busy time is what threads spent waiting (barriers,
 // uneven work, thread start-up).
 struct PackedGemmProfile {
-    double wall_s = 0.0;         // whole call
-    double pack_mean_s = 0.0;    // busy packing A and B
+    double wall_s = 0.0;      // whole call
+    double pack_mean_s = 0.0; // busy packing A and B
     double pack_max_s = 0.0;
     double compute_mean_s = 0.0; // busy in the micro-kernel
     double compute_max_s = 0.0;
-    std::int64_t threads = 0;    // threads that took part
-    std::int64_t tiles = 0;      // work items handed out in the compute step(s)
+    std::int64_t threads = 0; // threads that took part
+    std::int64_t tiles = 0;   // work items handed out in the compute step(s)
 };
+
 PackedGemmProfile packed_gemm_profile();
 
 // Row-major C[m,n] = A[m,k] * B[k,n]. C is overwritten and must not overlap A or B. k == 0 fills C
@@ -89,8 +93,8 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
                                std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
                                std::int64_t m, std::int64_t n, std::int64_t k);
 void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
-                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
-                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        const float* b, std::int64_t rsb, std::int64_t csb,
+                                        float* c, std::int64_t ldc, std::int64_t m, std::int64_t n,
                                         std::int64_t k);
 
 } // namespace mensurflow::cpu

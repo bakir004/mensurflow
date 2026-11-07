@@ -34,6 +34,13 @@ Tensor matvec(const Tensor& a, const Tensor& x, Execution execution = Execution:
 Tensor gemv(const Tensor& a, const Tensor& x, float alpha = 1.0f, const Tensor* y = nullptr,
             float beta = 0.0f, bool transpose_a = false, Execution execution = Execution::Auto);
 
+// Rank-1 update: alpha * outer(x, y) + a, for an [M] x and an [N] y, giving a new contiguous [M, N]
+// tensor. a is optional (zeros when null) and must be [M, N]. All tensors must share dtype and
+// device. Only float32, and only on the CPU so far. Not differentiable yet.
+// Throws invalid_argument for wrong ranks or shapes, mixed dtypes or devices.
+Tensor ger(float alpha, const Tensor& x, const Tensor& y, const Tensor* a = nullptr,
+           Execution execution = Execution::Auto);
+
 // Matrix product of a [M, K] and a [K, N] tensor, giving a new contiguous [M, N] tensor on the same
 // device. Both inputs must have the same dtype and device. Transposed or sliced views are accepted
 // and made contiguous first. An empty M or N gives an empty result; K == 0 gives zeros.
@@ -46,5 +53,21 @@ Tensor matmul(const Tensor& a, const Tensor& b, Execution execution = Execution:
 Tensor gemm(const Tensor& a, const Tensor& b, float alpha = 1.0f, const Tensor* c = nullptr,
             float beta = 0.0f, bool transpose_a = false, bool transpose_b = false,
             Execution execution = Execution::Auto);
+
+// Batched gemm: alpha * op(a[i]) * op(b[i]) + beta * c[i] for every matrix i of a batch. a is
+// [..., M, K] and b is [..., K, N] (or [..., K, M] and [..., N, K] with the transpose flags); the
+// leading batch dimensions broadcast like NumPy's matmul, so a [B, M, K] times a [K, N] multiplies
+// every matrix by the same right-hand side without copying it. The result is a new contiguous
+// [batch..., M, N] tensor. c is optional and must broadcast to the result's shape; beta needs a c.
+// Transposed, sliced and expanded inputs are read in place. With the defaults this is a batched
+// matmul (torch.matmul / torch.bmm). Parallel over the batch or within each matrix, whichever
+// suits the shapes. Only float32, and only on the CPU so far.
+// Not differentiable yet.
+// Throws invalid_argument for inputs below 2-D, mismatched inner dimensions, batch shapes that do
+// not broadcast, a c that does not broadcast to the result, beta without c, or mixed dtypes or
+// devices.
+Tensor gemm_strided_batched(const Tensor& a, const Tensor& b, float alpha = 1.0f,
+                            const Tensor* c = nullptr, float beta = 0.0f, bool transpose_a = false,
+                            bool transpose_b = false, Execution execution = Execution::Auto);
 
 } // namespace mensurflow
