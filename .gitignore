@@ -4,6 +4,9 @@ build-*/
 # Generated Python bytecode and caches.
 __pycache__/
 *.py[cod]
+.venv-reference/
+activation-movement-reference-results.txt
+movement-benchmark-results.txt
 # Local macOS metadata.
 .DS_Store
 

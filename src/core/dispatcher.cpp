@@ -51,6 +51,16 @@ const char* op_name(OpId op) {
         return "elu";
     case OpId::Softplus:
         return "softplus";
+    case OpId::ReluBackward:
+        return "relu_backward";
+    case OpId::SigmoidBackward:
+        return "sigmoid_backward";
+    case OpId::TanhBackward:
+        return "tanh_backward";
+    case OpId::GeluBackward:
+        return "gelu_backward";
+    case OpId::SiluBackward:
+        return "silu_backward";
     case OpId::Sqrt:
         return "sqrt";
     case OpId::Exp:
@@ -125,6 +135,10 @@ const char* op_name(OpId op) {
         return "concat";
     case OpId::Pad:
         return "pad";
+    case OpId::Gather:
+        return "gather";
+    case OpId::IndexSelect:
+        return "index_select";
     }
     throw std::invalid_argument("invalid OpId");
 }

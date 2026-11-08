@@ -52,11 +52,117 @@ void transpose_f32(const float* x, float* out, std::int64_t rows, std::int64_t c
         const std::int64_t col0 = (block % tile_cols) * tile;
         const std::int64_t row_end = std::min(row0 + tile, rows);
         const std::int64_t col_end = std::min(col0 + tile, cols);
+        float values[tile][tile];
         for (std::int64_t i = row0; i < row_end; ++i) {
             for (std::int64_t j = col0; j < col_end; ++j) {
-                out[j * rows + i] = x[i * cols + j];
+                values[i - row0][j - col0] = x[i * cols + j];
             }
         }
+        for (std::int64_t j = col0; j < col_end; ++j) {
+            for (std::int64_t i = row0; i < row_end; ++i) {
+                out[j * rows + i] = values[i - row0][j - col0];
+            }
+        }
+    }
+}
+
+void gather_f32(const float* x, const std::int64_t* indices, float* out,
+                const std::int64_t* input_shape, const std::int64_t* input_strides,
+                const std::int64_t* output_shape, int ndim, int axis) {
+    std::int64_t n = 1;
+    for (int d = 0; d < ndim; ++d) {
+        n *= output_shape[d];
+    }
+
+    // For the common contiguous case, all dimensions except the selected one match. Each
+    // output row then copies a contiguous run, avoiding per-element coordinate reconstruction.
+    bool matching_rows = axis == ndim - 1 && input_strides[ndim - 1] == 1;
+    for (int d = 0; d < ndim; ++d) {
+        if (d != axis && input_shape[d] != output_shape[d]) {
+            matching_rows = false;
+        }
+    }
+    if (matching_rows) {
+        std::int64_t outer = 1;
+        std::int64_t inner = 1;
+        for (int d = 0; d < axis; ++d) {
+            outer *= input_shape[d];
+        }
+        for (int d = axis + 1; d < ndim; ++d) {
+            inner *= input_shape[d];
+        }
+        const std::int64_t input_axis = input_shape[axis];
+        const std::int64_t output_axis = output_shape[axis];
+        const std::int64_t jobs = outer * output_axis;
+        MENSURFLOW_PARALLEL_FOR(if (n > parallel_work_threshold))
+        for (std::int64_t job = 0; job < jobs; ++job) {
+            const std::int64_t outer_index = job / output_axis;
+            const std::int64_t output_index = job % output_axis;
+            const std::int64_t source_index = indices[job * inner];
+            const std::int64_t source =
+                (outer_index * input_axis + source_index) * inner;
+            std::memcpy(out + job * inner, x + source,
+                        static_cast<std::size_t>(inner) * sizeof(float));
+        }
+        return;
+    }
+
+    MENSURFLOW_PARALLEL_FOR(if (n > parallel_work_threshold))
+    for (std::int64_t linear = 0; linear < n; ++linear) {
+        std::int64_t rest = linear;
+        std::int64_t source = 0;
+        for (int d = ndim - 1; d >= 0; --d) {
+            const std::int64_t coordinate = rest % output_shape[d];
+            rest /= output_shape[d];
+            source += (d == axis ? indices[linear] : coordinate) * input_strides[d];
+        }
+        out[linear] = x[source];
+    }
+}
+
+void index_select_f32(const float* x, const std::int64_t* indices, float* out,
+                      const std::int64_t* input_shape, const std::int64_t* input_strides,
+                      int ndim, int axis, std::int64_t index_count) {
+    std::int64_t n = 1;
+    for (int d = 0; d < ndim; ++d) {
+        n *= d == axis ? index_count : input_shape[d];
+    }
+
+    // A contiguous tensor can be viewed as outer rows of axis-sized blocks followed by inner
+    // elements. Copying whole inner runs removes the division/modulo work from the hot loop.
+    if (input_strides[ndim - 1] == 1) {
+        std::int64_t outer = 1;
+        std::int64_t inner = 1;
+        for (int d = 0; d < axis; ++d) {
+            outer *= input_shape[d];
+        }
+        for (int d = axis + 1; d < ndim; ++d) {
+            inner *= input_shape[d];
+        }
+        const std::int64_t jobs = outer * index_count;
+        MENSURFLOW_PARALLEL_FOR(if (n > parallel_work_threshold))
+        for (std::int64_t job = 0; job < jobs; ++job) {
+            const std::int64_t outer_index = job / index_count;
+            const std::int64_t selected = job % index_count;
+            const std::int64_t source =
+                (outer_index * input_shape[axis] + indices[selected]) * inner;
+            std::memcpy(out + job * inner, x + source,
+                        static_cast<std::size_t>(inner) * sizeof(float));
+        }
+        return;
+    }
+
+    MENSURFLOW_PARALLEL_FOR(if (n > parallel_work_threshold))
+    for (std::int64_t linear = 0; linear < n; ++linear) {
+        std::int64_t rest = linear;
+        std::int64_t source = 0;
+        for (int d = ndim - 1; d >= 0; --d) {
+            const std::int64_t size = d == axis ? index_count : input_shape[d];
+            const std::int64_t coordinate = rest % size;
+            rest /= size;
+            source += (d == axis ? indices[coordinate] : coordinate) * input_strides[d];
+        }
+        out[linear] = x[source];
     }
 }
 

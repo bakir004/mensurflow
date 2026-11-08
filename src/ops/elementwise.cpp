@@ -28,7 +28,7 @@ Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alp
     args.approximate = approximate;
     detail::dispatch(op, args, execution);
     if (x.requires_grad()) {
-        detail::AutogradAccess::record(out, {x}, [x, op](const Tensor& gradient) {
+        detail::AutogradAccess::record(out, {x}, [x, op, approximate](const Tensor& gradient) {
             const auto input = x.to_vector<float>();
             const auto upstream = gradient.to_vector<float>();
             std::vector<float> values(upstream.size());
@@ -69,6 +69,35 @@ Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alp
                 case detail::OpId::Tanh: {
                     const float tanh_value = std::tanh(value);
                     values[i] = (1.0f - tanh_value * tanh_value) * upstream[i];
+                    break;
+                }
+                case detail::OpId::Gelu: {
+                    const double v = value;
+                    double derivative;
+                    if (approximate) {
+                        const double u =
+                            0.79788456080286535588 * v * (1.0 + 0.044715 * v * v);
+                        const double t = std::tanh(u);
+                        derivative = 0.5 * (1.0 + t) +
+                                     0.5 * v * (1.0 - t * t) *
+                                         0.79788456080286535588 *
+                                         (1.0 + 3.0 * 0.044715 * v * v);
+                    } else {
+                        derivative =
+                            0.5 * std::erfc(-v * 0.70710678118654752440) +
+                            v * 0.39894228040143267794 * std::exp(-0.5 * v * v);
+                    }
+                    values[i] = static_cast<float>(derivative) * upstream[i];
+                    break;
+                }
+                case detail::OpId::Silu: {
+                    const double v = value;
+                    const double z = std::exp(-std::fabs(v));
+                    const double normalized = v < 0.0 ? z / (1.0 + z) : 1.0 / (1.0 + z);
+                    values[i] = static_cast<float>(
+                                    normalized + static_cast<double>(value) * normalized *
+                                                                (1.0 - normalized)) *
+                                upstream[i];
                     break;
                 }
                 case detail::OpId::Sin:
@@ -295,6 +324,47 @@ Tensor softplus(const Tensor& x, float beta, float threshold, Execution executio
         throw std::invalid_argument("softplus: threshold must be finite");
     }
     return unary_op(detail::OpId::Softplus, x, execution, beta, threshold);
+}
+
+namespace {
+
+Tensor activation_backward(detail::OpId op, const Tensor& x, const Tensor& gradient,
+                           bool approximate, Execution execution) {
+    require_compatible(x, gradient, detail::op_name(op));
+    if (x.shape() != gradient.shape()) {
+        throw std::invalid_argument(std::string(detail::op_name(op)) +
+                                    ": input and gradient shapes differ");
+    }
+    const Tensor input = x.contiguous();
+    const Tensor upstream = gradient.contiguous();
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    detail::OpArgs args{{input, upstream}, {out}};
+    args.approximate = approximate;
+    detail::dispatch(op, args, execution);
+    return out;
+}
+
+} // namespace
+
+Tensor relu_backward(const Tensor& x, const Tensor& gradient, Execution execution) {
+    return activation_backward(detail::OpId::ReluBackward, x, gradient, false, execution);
+}
+
+Tensor sigmoid_backward(const Tensor& x, const Tensor& gradient, Execution execution) {
+    return activation_backward(detail::OpId::SigmoidBackward, x, gradient, false, execution);
+}
+
+Tensor tanh_backward(const Tensor& x, const Tensor& gradient, Execution execution) {
+    return activation_backward(detail::OpId::TanhBackward, x, gradient, false, execution);
+}
+
+Tensor gelu_backward(const Tensor& x, const Tensor& gradient, bool approximate,
+                     Execution execution) {
+    return activation_backward(detail::OpId::GeluBackward, x, gradient, approximate, execution);
+}
+
+Tensor silu_backward(const Tensor& x, const Tensor& gradient, Execution execution) {
+    return activation_backward(detail::OpId::SiluBackward, x, gradient, false, execution);
 }
 
 Tensor sqrt(const Tensor& x, Execution execution) {

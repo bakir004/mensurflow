@@ -39,6 +39,11 @@ enum class OpId {
     Silu,
     Elu,
     Softplus,
+    ReluBackward,
+    SigmoidBackward,
+    TanhBackward,
+    GeluBackward,
+    SiluBackward,
     Sqrt,
     Exp,
     Sigmoid,
@@ -75,7 +80,9 @@ enum class OpId {
     GemmBatched,
     Ger,
     Concat,
-    Pad
+    Pad,
+    Gather,
+    IndexSelect
 };
 
 const char* op_name(OpId op);

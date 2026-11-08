@@ -149,6 +149,7 @@ mensurflow_add_test(p0_extended_test tests/ops/p0_extended_test.cpp)
 mensurflow_add_test(gemm_batched_test tests/ops/gemm_batched_test.cpp)
 mensurflow_add_test(ger_test tests/ops/ger_test.cpp)
 mensurflow_add_test(movement_test tests/ops/movement_test.cpp)
+mensurflow_add_test(activation_movement_test tests/ops/activation_movement_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -164,6 +165,8 @@ function(mensurflow_add_benchmark name source)
 endfunction()
 
 mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.cpp)
+mensurflow_add_benchmark(bandwidth_benchmark benchmarks/bandwidth_benchmark.cpp)
+mensurflow_add_benchmark(activation_movement_benchmark benchmarks/activation_movement_benchmark.cpp)
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
 mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
 # Optional reference: matmul against OpenBLAS. AUTO builds it when OpenBLAS is found, ON requires
