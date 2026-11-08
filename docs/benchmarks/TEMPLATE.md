@@ -34,6 +34,7 @@ instructions in italics. See [README.md](README.md).
 | CMake command | *(the exact command; `-DMENSURFLOW_NATIVE=OFF`, Release)* |
 | Toolchain notes | *(for example MSYS2 UCRT64, MSVC, Linux GCC)* |
 | Header said `build: Release`? | yes / no |
+| Tests | *(CTest passed / total; all registered tests must pass)* |
 
 ## Conditions
 
@@ -60,20 +61,29 @@ matmul_benchmark > matmul.txt
 
 *Generate the tables with `docs/benchmarks/summarize_runs.awk` (commands in README.md, step 5) and paste
 them here. Paste summary tables, not the raw output. Use the same cell style as BENCHMARKS.md: `run 1 / run 2`,
-speedup = sequential time / parallel time. A good minimum: for every op, n = 1,000,000 (SIMD gain) and
-n = 100,000 and 10,000,000 (1, 8, and best thread count).*
+speedup = sequential time / parallel time. A good minimum: for every op, n = 1,000,000 (sequential time;
+SIMD gain only if scalar rows exist) and n = 100,000 and 10,000,000 (1, all, and best thread count).*
 
 ### SIMD: scalar vs sequential (n = 1,000,000)
+
+*Current output has no scalar baseline: keep scalar time and SIMD gain as `n/a`. Historical output
+with scalar rows can report SIMD gain. Paste the script's explanation along with the table.*
 
 | op | scalar ms | sequential ms | SIMD gain |
 |---|---|---|---|
 
 ### Threads (n = 100,000 and n = 10,000,000)
 
-| op | n | sequential ms | 1 thread | all threads | best of 2, 4, all |
+*For current CPU output, `1 thread` is the sequential baseline (1.00x); historical output may have a
+separate parallel one-thread measurement. Missing or zero measurements are `n/a`.*
+
+| op | n | sequential ms | 1 thread | all threads | best of 2 or more |
 |---|---|---|---|---|---|
 
 ### Matrix multiplication (GFLOP/s)
+
+*Paste the script's table with the actual thread counts. Scalar is `n/a` for current output; the
+one-thread blocked kernel remains a separate measurement from sequential.*
 
 | n | scalar | sequential | 1 thread | 2 threads | 4 threads | all threads |
 |---|---|---|---|---|---|---|

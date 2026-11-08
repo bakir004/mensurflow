@@ -34,6 +34,11 @@ enum class OpId {
     Abs,
     Square,
     Relu,
+    LeakyRelu,
+    Gelu,
+    Silu,
+    Elu,
+    Softplus,
     Sqrt,
     Exp,
     Sigmoid,
@@ -47,6 +52,14 @@ enum class OpId {
     Minimum,
     Maximum,
     Clamp,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Where,
+    Cast,
     BiasAdd,
     Sum,
     Mean,
@@ -82,11 +95,13 @@ inline bool operator<(const KernelKey& a, const KernelKey& b) {
 struct OpArgs {
     std::vector<Tensor> inputs;
     std::vector<Tensor> outputs;
-    float alpha = 1.0f; // Scalar multiplier for axpy; unused by other operations.
-    float beta = 1.0f;  // Upper bound for clamp; unused by other operations.
+    // Op-specific scalar: multiplier, clamp lower bound, activation slope/alpha, or softplus beta.
+    float alpha = 1.0f;
+    float beta = 1.0f;  // gemv beta, clamp upper bound, or softplus threshold.
     int axis = -1;      // Reduction axis; unused by other operations.
     bool keepdim = false;
     bool transpose = false;
+    bool approximate = false; // GELU: tanh approximation instead of the Gaussian CDF.
     // pad: elements added before and after each dimension, as (before, after) pairs in dimension
     // order. Unused by other operations.
     std::vector<std::int64_t> padding{};

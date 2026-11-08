@@ -15,13 +15,18 @@ namespace mensurflow {
 
 namespace {
 
-Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution) {
+Tensor unary_op(detail::OpId op, const Tensor& x, Execution execution, float alpha = 1.0f,
+                float beta = 20.0f, bool approximate = false) {
     if (!x.defined()) {
         throw std::invalid_argument(std::string(detail::op_name(op)) + ": undefined tensor");
     }
     const Tensor input = x.contiguous();
     Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
-    detail::dispatch(op, {{input}, {out}}, execution);
+    detail::OpArgs args{{input}, {out}};
+    args.alpha = alpha;
+    args.beta = beta;
+    args.approximate = approximate;
+    detail::dispatch(op, args, execution);
     if (x.requires_grad()) {
         detail::AutogradAccess::record(out, {x}, [x, op](const Tensor& gradient) {
             const auto input = x.to_vector<float>();
@@ -97,6 +102,28 @@ void require_compatible(const Tensor& a, const Tensor& b, const std::string& nam
         throw std::invalid_argument(name + ": tensors are on " + to_string(a.device()) + " and " +
                                     to_string(b.device()) + "; move one with Tensor::to()");
     }
+}
+
+Tensor comparison_op(detail::OpId op, const Tensor& a, const Tensor& b, Execution execution) {
+    const std::string name = detail::op_name(op);
+    require_compatible(a, b, name);
+    Shape shape;
+    try {
+        shape = broadcast_shapes(a.shape(), b.shape());
+    } catch (const std::invalid_argument& e) {
+        throw std::invalid_argument(name + ": " + e.what());
+    }
+    const auto packed = [&shape](const Tensor& input) {
+        return input.shape() == shape && input.is_contiguous()
+                   ? input
+                   : input.expand(shape).contiguous();
+    };
+    const Tensor x = packed(a);
+    const Tensor y = packed(b);
+    Tensor out = Tensor::empty(shape, DType::Bool, a.device());
+    // Always dispatch, including empty results, to check dtype/backend support.
+    detail::dispatch(op, {{x, y}, {out}}, execution);
+    return out;
 }
 
 Tensor binary_op(detail::OpId op, const Tensor& a, const Tensor& b, float alpha,
@@ -244,6 +271,32 @@ Tensor relu(const Tensor& x, Execution execution) {
     return unary_op(detail::OpId::Relu, x, execution);
 }
 
+Tensor leaky_relu(const Tensor& x, float negative_slope, Execution execution) {
+    return unary_op(detail::OpId::LeakyRelu, x, execution, negative_slope);
+}
+
+Tensor gelu(const Tensor& x, bool approximate, Execution execution) {
+    return unary_op(detail::OpId::Gelu, x, execution, 1.0f, 20.0f, approximate);
+}
+
+Tensor silu(const Tensor& x, Execution execution) {
+    return unary_op(detail::OpId::Silu, x, execution);
+}
+
+Tensor elu(const Tensor& x, float alpha, Execution execution) {
+    return unary_op(detail::OpId::Elu, x, execution, alpha);
+}
+
+Tensor softplus(const Tensor& x, float beta, float threshold, Execution execution) {
+    if (!std::isfinite(beta) || beta <= 0.0f) {
+        throw std::invalid_argument("softplus: beta must be positive and finite");
+    }
+    if (!std::isfinite(threshold)) {
+        throw std::invalid_argument("softplus: threshold must be finite");
+    }
+    return unary_op(detail::OpId::Softplus, x, execution, beta, threshold);
+}
+
 Tensor sqrt(const Tensor& x, Execution execution) {
     return unary_op(detail::OpId::Sqrt, x, execution);
 }
@@ -301,6 +354,82 @@ Tensor clamp(const Tensor& x, float lower, float upper, Execution execution) {
     args.alpha = lower;
     args.beta = upper;
     detail::dispatch(detail::OpId::Clamp, args, execution);
+    return out;
+}
+
+Tensor eq(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Eq, a, b, execution);
+}
+
+Tensor ne(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Ne, a, b, execution);
+}
+
+Tensor lt(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Lt, a, b, execution);
+}
+
+Tensor le(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Le, a, b, execution);
+}
+
+Tensor gt(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Gt, a, b, execution);
+}
+
+Tensor ge(const Tensor& a, const Tensor& b, Execution execution) {
+    return comparison_op(detail::OpId::Ge, a, b, execution);
+}
+
+Tensor where(const Tensor& condition, const Tensor& x, const Tensor& y, Execution execution) {
+    require_compatible(x, y, "where");
+    if (!condition.defined()) {
+        throw std::invalid_argument("where: undefined condition tensor");
+    }
+    if (condition.dtype() != DType::Bool) {
+        throw std::invalid_argument("where: condition must have Bool dtype");
+    }
+    if (condition.device() != x.device()) {
+        throw std::invalid_argument("where: condition and values must be on the same device");
+    }
+    Shape shape;
+    try {
+        shape = broadcast_shapes(broadcast_shapes(x.shape(), y.shape()), condition.shape());
+    } catch (const std::invalid_argument& e) {
+        throw std::invalid_argument(std::string("where: ") + e.what());
+    }
+    const auto packed = [&shape](const Tensor& input) {
+        return input.shape() == shape && input.is_contiguous()
+                   ? input
+                   : input.expand(shape).contiguous();
+    };
+    const Tensor a = packed(x);
+    const Tensor b = packed(y);
+    const Tensor mask = packed(condition);
+    Tensor out = Tensor::empty(shape, x.dtype(), x.device());
+    // The dispatch key uses the first input dtype, so keep values before the Bool condition.
+    detail::dispatch(detail::OpId::Where, {{a, b, mask}, {out}}, execution);
+    return out;
+}
+
+Tensor cast(const Tensor& x, DType dtype, Execution execution) {
+    if (!x.defined()) {
+        throw std::invalid_argument("cast: undefined tensor");
+    }
+    // Validate enum values before formatting errors or allocating the target.
+    (void)dtype_name(dtype);
+    const auto supported = [](DType type) {
+        return type == DType::F32 || type == DType::I32 || type == DType::F16 ||
+               type == DType::BF16;
+    };
+    if (!supported(x.dtype()) || !supported(dtype)) {
+        throw detail::NotImplemented(std::string("cast: unsupported conversion from ") +
+                                     dtype_name(x.dtype()) + " to " + dtype_name(dtype));
+    }
+    const Tensor input = x.contiguous();
+    Tensor out = Tensor::empty(x.shape(), dtype, x.device());
+    // The existing key selects the source dtype; the adapter reads the destination from out.
+    detail::dispatch(detail::OpId::Cast, {{input}, {out}}, execution);
     return out;
 }
 

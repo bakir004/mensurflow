@@ -41,6 +41,16 @@ const char* op_name(OpId op) {
         return "square";
     case OpId::Relu:
         return "relu";
+    case OpId::LeakyRelu:
+        return "leaky_relu";
+    case OpId::Gelu:
+        return "gelu";
+    case OpId::Silu:
+        return "silu";
+    case OpId::Elu:
+        return "elu";
+    case OpId::Softplus:
+        return "softplus";
     case OpId::Sqrt:
         return "sqrt";
     case OpId::Exp:
@@ -67,6 +77,22 @@ const char* op_name(OpId op) {
         return "maximum";
     case OpId::Clamp:
         return "clamp";
+    case OpId::Eq:
+        return "eq";
+    case OpId::Ne:
+        return "ne";
+    case OpId::Lt:
+        return "lt";
+    case OpId::Le:
+        return "le";
+    case OpId::Gt:
+        return "gt";
+    case OpId::Ge:
+        return "ge";
+    case OpId::Where:
+        return "where";
+    case OpId::Cast:
+        return "cast";
     case OpId::BiasAdd:
         return "bias_add";
     case OpId::Sum:

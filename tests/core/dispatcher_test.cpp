@@ -60,8 +60,10 @@ void test_registry() {
     // The CPU is the reference backend and must cover every op.
     for (OpId op : {OpId::Dot,     OpId::Matvec, OpId::Matmul, OpId::Add,     OpId::Sub,
                     OpId::Mul,     OpId::Div,    OpId::Neg,    OpId::Abs,     OpId::Square,
-                    OpId::Relu,    OpId::Sqrt,   OpId::Exp,    OpId::Sigmoid, OpId::Axpy,
-                    OpId::BiasAdd, OpId::Sum,    OpId::Mean,   OpId::Max,     OpId::Argmax}) {
+                    OpId::Relu,    OpId::LeakyRelu, OpId::Gelu, OpId::Silu, OpId::Elu,
+                    OpId::Softplus, OpId::Sqrt,   OpId::Exp,    OpId::Sigmoid, OpId::Axpy,
+                    OpId::BiasAdd, OpId::Sum,    OpId::Mean,   OpId::Max,     OpId::Argmax,
+                    OpId::Eq, OpId::Ne, OpId::Lt, OpId::Le, OpId::Gt, OpId::Ge, OpId::Where}) {
         test::require(registry.dispatcher().find({op, DeviceType::CPU, DType::F32}) != nullptr,
                       std::string("cpu ") + op_name(op) + " is registered");
     }

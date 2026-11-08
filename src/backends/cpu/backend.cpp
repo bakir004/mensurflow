@@ -5,6 +5,7 @@
 #include "backends/backend.hpp"
 
 #include "backends/cpu/ops/blas/blas.hpp"
+#include "backends/cpu/ops/elementwise/cast.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/ops/gemm/gemm_batched.hpp"
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
@@ -261,6 +262,62 @@ void unary_kernel(const OpArgs& args, Stream&) {
     Kernel(data<float>(args.inputs[0]), data<float>(out), out.numel());
 }
 
+template <void (*Kernel)(const float*, const float*, std::uint8_t*, std::int64_t)>
+void comparison_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    Kernel(data<float>(args.inputs[0]), data<float>(args.inputs[1]), data<std::uint8_t>(out),
+           out.numel());
+}
+
+void where_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    // Value inputs come first so the existing dispatcher selects their F32 kernel key.
+    cpu::where_f32(data<std::uint8_t>(args.inputs[2]), data<float>(args.inputs[0]),
+                   data<float>(args.inputs[1]), data<float>(out), out.numel());
+}
+
+void* cast_data(const Tensor& tensor) {
+    switch (tensor.dtype()) {
+    case DType::F32:
+        return data<float>(tensor);
+    case DType::I32:
+        return data<std::int32_t>(tensor);
+    case DType::F16:
+    case DType::BF16:
+        return data<std::uint16_t>(tensor);
+    default:
+        throw NotImplemented("cast: unsupported dtype");
+    }
+}
+
+void cast_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    cpu::cast_buffer(cast_data(x), x.dtype(), cast_data(out), out.dtype(), out.numel());
+}
+
+void leaky_relu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    cpu::leaky_relu_f32(data<float>(x), data<float>(out), out.numel(), args.alpha);
+}
+
+void gelu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::gelu_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.approximate);
+}
+
+void elu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::elu_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.alpha);
+}
+
+void softplus_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::softplus_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.alpha,
+                      args.beta);
+}
+
 void axpy_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
     cpu::axpy_f32(args.alpha, data<float>(args.inputs[0]), data<float>(args.inputs[1]),
@@ -355,12 +412,27 @@ class CpuBackend final : public Backend {
         add(OpId::Pow, binary_kernel<pow_f32>);
         add(OpId::Minimum, binary_kernel<minimum_f32>);
         add(OpId::Maximum, binary_kernel<maximum_f32>);
+        add(OpId::Eq, comparison_kernel<eq_f32>);
+        add(OpId::Ne, comparison_kernel<ne_f32>);
+        add(OpId::Lt, comparison_kernel<lt_f32>);
+        add(OpId::Le, comparison_kernel<le_f32>);
+        add(OpId::Gt, comparison_kernel<gt_f32>);
+        add(OpId::Ge, comparison_kernel<ge_f32>);
+        add(OpId::Where, where_kernel);
+        for (DType type : {DType::F32, DType::I32, DType::F16, DType::BF16}) {
+            dispatcher.register_kernel({OpId::Cast, DeviceType::CPU, type}, cast_kernel);
+        }
         add(OpId::Axpy, axpy_kernel);
         add(OpId::BiasAdd, bias_add_kernel);
         add(OpId::Neg, unary_kernel<neg_f32>);
         add(OpId::Abs, unary_kernel<abs_f32>);
         add(OpId::Square, unary_kernel<square_f32>);
         add(OpId::Relu, unary_kernel<relu_f32>);
+        add(OpId::LeakyRelu, leaky_relu_kernel);
+        add(OpId::Gelu, gelu_kernel);
+        add(OpId::Silu, unary_kernel<silu_f32>);
+        add(OpId::Elu, elu_kernel);
+        add(OpId::Softplus, softplus_kernel);
         add(OpId::Sqrt, unary_kernel<sqrt_f32>);
         add(OpId::Exp, unary_kernel<exp_f32>);
         add(OpId::Sigmoid, unary_kernel<sigmoid_f32>);
