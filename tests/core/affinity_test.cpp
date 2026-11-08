@@ -6,8 +6,11 @@
 #include "backends/cpu/affinity.hpp"
 #include "test_util.hpp"
 
+#include <algorithm>
 #include <bitset>
 #include <cstdint>
+#include <iostream>
+#include <vector>
 #include <string>
 #include <thread>
 
@@ -119,5 +122,26 @@ int main() {
         worker.join();
         test::require(failure.empty(), failure);
         std::cout << "physical cores: " << cpu::physical_core_count() << '\n';
+
+        // L3 cache domains: numbered from 0 in core order, each one used, the same for i and i + cores.
+        const int domains = cpu::cache_domain_count();
+        const int cores = cpu::physical_core_count();
+        test::require(domains >= 1, "at least one cache domain");
+        std::vector<bool> used(static_cast<std::size_t>(domains), false);
+        int highest = -1;
+        std::cout << "L3 domains: " << domains << " (";
+        for (int i = 0; i < std::max(cores, 1); ++i) {
+            const int d = cpu::core_cache_domain(i);
+            test::require(d >= 0 && d < domains, "domain in range");
+            test::require(d <= highest + 1, "domains numbered in order of first appearance");
+            highest = std::max(highest, d);
+            used[static_cast<std::size_t>(d)] = true;
+            test::require(cpu::core_cache_domain(i + cores) == d, "domain wraps around the cores");
+            std::cout << d << (i + 1 < cores ? " " : "");
+        }
+        std::cout << ")\n";
+        for (bool u : used) {
+            test::require(u || cores == 0, "every domain has a core");
+        }
     });
 }

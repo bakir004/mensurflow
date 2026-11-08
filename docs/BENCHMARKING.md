@@ -27,7 +27,10 @@ the threads made it faster.
 
 | Executable | Question | Source |
 |---|---|---|
-| `cpu_parallel_benchmark` | sequential vs parallel for every elementwise op and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
+| `cpu_parallel_benchmark` | sequential vs parallel arithmetic/activations and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
+| `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
+| `selection_benchmark` | F32 comparisons and `where`, one/many CPU threads; optional native ATen reference | `benchmarks/selection_benchmark.cpp` |
+| `cast_benchmark` | all 16 F32/I32/F16/BF16 pairs, one/many CPU threads; optional native ATen `copy_` reference | `benchmarks/cast_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
 | `matmul_benchmark` | the same for matrix multiplication, in GFLOP/s | `benchmarks/blas/matmul_benchmark.cpp` |
 | `matvec_benchmark` | sequential vs parallel matrix-vector multiplication across thread counts | `benchmarks/blas/matvec_benchmark.cpp` |
@@ -127,8 +130,8 @@ links the harness and gives it the include paths for `src/` and `tests/reference
 7. **Build in Release.** The header prints a warning if `NDEBUG` is not defined. Do not turn on
    `MENSURFLOW_NATIVE` for numbers you report: it makes the build specific to your CPU.
 8. **Choose sizes on purpose.** 2^17 floats is 512 KB, about L2; much larger sizes measure memory
-   bandwidth. Include sizes around the parallel cutoff (32,768 elements) and one that is not a
-   multiple of 16 or of the SIMD width.
+   bandwidth. Include sizes around the operation's parallel cutoff (initially 32,768 elements)
+   and one that is not a multiple of 16 or of the SIMD width.
 
 ## Reading the table
 
@@ -172,6 +175,70 @@ OpenBLAS). It is only built when OpenBLAS is found.
 
 The header line prints the OpenBLAS build and the core type it selected; report both with the numbers.
 
+## Comparing activations against PyTorch
+
+`activation_torch_benchmark` is OFF by default; enable it with
+`-DMENSURFLOW_TORCH_BENCHMARK=ON`. Point CMake at an installed LibTorch configuration
+(a CPU PyTorch wheel supplies one) and use a separate build directory:
+
+```bash
+cmake -S . -B build-torch-bench -DCMAKE_BUILD_TYPE=Release \
+  -DMENSURFLOW_CUDA=OFF -DMENSURFLOW_METAL=OFF -DMENSURFLOW_NATIVE=OFF \
+  -DMENSURFLOW_OPENMP=ON -DMENSURFLOW_OPENBLAS=OFF \
+  -DMENSURFLOW_TORCH_BENCHMARK=ON -DCMAKE_PREFIX_PATH=/path/to/torch/share/cmake
+cmake --build build-torch-bench -j 4
+ctest --test-dir build-torch-bench --output-on-failure
+mkdir -p build-torch-bench/results
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=spread \
+  ./build-torch-bench/activation_torch_benchmark --sizes=1000,32769,1000000 \
+  --threads=1,2,6,12 > build-torch-bench/results/activations-run1.txt
+# Cool down, then repeat with --reverse and save as activations-run2.txt.
+```
+
+For a wheel, obtain the prefix with `python -c 'import torch; print(torch.utils.cmake_prefix_path)'`
+using the Python environment where Torch is installed.
+
+Both libraries use the same preallocated F32 input/output addresses and benchmark harness. The timed
+calls are direct MensurFlow CPU kernels and native C++ ATen `out` operators, including ATen dispatch;
+allocation, Tensor wrapping and Python are excluded. `vs torch` is ATen median / MensurFlow median,
+so above one favors MensurFlow. After two cooled runs with matching operations, sizes and thread
+counts, create the paired Markdown table:
+
+```bash
+python3 benchmarks/reference/compare_native_activations.py \
+  build-torch-bench/results/activations-run1.txt \
+  build-torch-bench/results/activations-run2.txt \
+  > build-torch-bench/results/activations-paired.md
+```
+
+The parser needs only Python's standard library. It validates matching rows and shows both median
+times and ratios. Its drift column takes the larger of the two libraries' `abs(a-b)/min(a,b)*100`
+values; drift values above 10% are bold and the affected rows are counted in the summary.
+
+The cast benchmark uses buffers of the actual storage type, with input/output/reference page
+offsets 0/1024/2048 modulo 4 KB, matching the shared float-buffer spacing strategy.
+
+The same build option enables native references in `selection_benchmark` and `cast_benchmark`.
+Their logs use the same paired format and parser. Selection rates count 9 logical bytes per
+comparison and at most 13 for `where`; casts count source plus destination bytes. These are not
+physical DRAM bandwidth measurements. Selection uses deterministic finite inputs; cast floating
+inputs use quarter increments and I32 inputs use integers from -2046 to 2046. Cast names use
+`<source>_to_<destination>` (for example, `f32_to_bf16`); omit names to run all 16 pairs.
+
+## Elementwise parallel cutoffs
+
+`cpu_parallel_benchmark`, `selection_benchmark`, `cast_benchmark` and optional
+`activation_torch_benchmark` accept `--cutoff=n` for selected MensurFlow elementwise operations;
+`dot` and ATen scheduling are unaffected. Headers print effective values. Overrides are process-local
+and do not persist: omit the option for defaults, use `--cutoff=0` to force the parallel branch for
+nonempty inputs, or `--cutoff=9223372036854775807` to force serial execution.
+
+Compare forced serial and parallel medians at matching sizes and requested thread counts, including
+sizes around 32,768. Repeat cooled sessions in reversed order, refine the crossover interval, and
+check intermediate, physical-core and hardware-thread counts. Retain noisy rows and repeat if drift
+exceeds 10%. Change a default only from stable evidence; check sizes below/at/above it and rerun the
+suite with and without OpenMP. Current defaults remain untuned.
+
 ## Before you report numbers
 
 - Release build, no `MENSURFLOW_NATIVE`, CMake from a clean build folder.
@@ -193,8 +260,9 @@ The header line prints the OpenBLAS build and the core type it selected; report 
 
 ## Not done yet
 
-- An AVX2 variant (intrinsics in their own file, compiled with `-mavx2 -mfma` for that file only,
-  called only when `bench::avx2_supported()`) and an `omp simd` variant: the harness is ready for
-  them; no kernel has one yet.
+- Activation kernels use ordinary C++/OpenMP loops; no current activation benchmark establishes
+  explicit SIMD gain.
+- Per-operation elementwise cutoff tuning and final measurements are pending; see
+  [the measurement guidance above](#elementwise-parallel-cutoffs).
 - Results in BENCHMARKS.md were taken with the earlier kernel layout (`parallel_for` helpers, and a
   `scalar` no-SIMD baseline that has since been removed); its file paths refer to that layout.

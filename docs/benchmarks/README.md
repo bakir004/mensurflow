@@ -40,14 +40,14 @@ fused, which fails the `axpy` tests). Install it once in an "MSYS2 UCRT64" termi
 export PATH=/c/msys64/ucrt64/bin:/c/msys64/mingw64/bin:$PATH
 cmake -S . -B bench -G "MinGW Makefiles" -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe \
       -DCMAKE_MAKE_PROGRAM=C:/msys64/mingw64/bin/mingw32-make.exe \
-      -DMENSURFLOW_CUDA=OFF -DMENSURFLOW_NATIVE=OFF
+      -DCMAKE_BUILD_TYPE=Release -DMENSURFLOW_CUDA=OFF -DMENSURFLOW_NATIVE=OFF
 cmake --build bench -j 8
 ctest --test-dir bench
 ```
 The programs are in `bench\`. Keep the `export PATH` line in every new terminal: the programs need the
 DLLs in `ucrt64\bin`.
 
-**Linux and macOS** (not tested by us yet; tell us what you had to change):
+**Linux and macOS** (use GCC on Linux; UCRT64 is only needed on Windows with MinGW):
 ```
 cmake -S . -B bench -DCMAKE_BUILD_TYPE=Release -DMENSURFLOW_CUDA=OFF -DMENSURFLOW_METAL=OFF \
       -DMENSURFLOW_NATIVE=OFF
@@ -57,7 +57,7 @@ ctest --test-dir bench
 Apple's compiler has no OpenMP; install one (for example `brew install libomp`) or the parallel rows will
 run serially. The header of the output says `OpenMP: yes` or `no`.
 
-All 14 tests must pass before you measure.
+All registered tests must pass before you measure; record the count reported by CTest.
 
 ### 3. Get the machine quiet
 Plugged in, High performance power plan, browsers and other heavy programs closed. Antivirus: pause it
@@ -90,6 +90,16 @@ awk -v mode=threads -v size=10000000 -f docs/benchmarks/summarize_runs.awk run1.
 awk -v mode=matmul -f docs/benchmarks/summarize_runs.awk matmul.txt                   # matmul table
 ```
 Each prints a markdown table (or the stability summary) ready to paste into your result file.
+
+Current CPU benchmarks use the kernel on one thread as `sequential`, with `parallel` rows for two or
+more threads. They no longer emit a separate scalar baseline: the SIMD table reports scalar time and
+SIMD gain as `n/a`, and its sequential time remains useful. In the thread table, `1 thread` is therefore
+the sequential baseline, `1.00x`. Matrix multiplication still has a separate one-thread blocked kernel,
+so keep its measured `1 thread` value. Missing or zero measurements are shown as `n/a`.
+
+The scripts also accept the older shared-harness output with scalar rows and a separate parallel
+one-thread row. Only that output can report scalar versus sequential SIMD gains. Record the measured
+commit when comparing results from different benchmark versions.
 
 ### 6. Write your result file
 1. Copy [`TEMPLATE.md`](TEMPLATE.md) to `<yourname>-<cpu>-<YYYY-MM-DD>.md`: your name, then the CPU in a
@@ -141,7 +151,7 @@ pmset -g batt
   blocked a freshly built `.exe`. Delete that `.exe` and build again (`cmake --build bench`); a rebuilt
   file is usually allowed. Do not turn protection off. Antivirus can cause the same.
 - **A row where max is several times the median**: the machine was busy. Close more programs and rerun.
-- **Scalar rows equal to sequential rows**: the scalar baseline is vectorized anyway. This is known to
+- **Historical scalar rows equal to sequential rows**: the scalar baseline may be vectorized anyway. This is known to
   happen with MSVC (it ignores the flag we use). Say which compiler you used and treat the `vs scalar`
   column as not valid; use `vs seq`.
 - **2- and 4-thread rows differ a lot between your two runs**: thread placement. See BENCHMARKING.md; the

@@ -17,7 +17,8 @@
 //     sizes=     square matrix sizes                   (default 1024,2048)
 //     threads=   thread counts                         (default 4, half the hardware threads, all)
 //     parallel=  0 two loops per step, 1 one region, 2 one region + private A (static rows),
-//                3 dynamic tiles + private A           (default 0,1,2,3)
+//                3 dynamic tiles + private A, 4 next step packed during this one (double
+//                buffered), 5 as 4 with the team split by L3 cache   (default 0,1,2,3)
 //     pin=       0 threads not pinned, 1 pinned to a physical core, 2 to one hardware thread
 //     loop=      0 B panel outer, 1 A panel outer      (default 0)
 //     tiles=     tiles per thread, strategies 0, 1, 3  (default: the current default)

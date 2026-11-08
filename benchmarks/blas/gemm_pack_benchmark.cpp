@@ -31,6 +31,7 @@ int main() {
         {"A 240x1024", true, 240, 1024, 2048},  {"A 240x256", true, 240, 256, 2048},
         {"A 24x1024", true, 24, 1024, 2048},    {"B 1024x4080", false, 1024, 4080, 8192},
         {"B 256x4080", false, 256, 4080, 8192}, {"B 1024x256", false, 1024, 256, 2048},
+        {"B 1024x2048", false, 1024, 2048, 2048}, {"B 1024x4096", false, 1024, 4096, 4096},
     };
     for (const Case& c : cases) {
         std::vector<float> src(static_cast<std::size_t>(c.rows * c.ld));
@@ -68,6 +69,30 @@ int main() {
             config, vector, [&] { return bench::checksum(out_vector.data(), out_floats); });
         table.row(c.name, "scalar", "1", s, bytes, &s);
         table.row(c.name, "avx2", "1", v, bytes, &s);
+        if (!c.is_a) {
+            // Row-major B, several panels per pass over the rows (1 = one panel at a time).
+            for (std::int64_t run : {1, 2, 4, 8}) {
+                auto runs = [&] {
+                    dt::pack_b(16, src.data(), c.ld, 1, c.rows, c.cols, out_vector.data(), run);
+                };
+                runs();
+                bench::check_bits(out_scalar.data(), out_vector.data(), out_floats, c.name);
+                const bench::Sample r = bench::measure(
+                    config, runs, [&] { return bench::checksum(out_vector.data(), out_floats); });
+                table.row(c.name, "avx2 run " + std::to_string(run), "1", r, bytes, &s);
+            }
+            // Run 4 with software prefetch of the source rows `ahead` rows down.
+            for (std::int64_t ahead : {2, 4, 8, 16, 32}) {
+                auto pf = [&] {
+                    dt::pack_b(16, src.data(), c.ld, 1, c.rows, c.cols, out_vector.data(), 4, ahead);
+                };
+                pf();
+                bench::check_bits(out_scalar.data(), out_vector.data(), out_floats, c.name);
+                const bench::Sample r = bench::measure(
+                    config, pf, [&] { return bench::checksum(out_vector.data(), out_floats); });
+                table.row(c.name, "run 4 pf " + std::to_string(ahead), "1", r, bytes, &s);
+            }
+        }
         table.blank();
     }
     return 0;

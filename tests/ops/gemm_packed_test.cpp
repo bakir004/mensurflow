@@ -158,8 +158,8 @@ int main() {
 
         // Every micro-kernel shape, with the default block sizes and with tiny ones, so partial
         // tiles and every block boundary (rows, depth, columns) are crossed on small matrices.
-        const char* shape_names[] = {"6x16", "6x16 unrolled", "4x24", "12x8"};
-        for (int shape = 0; shape < 4; ++shape) {
+        const char* shape_names[] = {"6x16", "6x16 unrolled", "4x24", "12x8", "6x16 reuse x2", "6x16 reuse x4", "6x16 pipelined", "6x16 pipelined x2", "6x16 reuse x2 fenced", "6x16 reuse x4 fenced", "6x16 pipelined x2 fenced", "6x16 pipelined x4 fenced"};
+        for (int shape = 0; shape < 12; ++shape) {
             for (int tiny = 0; tiny < 2; ++tiny) {
                 cpu::PackedGemmBlocking blocking = original;
                 blocking.shape = shape;
@@ -202,12 +202,46 @@ int main() {
         }
         cpu::set_packed_gemm_blocking(original);
 
+        // Every prefetch mode of the kernel and between tiles, in both loop orders, with default and
+        // tiny blocks (the between-tile modes run their own tile loop, including partial tiles).
+        for (int prefetch = 0; prefetch <= 6; ++prefetch) {
+            for (int prefetch_block = 0; prefetch_block <= 4; ++prefetch_block) {
+                for (int loop = 0; loop < 2; ++loop) {
+                    for (int tiny = 0; tiny < 2; ++tiny) {
+                        cpu::PackedGemmBlocking blocking = original;
+                        blocking.prefetch = prefetch;
+                        blocking.prefetch_block = prefetch_block;
+                        blocking.loop_order = loop;
+                        if (tiny != 0) {
+                            blocking.mc = 24;
+                            blocking.kc = 20;
+                            blocking.nc = 48;
+                        }
+                        cpu::set_packed_gemm_blocking(blocking);
+                        const std::string name = "prefetch " + std::to_string(prefetch) + "/" +
+                                                 std::to_string(prefetch_block) + " loop " +
+                                                 std::to_string(loop) + (tiny != 0 ? " tiny" : "");
+                        for (const auto& s : extra) {
+                            check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                        }
+                        cpu::set_max_threads(3);
+                        for (const auto& s : big) {
+                            check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1],
+                                        s[2]);
+                        }
+                        cpu::set_max_threads(saved_threads);
+                    }
+                }
+            }
+        }
+        cpu::set_packed_gemm_blocking(original);
+
         // The ways of parallelizing the loops (strategy 0 to 3), with and without pinning the threads
         // to cores, in both loop orders, with the default block sizes and with tiny ones, on a thread
         // count below and one above the number of cores. Two larger shapes are included because
         // pinning is only done for products of at least 8 million multiply-adds.
         const std::int64_t large[][3] = {{300, 300, 300}, {97, 257, 901}};
-        for (int strategy = 0; strategy < 4; ++strategy) {
+        for (int strategy = 0; strategy < 6; ++strategy) {
             for (int pin : {0, 1}) {
                 for (int loop : {0, 1}) {
                     for (int tiny = 0; tiny < 2; ++tiny) {
@@ -279,13 +313,19 @@ int main() {
         }
         // One product big enough to be pinned (at least 8 million multiply-adds) in the layouts that
         // matter: transposed A, transposed B, both, and a padded view.
-        cpu::set_packed_gemm_blocking(original);
-        for (int kinds : {0, 1, 2, 3}) {
-            cpu::set_max_threads(12);
-            check_strided(cpu::matmul_f32_packed_parallel_strided, "strided parallel large",
-                          kinds == 1 || kinds == 3 ? 2 : 1, kinds == 2 || kinds == 3 ? 2 : 1, 300,
-                          300, 300);
-            cpu::set_max_threads(saved_threads);
+        // Every parallel strategy, so each one honours the row stride of C.
+        for (int strategy = 0; strategy < 6; ++strategy) {
+            cpu::PackedGemmBlocking blocking = original;
+            blocking.parallel = strategy;
+            cpu::set_packed_gemm_blocking(blocking);
+            for (int kinds : {0, 1, 2, 3}) {
+                cpu::set_max_threads(12);
+                check_strided(cpu::matmul_f32_packed_parallel_strided,
+                              "strided parallel large strategy " + std::to_string(strategy),
+                              kinds == 1 || kinds == 3 ? 2 : 1, kinds == 2 || kinds == 3 ? 2 : 1,
+                              300, 300, 300);
+                cpu::set_max_threads(saved_threads);
+            }
         }
         cpu::set_packed_gemm_blocking(original);
 

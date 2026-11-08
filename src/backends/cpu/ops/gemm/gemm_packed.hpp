@@ -17,30 +17,42 @@ bool packed_gemm_supported();
 // Cache-block sizes of the packed kernels: an MC x KC block of A is meant to stay in L2, a KC x NC
 // block of B in L3. mc and nc are rounded down to whole tiles of the chosen shape. The defaults are BLIS's
 // Haswell values (168, 256, 4080, 4 tiles per thread), except with an L2 of 512 KB or more, where
-// they are (240, 1024, L3-derived up to 8160, 16). The setter exists for tuning benchmarks: it is not thread-safe
+// they are (240, 768, L3-derived up to 8160, 16). The setter exists for tuning benchmarks: it is not thread-safe
 // and must not be called while a matmul is running.
 struct PackedGemmBlocking {
     std::int64_t mc = 168;
     std::int64_t kc = 256;
     std::int64_t nc = 4080;
     std::int64_t tiles_per_thread = 4; // parallel version: tiles of C handed out per thread
-    std::int64_t prefetch = 0;    // micro-kernel: 0 none, 1 prefetch the C tile, 2 also A and B
-    std::int64_t shape = 0;       // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8
-    std::int64_t scalar_pack = 0; // 1 = use the scalar packers (to measure the AVX2 ones against)
+    std::int64_t prefetch = 0;         // micro-kernel (6x16 shape 0): 0 none, 1 the C tile, 2 C and
+                                       // A/B 8 steps ahead, 3 B 32 steps ahead (L1), 4 B 128 steps
+                                       // ahead (L2), 5 the C tile with write intent, 6 = 5 + 3
+    std::int64_t prefetch_block = 0;   // between tiles: 0 none, 1 the next C tile, 2 the same with
+                                       // write intent, 3 the next A panel spread over the row of
+                                       // tiles (loop order 1), 4 = 2 + 3
+    std::int64_t shape = 0;            // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8;
+                                       // 6x16 loop variants: 4/5 unrolled x2/x4, 6 broadcasts
+                                       // pipelined a row ahead, 7 pipelined x2, 8/9 unrolled x2/x4
+                                       // with a compiler fence, 10/11 pipelined x2/x4 with the fence
+                                       // (docs/MATMUL_OPTIMIZATION.md section 20)
+    std::int64_t scalar_pack = 0;      // 1 = use the scalar packers (to measure the AVX2 ones against)
     // Parallel version only:
-    std::int64_t parallel = 0; // strategy: 0 two parallel loops per step (shared packed A and B),
-    // 1 one parallel region per call (same split, fewer thread wake-ups),
-    // 2 one region, B packed together, A packed privately by each thread
-    // (BLIS-style rows x columns grid of threads),
-    // 3 one region, the tiles of 0 with A packed privately per tile
-    std::int64_t loop_order =
-        0;                // inside a block: 0 B panel outer / A panel inner, 1 the other way round
-    std::int64_t pin = 0; // 0 threads not pinned, 1 each thread pinned to its own physical core
-                          // (either SMT half), 2 to one hardware thread of it, 3 only a preference
-                          // for that core (the OS may still move the thread). See affinity.hpp
-    std::int64_t profile = 0; // 1 = record where the threads spend their time (packed_gemm_profile)
+    std::int64_t parallel = 0;   // strategy: 0 two parallel loops per step (shared packed A and B),
+                                 // 1 one parallel region per call (same split, fewer thread wake-ups),
+                                 // 2 one region, B packed together, A packed privately by each thread
+                                 // (BLIS-style rows x columns grid of threads),
+                                 // 3 one region, the tiles of 0 with A packed privately per tile,
+                                 // 4 one region, the next step packed while this one is multiplied
+                                 // (two buffers); below 2^29 multiply-adds the team is split by L3
+                                 // cache as in 5 (the default),
+                                 // 5 as 4, always split by L3 cache: each chiplet computes its own
+                                 // columns of C from its own copy of A and its own B panels
+    std::int64_t loop_order = 0; // inside a block: 0 B panel outer / A panel inner, 1 the other way round
+    std::int64_t pin = 0;        // 0 threads not pinned, 1 each thread pinned to its own physical core
+                                 // (either SMT half), 2 to one hardware thread of it, 3 only a preference
+                                 // for that core (the OS may still move the thread). See affinity.hpp
+    std::int64_t profile = 0;    // 1 = record where the threads spend their time (packed_gemm_profile)
 };
-
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.
 struct CacheSizes {
@@ -48,7 +60,6 @@ struct CacheSizes {
     std::int64_t l2 = 0;
     std::int64_t l3 = 0;
 };
-
 CacheSizes cpu_cache_sizes();
 
 PackedGemmBlocking packed_gemm_blocking();
@@ -59,16 +70,23 @@ void set_packed_gemm_blocking(PackedGemmBlocking blocking); // throws std::inval
 // are over the threads; the wall time minus the busy time is what threads spent waiting (barriers,
 // uneven work, thread start-up).
 struct PackedGemmProfile {
-    double wall_s = 0.0;      // whole call
-    double pack_mean_s = 0.0; // busy packing A and B
+    double wall_s = 0.0;         // whole call
+    double pack_mean_s = 0.0;    // busy packing A and B
     double pack_max_s = 0.0;
     double compute_mean_s = 0.0; // busy in the micro-kernel
     double compute_max_s = 0.0;
-    std::int64_t threads = 0; // threads that took part
-    std::int64_t tiles = 0;   // work items handed out in the compute step(s)
+    std::int64_t threads = 0;    // threads that took part
+    std::int64_t tiles = 0;      // work items handed out in the compute step(s)
 };
-
 PackedGemmProfile packed_gemm_profile();
+
+// For benchmarks of the micro-kernel alone: the tile (mr x nr) of micro-kernel `shape` (see
+// PackedGemmBlocking::shape), and one call of it on packed panels pa (kc steps of mr floats) and pb
+// (kc steps of nr floats, 32-byte aligned), writing (or adding to) C[mr, nr] with row stride ldc.
+// Both return false, doing nothing, for an unknown shape or a CPU without AVX2.
+bool packed_microkernel_tile(int shape, std::int64_t& mr, std::int64_t& nr);
+bool run_packed_microkernel(int shape, std::int64_t kc, const float* pa, const float* pb, float* c,
+                            std::int64_t ldc, bool accumulate);
 
 // Row-major C[m,n] = A[m,k] * B[k,n]. C is overwritten and must not overlap A or B. k == 0 fills C
 // with zeros. Products are accumulated with fused multiply-adds in increasing p, so results can
@@ -93,8 +111,8 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
                                std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
                                std::int64_t m, std::int64_t n, std::int64_t k);
 void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
-                                        const float* b, std::int64_t rsb, std::int64_t csb,
-                                        float* c, std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
+                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
                                         std::int64_t k);
 
 } // namespace mensurflow::cpu
