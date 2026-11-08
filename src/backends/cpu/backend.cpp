@@ -243,8 +243,26 @@ void pad_kernel(const OpArgs& args, Stream&) {
         before[d] = args.padding[2 * d];
         after[d] = args.padding[2 * d + 1];
     }
+
     cpu::pad_f32(data<float>(x), data<float>(args.outputs[0]), x.shape().data(), before.data(),
                  after.data(), ndim, args.alpha);
+}
+
+void gather_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& indices = args.inputs[1];
+    const Tensor& out = args.outputs[0];
+    cpu::gather_f32(data<float>(x), data<std::int64_t>(indices), data<float>(out), x.shape().data(),
+                    x.strides().data(), out.shape().data(), x.dim(), args.axis);
+}
+
+void index_select_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& indices = args.inputs[1];
+    const Tensor& out = args.outputs[0];
+    cpu::index_select_f32(data<float>(x), data<std::int64_t>(indices), data<float>(out),
+                          x.shape().data(), x.strides().data(), x.dim(), args.axis,
+                          indices.numel());
 }
 
 // ---- Elementwise ---------------------------------------------------------------------------
@@ -260,6 +278,18 @@ template <void (*Kernel)(const float*, float*, std::int64_t)>
 void unary_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
     Kernel(data<float>(args.inputs[0]), data<float>(out), out.numel());
+}
+
+template <void (*Kernel)(const float*, const float*, float*, std::int64_t)>
+void backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    Kernel(data<float>(args.inputs[0]), data<float>(args.inputs[1]), data<float>(out), out.numel());
+}
+
+void gelu_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::gelu_backward_f32(data<float>(args.inputs[0]), data<float>(args.inputs[1]),
+                           data<float>(out), out.numel(), args.approximate);
 }
 
 template <void (*Kernel)(const float*, const float*, std::uint8_t*, std::int64_t)>
@@ -433,6 +463,11 @@ class CpuBackend final : public Backend {
         add(OpId::Silu, unary_kernel<silu_f32>);
         add(OpId::Elu, elu_kernel);
         add(OpId::Softplus, softplus_kernel);
+        add(OpId::ReluBackward, backward_kernel<relu_backward_f32>);
+        add(OpId::SigmoidBackward, backward_kernel<sigmoid_backward_f32>);
+        add(OpId::TanhBackward, backward_kernel<tanh_backward_f32>);
+        add(OpId::GeluBackward, gelu_backward_kernel);
+        add(OpId::SiluBackward, backward_kernel<silu_backward_f32>);
         add(OpId::Sqrt, unary_kernel<sqrt_f32>);
         add(OpId::Exp, unary_kernel<exp_f32>);
         add(OpId::Sigmoid, unary_kernel<sigmoid_f32>);
@@ -460,6 +495,8 @@ class CpuBackend final : public Backend {
         add(OpId::GemmBatched, gemm_batched_kernel<gemm_batched_default>);
         add(OpId::Concat, concat_kernel);
         add(OpId::Pad, pad_kernel);
+        add(OpId::Gather, gather_kernel);
+        add(OpId::IndexSelect, index_select_kernel);
     }
 
   private:

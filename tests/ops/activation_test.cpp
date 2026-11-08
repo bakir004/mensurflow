@@ -1,5 +1,5 @@
 // CPU activation forward contracts: independent float64 values, API views/errors,
-// thread invariance, parameter forwarding and errors for pending backward rules.
+// thread invariance, parameter forwarding and backward rules.
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/ops/elementwise/parallel_cutoffs.hpp"
 #include "backends/cpu/threads.hpp"
@@ -217,15 +217,21 @@ void test_parameters_and_special_values() {
     }
 }
 
-void test_backward_pending() {
+void test_backward_rules() {
     for (const Activation& op : activations) {
         Tensor x = Tensor::full({}, -0.75);
         x.set_requires_grad();
         const Tensor output = op.apply(x, Execution::CPU);
         check_values(op, {-0.75f}, output.to_vector<float>());
         test::require(output.requires_grad(), std::string(op.name) + " records the pending operation");
-        test::require_throws<std::logic_error>([&] { output.backward(); },
-                                              std::string(op.name) + " backward is not implemented");
+        const std::string name(op.name);
+        if (name != "gelu" && name != "gelu_tanh" && name != "silu") {
+            test::require_throws<std::logic_error>(
+                [&] { output.backward(); }, name + " backward is not implemented");
+        } else {
+            output.backward();
+            test::require(x.grad().defined(), name + " backward computes a gradient");
+        }
     }
 }
 
@@ -236,6 +242,6 @@ int main() {
         test_api_and_errors();
         test_threads_and_in_place();
         test_parameters_and_special_values();
-        test_backward_pending();
+        test_backward_rules();
     });
 }

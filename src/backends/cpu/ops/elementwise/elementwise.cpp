@@ -215,8 +215,62 @@ void softplus_f32(const float* x, float* out, std::int64_t n, float beta, float 
         if (scaled > threshold) {
             return value;
         }
+
         return static_cast<float>(
             (std::max(scaled, 0.0) + std::log1p(std::exp(-std::fabs(scaled)))) / beta);
+    });
+}
+
+template <typename Function>
+void activation_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n,
+                             Function derivative) {
+    MENSURFLOW_PARALLEL_FOR(if (n > parallel_work_threshold))
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = derivative(x[i]) * gradient[i];
+    }
+}
+
+void relu_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n) {
+    activation_backward_f32(x, gradient, out, n,
+                            [](float value) { return value > 0.0f ? 1.0f : 0.0f; });
+}
+
+void sigmoid_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n) {
+    activation_backward_f32(x, gradient, out, n, [](float value) {
+        const double sigmoid = stable_sigmoid(value);
+        return static_cast<float>(sigmoid * (1.0 - sigmoid));
+    });
+}
+
+void tanh_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n) {
+    activation_backward_f32(x, gradient, out, n, [](float value) {
+        const float tanh_value = std::tanh(value);
+        return 1.0f - tanh_value * tanh_value;
+    });
+}
+
+void gelu_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n,
+                       bool approximate) {
+    activation_backward_f32(x, gradient, out, n, [approximate](float value) {
+        const double v = value;
+        if (approximate) {
+            const double u = 0.79788456080286535588 * v * (1.0 + 0.044715 * v * v);
+            const double t = std::tanh(u);
+            return static_cast<float>(
+                0.5 * (1.0 + t) +
+                0.5 * v * (1.0 - t * t) * 0.79788456080286535588 *
+                    (1.0 + 3.0 * 0.044715 * v * v));
+        }
+        const double normal_pdf = 0.39894228040143267794 * std::exp(-0.5 * v * v);
+        return static_cast<float>(0.5 * std::erfc(-v * 0.70710678118654752440) +
+                                  v * normal_pdf);
+    });
+}
+
+void silu_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n) {
+    activation_backward_f32(x, gradient, out, n, [](float value) {
+        const double sigmoid = stable_sigmoid(value);
+        return static_cast<float>(sigmoid + value * sigmoid * (1.0 - sigmoid));
     });
 }
 
