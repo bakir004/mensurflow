@@ -10,6 +10,13 @@
 
 namespace mensurflow::cpu {
 
+// Copies a strided float32 view into contiguous row-major storage.
+void strided_copy_f32(const float* x, float* out, const std::int64_t* shape,
+                      const std::int64_t* strides, int ndim);
+
+// Transposes a contiguous row-major [rows, cols] matrix into [cols, rows].
+void transpose_f32(const float* x, float* out, std::int64_t rows, std::int64_t cols);
+
 // Joins `count` contiguous inputs along one axis. Seen around that axis, input t is an
 // [outer, widths[t]] matrix (widths[t] = its size along the axis times the product of the sizes
 // after it), and the output is the [outer, sum of widths] matrix whose rows are the input rows side

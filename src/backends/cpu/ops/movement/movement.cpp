@@ -9,6 +9,57 @@
 
 namespace mensurflow::cpu {
 
+void strided_copy_f32(const float* x, float* out, const std::int64_t* shape,
+                      const std::int64_t* strides, int ndim) {
+    std::int64_t n = 1;
+    for (int d = 0; d < ndim; ++d) {
+        n *= shape[d];
+    }
+    if (n == 0) {
+        return;
+    }
+
+    const bool contiguous_rows = ndim > 0 && strides[ndim - 1] == 1;
+    const std::int64_t row = contiguous_rows ? shape[ndim - 1] : 1;
+    const std::int64_t rows = n / row;
+    MENSURFLOW_PARALLEL_FOR(if (n > parallel_work_threshold))
+    for (std::int64_t linear = 0; linear < rows; ++linear) {
+        std::int64_t source = 0;
+        std::int64_t index = linear;
+        const int walked = contiguous_rows ? ndim - 1 : ndim;
+        for (int d = walked - 1; d >= 0; --d) {
+            const std::int64_t coordinate = index % shape[d];
+            index /= shape[d];
+            source += coordinate * strides[d];
+        }
+        if (contiguous_rows) {
+            std::memcpy(out + linear * row, x + source,
+                        static_cast<std::size_t>(row) * sizeof(float));
+        } else {
+            out[linear] = x[source];
+        }
+    }
+}
+
+void transpose_f32(const float* x, float* out, std::int64_t rows, std::int64_t cols) {
+    constexpr std::int64_t tile = 32;
+    const std::int64_t tile_rows = (rows + tile - 1) / tile;
+    const std::int64_t tile_cols = (cols + tile - 1) / tile;
+    const std::int64_t tiles = tile_rows * tile_cols;
+    MENSURFLOW_PARALLEL_FOR(if (rows * cols > parallel_work_threshold))
+    for (std::int64_t block = 0; block < tiles; ++block) {
+        const std::int64_t row0 = (block / tile_cols) * tile;
+        const std::int64_t col0 = (block % tile_cols) * tile;
+        const std::int64_t row_end = std::min(row0 + tile, rows);
+        const std::int64_t col_end = std::min(col0 + tile, cols);
+        for (std::int64_t i = row0; i < row_end; ++i) {
+            for (std::int64_t j = col0; j < col_end; ++j) {
+                out[j * rows + i] = x[i * cols + j];
+            }
+        }
+    }
+}
+
 // Both kernels only copy, so a thread finishes a small job faster than OpenMP can wake the others.
 // With elementwise's cutoff of 32768 elements they ran 6 to 9 times slower than one thread just
 // above it on an M3 Pro (a 64 x 1024 concat, a 181 x 181 pad) and were clearly faster from about a
