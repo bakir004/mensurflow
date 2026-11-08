@@ -460,6 +460,191 @@ MENSURFLOW_TARGET_AVX2 void kernel_12x8(std::int64_t kc, const float* pa, const 
     store_row(c + 11 * ldc, c11);
 }
 
+// ---- 6 x 16 variants: unrolling and where the broadcasts go (shapes 4-7) ------------------------
+// All keep the 12 accumulators of kernel_6x16 in registers. They differ in how the depth loop is
+// written; docs/MATMUL_OPTIMIZATION.md section 20 has the assembly and the measurements.
+
+// A compiler-only fence (no instruction): memory accesses are not moved across it. Without it MSVC
+// hoists the loads and broadcasts of every unrolled step to the top of the loop body, which needs
+// more than the 16 ymm registers and spills accumulators to the stack inside the loop (seen in the
+// disassembly; it is why the old unrolled kernel, shape 1, is 25% slower).
+#if defined(_MSC_VER) && !defined(__clang__)
+#define MENSURFLOW_STEP_FENCE() _ReadWriteBarrier()
+#else
+#define MENSURFLOW_STEP_FENCE() __asm__ __volatile__("" ::: "memory")
+#endif
+
+// Stores the 6 x 16 accumulators (row stride ldc), adding the old C when accumulating.
+#define MENSURFLOW_STORE_6X16()                                                                  \
+    {                                                                                            \
+        __m256* acc[6][2] = {{&c00, &c01}, {&c10, &c11}, {&c20, &c21},                           \
+                             {&c30, &c31}, {&c40, &c41}, {&c50, &c51}};                          \
+        for (int r = 0; r < 6; ++r) {                                                            \
+            float* row = c + r * ldc;                                                            \
+            __m256 lo = *acc[r][0];                                                              \
+            __m256 hi = *acc[r][1];                                                              \
+            if (accumulate) {                                                                    \
+                lo = _mm256_add_ps(lo, _mm256_loadu_ps(row));                                    \
+                hi = _mm256_add_ps(hi, _mm256_loadu_ps(row + 8));                                \
+            }                                                                                    \
+            _mm256_storeu_ps(row, lo);                                                           \
+            _mm256_storeu_ps(row + 8, hi);                                                       \
+        }                                                                                        \
+    }
+
+#define MENSURFLOW_ZERO_6X16()                                                                   \
+    __m256 c00 = _mm256_setzero_ps(), c01 = _mm256_setzero_ps();                                 \
+    __m256 c10 = _mm256_setzero_ps(), c11 = _mm256_setzero_ps();                                 \
+    __m256 c20 = _mm256_setzero_ps(), c21 = _mm256_setzero_ps();                                 \
+    __m256 c30 = _mm256_setzero_ps(), c31 = _mm256_setzero_ps();                                 \
+    __m256 c40 = _mm256_setzero_ps(), c41 = _mm256_setzero_ps();                                 \
+    __m256 c50 = _mm256_setzero_ps(), c51 = _mm256_setzero_ps();
+
+// One depth step at offset `s` steps from pa / pb, reusing the three temporaries b0, b1, a (declared
+// once outside the loop, so the compiler sees one live range per register, not one per step).
+#define MENSURFLOW_STEP_REUSE(s)                                                                 \
+    b0 = _mm256_load_ps(pb + 16 * (s));                                                          \
+    b1 = _mm256_load_ps(pb + 16 * (s) + 8);                                                      \
+    a = _mm256_broadcast_ss(pa + 6 * (s) + 0);                                                   \
+    c00 = _mm256_fmadd_ps(a, b0, c00);                                                           \
+    c01 = _mm256_fmadd_ps(a, b1, c01);                                                           \
+    a = _mm256_broadcast_ss(pa + 6 * (s) + 1);                                                   \
+    c10 = _mm256_fmadd_ps(a, b0, c10);                                                           \
+    c11 = _mm256_fmadd_ps(a, b1, c11);                                                           \
+    a = _mm256_broadcast_ss(pa + 6 * (s) + 2);                                                   \
+    c20 = _mm256_fmadd_ps(a, b0, c20);                                                           \
+    c21 = _mm256_fmadd_ps(a, b1, c21);                                                           \
+    a = _mm256_broadcast_ss(pa + 6 * (s) + 3);                                                   \
+    c30 = _mm256_fmadd_ps(a, b0, c30);                                                           \
+    c31 = _mm256_fmadd_ps(a, b1, c31);                                                           \
+    a = _mm256_broadcast_ss(pa + 6 * (s) + 4);                                                   \
+    c40 = _mm256_fmadd_ps(a, b0, c40);                                                           \
+    c41 = _mm256_fmadd_ps(a, b1, c41);                                                           \
+    a = _mm256_broadcast_ss(pa + 6 * (s) + 5);                                                   \
+    c50 = _mm256_fmadd_ps(a, b0, c50);                                                           \
+    c51 = _mm256_fmadd_ps(a, b1, c51);
+
+// The depth loop unrolled U times, one pointer update per U steps. Fence: a compiler fence between
+// the steps. Shapes 4 (U 2) and 5 (U 4) without the fence, 8 and 9 with it.
+template <int U, bool Fence>
+MENSURFLOW_TARGET_AVX2 void kernel_6x16_reuse(std::int64_t kc, const float* pa, const float* pb,
+                                              float* c, std::int64_t ldc, bool accumulate) {
+    MENSURFLOW_ZERO_6X16()
+    __m256 b0, b1, a;
+    std::int64_t p = 0;
+    for (; p + U <= kc; p += U) {
+        MENSURFLOW_STEP_REUSE(0)
+        if constexpr (Fence) {
+            MENSURFLOW_STEP_FENCE();
+        }
+        MENSURFLOW_STEP_REUSE(1)
+        if constexpr (U == 4) {
+            if constexpr (Fence) {
+                MENSURFLOW_STEP_FENCE();
+            }
+            MENSURFLOW_STEP_REUSE(2)
+            if constexpr (Fence) {
+                MENSURFLOW_STEP_FENCE();
+            }
+            MENSURFLOW_STEP_REUSE(3)
+        }
+        pa += 6 * U;
+        pb += 16 * U;
+    }
+    for (; p < kc; ++p) {
+        MENSURFLOW_STEP_REUSE(0)
+        pa += 6;
+        pb += 16;
+    }
+    MENSURFLOW_STORE_6X16()
+}
+
+// One depth step with the broadcasts pipelined one row ahead: the 16th register holds the A value of
+// the next row while the current row's two FMAs run, so a broadcast never waits right before its
+// use. On entry x0 holds A[row 0] of this step; on exit it holds A[row 0] of step s + 1, which is why
+// the last step of a panel is done by MENSURFLOW_STEP_PIPE_LAST (it must not read past the panel).
+#define MENSURFLOW_STEP_PIPE(s)                                                                  \
+    b0 = _mm256_load_ps(pb + 16 * (s));                                                          \
+    b1 = _mm256_load_ps(pb + 16 * (s) + 8);                                                      \
+    x1 = _mm256_broadcast_ss(pa + 6 * (s) + 1);                                                  \
+    c00 = _mm256_fmadd_ps(x0, b0, c00);                                                          \
+    c01 = _mm256_fmadd_ps(x0, b1, c01);                                                          \
+    x0 = _mm256_broadcast_ss(pa + 6 * (s) + 2);                                                  \
+    c10 = _mm256_fmadd_ps(x1, b0, c10);                                                          \
+    c11 = _mm256_fmadd_ps(x1, b1, c11);                                                          \
+    x1 = _mm256_broadcast_ss(pa + 6 * (s) + 3);                                                  \
+    c20 = _mm256_fmadd_ps(x0, b0, c20);                                                          \
+    c21 = _mm256_fmadd_ps(x0, b1, c21);                                                          \
+    x0 = _mm256_broadcast_ss(pa + 6 * (s) + 4);                                                  \
+    c30 = _mm256_fmadd_ps(x1, b0, c30);                                                          \
+    c31 = _mm256_fmadd_ps(x1, b1, c31);                                                          \
+    x1 = _mm256_broadcast_ss(pa + 6 * (s) + 5);                                                  \
+    c40 = _mm256_fmadd_ps(x0, b0, c40);                                                          \
+    c41 = _mm256_fmadd_ps(x0, b1, c41);                                                          \
+    x0 = _mm256_broadcast_ss(pa + 6 * (s) + 6);                                                  \
+    c50 = _mm256_fmadd_ps(x1, b0, c50);                                                          \
+    c51 = _mm256_fmadd_ps(x1, b1, c51);
+
+#define MENSURFLOW_STEP_PIPE_LAST()                                                              \
+    b0 = _mm256_load_ps(pb);                                                                     \
+    b1 = _mm256_load_ps(pb + 8);                                                                 \
+    x1 = _mm256_broadcast_ss(pa + 1);                                                            \
+    c00 = _mm256_fmadd_ps(x0, b0, c00);                                                          \
+    c01 = _mm256_fmadd_ps(x0, b1, c01);                                                          \
+    x0 = _mm256_broadcast_ss(pa + 2);                                                            \
+    c10 = _mm256_fmadd_ps(x1, b0, c10);                                                          \
+    c11 = _mm256_fmadd_ps(x1, b1, c11);                                                          \
+    x1 = _mm256_broadcast_ss(pa + 3);                                                            \
+    c20 = _mm256_fmadd_ps(x0, b0, c20);                                                          \
+    c21 = _mm256_fmadd_ps(x0, b1, c21);                                                          \
+    x0 = _mm256_broadcast_ss(pa + 4);                                                            \
+    c30 = _mm256_fmadd_ps(x1, b0, c30);                                                          \
+    c31 = _mm256_fmadd_ps(x1, b1, c31);                                                          \
+    x1 = _mm256_broadcast_ss(pa + 5);                                                            \
+    c40 = _mm256_fmadd_ps(x0, b0, c40);                                                          \
+    c41 = _mm256_fmadd_ps(x0, b1, c41);                                                          \
+    c50 = _mm256_fmadd_ps(x1, b0, c50);                                                          \
+    c51 = _mm256_fmadd_ps(x1, b1, c51);
+
+// Broadcasts pipelined one row ahead, all 16 registers in use, the depth loop unrolled U times.
+// Shapes 6 (U 1) and 7 (U 2) without fences, 10 (U 2) and 11 (U 4) with a fence between the steps.
+template <int U, bool Fence>
+MENSURFLOW_TARGET_AVX2 void kernel_6x16_pipe(std::int64_t kc, const float* pa, const float* pb,
+                                             float* c, std::int64_t ldc, bool accumulate) {
+    MENSURFLOW_ZERO_6X16()
+    __m256 b0, b1, x1;
+    __m256 x0 = _mm256_broadcast_ss(pa);
+    std::int64_t p = 0;
+    for (; p + U < kc; p += U) { // every step but the last reads the next step's first A value
+        MENSURFLOW_STEP_PIPE(0)
+        if constexpr (U >= 2) {
+            if constexpr (Fence) {
+                MENSURFLOW_STEP_FENCE();
+            }
+            MENSURFLOW_STEP_PIPE(1)
+        }
+        if constexpr (U == 4) {
+            if constexpr (Fence) {
+                MENSURFLOW_STEP_FENCE();
+            }
+            MENSURFLOW_STEP_PIPE(2)
+            if constexpr (Fence) {
+                MENSURFLOW_STEP_FENCE();
+            }
+            MENSURFLOW_STEP_PIPE(3)
+        }
+        pa += 6 * U;
+        pb += 16 * U;
+    }
+    for (; p + 1 < kc; ++p) {
+        MENSURFLOW_STEP_PIPE(0)
+        pa += 6;
+        pb += 16;
+    }
+    MENSURFLOW_STEP_PIPE_LAST()
+    MENSURFLOW_STORE_6X16()
+}
+
 using KernelFn = void (*)(std::int64_t, const float*, const float*, float*, std::int64_t, bool);
 
 // A micro-kernel and the tile it computes. Every shape has mr * nr == 96, which sizes the scratch
@@ -479,6 +664,22 @@ Shape select_shape(const PackedGemmBlocking& blocking) {
         return {4, 24, &kernel_4x24};
     case 3:
         return {12, 8, &kernel_12x8};
+    case 4:
+        return {6, 16, &kernel_6x16_reuse<2, false>};
+    case 5:
+        return {6, 16, &kernel_6x16_reuse<4, false>};
+    case 6:
+        return {6, 16, &kernel_6x16_pipe<1, false>};
+    case 7:
+        return {6, 16, &kernel_6x16_pipe<2, false>};
+    case 8:
+        return {6, 16, &kernel_6x16_reuse<2, true>};
+    case 9:
+        return {6, 16, &kernel_6x16_reuse<4, true>};
+    case 10:
+        return {6, 16, &kernel_6x16_pipe<2, true>};
+    case 11:
+        return {6, 16, &kernel_6x16_pipe<4, true>};
     default:
         switch (blocking.prefetch) {
         case 1:
@@ -585,14 +786,37 @@ PackedGemmBlocking packed_gemm_blocking() {
     return blocking_state();
 }
 
+bool packed_microkernel_tile(int shape, std::int64_t& mr, std::int64_t& nr) {
+    if (shape < 0 || shape > 11 || !packed_gemm_supported()) {
+        return false;
+    }
+    PackedGemmBlocking blocking;
+    blocking.shape = shape;
+    const Shape s = select_shape(blocking);
+    mr = s.mr;
+    nr = s.nr;
+    return true;
+}
+
+bool run_packed_microkernel(int shape, std::int64_t kc, const float* pa, const float* pb, float* c,
+                            std::int64_t ldc, bool accumulate) {
+    if (shape < 0 || shape > 11 || !packed_gemm_supported()) {
+        return false;
+    }
+    PackedGemmBlocking blocking;
+    blocking.shape = shape;
+    select_shape(blocking).kernel(kc, pa, pb, c, ldc, accumulate);
+    return true;
+}
+
 void set_packed_gemm_blocking(PackedGemmBlocking blocking) {
     if (blocking.mc <= 0 || blocking.kc <= 0 || blocking.nc <= 0 || blocking.tiles_per_thread <= 0 ||
-        blocking.prefetch < 0 || blocking.prefetch > 2 || blocking.shape < 0 || blocking.shape > 3 ||
+        blocking.prefetch < 0 || blocking.prefetch > 2 || blocking.shape < 0 || blocking.shape > 11 ||
         blocking.scalar_pack < 0 || blocking.scalar_pack > 1 || blocking.parallel < 0 ||
         blocking.parallel > 5 || blocking.loop_order < 0 || blocking.loop_order > 1 ||
         blocking.profile < 0 || blocking.profile > 1 || blocking.pin < 0 || blocking.pin > 3) {
         throw std::invalid_argument("packed gemm blocking: mc, kc, nc and tiles_per_thread must be "
-                                    "positive, prefetch 0-2, shape 0-3, scalar_pack 0-1, parallel "
+                                    "positive, prefetch 0-2, shape 0-11, scalar_pack 0-1, parallel "
                                     "0-5, loop_order 0-1, profile 0-1, pin 0-3");
     }
     blocking_state() = blocking;
@@ -1310,6 +1534,15 @@ PackedGemmProfile packed_gemm_profile() {
 
 PackedGemmBlocking packed_gemm_blocking() {
     return {};
+}
+
+bool packed_microkernel_tile(int, std::int64_t&, std::int64_t&) {
+    return false;
+}
+
+bool run_packed_microkernel(int, std::int64_t, const float*, const float*, float*, std::int64_t,
+                            bool) {
+    return false;
 }
 
 void set_packed_gemm_blocking(PackedGemmBlocking) {}

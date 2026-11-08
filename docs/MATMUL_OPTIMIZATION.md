@@ -32,6 +32,7 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 17 | Team split by chiplet for small products (strategy 5) | Each L3 domain computes its own columns of C from its own copy of A and its own B panels; used automatically below 2^29 multiply-adds | n = 256-768 on 12 threads: +11% to +23% (n = 512: 677 -> 811 GFLOP/s) |
 | 18 | Multi-panel `pack_b` | B is packed 4 panels per pass over the rows, so each source row is read as a run of 4 cache lines | Packing B alone 1.5-1.9x faster; no measurable end-to-end change with threads (packing is DRAM-bound there and already hidden by 16) |
 | 19 | Approaches measured and rejected | Tiles per thread re-swept for strategy 4; masked edge tiles considered | 16 tiles stays best; partial edge tiles cost at most 2% (n = 1025, 2047), not worth a kernel |
+| 20 | Manual unrolling and broadcast placement in the 6x16 kernel | 8 new variants (unrolled x2/x4, broadcasts pipelined one row ahead in the 16th register, with and without a compiler fence), a kernel-only benchmark, assembly of each | The default kernel already runs at 97.7% of the core's FMA peak by itself. Unrolling without a fence spills (64-75% of peak); with the fence it is spill-free but equal (98.0%, noise); pipelining costs ~1%. Default unchanged |
 
 ## The improvements, explained
 
@@ -621,6 +622,66 @@ thread. `gemm_pack_test` checks runs of 1, 2, 3, 4 and 8 panels against the scal
 Also fixed: strategy 3 wrote C with row stride n instead of `ldc` (wrong results for a padded C with that
 non-default strategy). `gemm_packed_test` now runs the large strided case with every strategy.
 
+### 20. Manual unrolling, register use and where the broadcasts go
+
+Section 12 found the old unrolled kernel (shape 1) spilling and 25% slower, without knowing why. This round
+wrote the variants again, read the generated code of each (`dumpbin /disasm` of `gemm_packed.obj`) and
+measured the micro-kernel on its own with a new tool, `gemm_kernel_benchmark` (one pinned thread, packed
+panels already in cache, no packing, the variants alternating over 9 rounds).
+
+**The baseline loop** (shape 0), per depth step: `vmovups ymm1/ymm2` (the B row), then six times
+`vbroadcastss ymm0, [rdx+4r]` followed by its two `vfmadd231ps`, then 2 `lea`, `sub`, `jne`: 23
+instructions, 15 of the 16 ymm registers (accumulators ymm3-ymm14), no stack traffic. A step needs 6 cycles
+on the two FMA pipes and issues in about 4, so it is FMA bound.
+
+**Variants** (`PackedGemmBlocking::shape`, all tested by `gemm_packed_test`):
+
+| shape | Variant | What the assembly shows |
+|---|---|---|
+| 4, 5 | Unrolled x2 / x4, the three temporaries (`b0`, `b1`, `a`) declared once and reused | MSVC hoists the B loads and broadcasts of *all* unrolled steps to the top of the body (e.g. 4 B vectors and 6 broadcasts live at once), runs out of registers and keeps 5-7 accumulators on the stack: 28-31 ymm loads/stores to `[rbp+...]` inside the loop |
+| 6 | Broadcasts pipelined one row ahead: the 16th register holds the next row's A value while the current row's FMAs run (`x0`/`x1` alternate; the last step of a panel is peeled so nothing past the panel is read) | Exactly as written, 16 registers, no spills |
+| 7 | Pipelined, unrolled x2, no fence | Hoisting again: 22 spill moves |
+| 8, 9 | Unrolled x2 / x4 with a **compiler fence** between steps (`_ReadWriteBarrier()` on MSVC, an empty `asm volatile` memory clobber elsewhere: no instruction, but no load moves across it) | No spills; constant displacements (`[r8+40h]`, `[rdx+1Ch]`...), one pointer update and one branch per 2 / 4 steps |
+| 10, 11 | Pipelined, unrolled x2 / x4, fenced | No spills; ymm0/ymm1 alternate as broadcast registers, ymm2/3 hold B, ymm4-15 accumulate: all 16 in use |
+
+**Kernel alone** (GFLOP/s, median of 9; % of the measured 112 GFLOP/s core peak):
+
+| Kernel | L1: kc 256, 1 B panel | L2: kc 768, 8 B panels (the real loop order) |
+|---|---|---|
+| 6x16 baseline (shape 0) | 109.1 (97.4%) | 109.4 (97.7%) |
+| unrolled x2, fenced (8) | 109.0 (97.3%) | 109.7 (98.0%) |
+| unrolled x4, fenced (9) | 108.5 (96.9%) | 109.7 (97.9%) |
+| pipelined (6) | 107.7 (96.1%) | 108.0 (96.4%) |
+| pipelined x2, fenced (10) | 108.4 (96.7%) | 108.7 (97.0%) |
+| pipelined x4, fenced (11) | 107.2 (95.7%) | 108.6 (97.0%) |
+| 4x24 (2) | 108.7 (97.1%) | 106.4 (95.0%) |
+| 12x8 (3) | 99.3 (88.6%) | 97.2 (86.8%) |
+| old unrolled x4 (1) | 82.5 (73.7%) | 83.2 (74.3%) |
+| unrolled x2 / x4, no fence (4, 5) | 71.5 / 82.9 | 72.1 / 83.5 |
+| pipelined x2, no fence (7) | 70.9 (63.3%) | 70.6 (63.1%) |
+
+End to end (`gemm_tune_benchmark shape=0,8,9,10,11`, interleaved re-timing), 1 thread: shape 0 best or tied
+at n = 512, 1024, 2048 and 4096; fenced unrolling 0-2% behind, pipelined x4 always last (1-5% behind). 12
+and 24 threads: all within noise of shape 0 at every size.
+
+Findings:
+
+- **The kernel itself is finished.** At 97.7% of the FMA peak there are about 2.5 points left, and they
+  are the per-call costs (zeroing 12 accumulators, saving xmm6-xmm15 for the Windows ABI, the C update),
+  which unrolling does not touch. Single-thread matmul sits at 94-95%; the difference to the kernel's 97.7%
+  is packing and the C traffic, not the loop body.
+- **Unrolling helps only if the compiler can be kept from spilling, and then it changes nothing.** The
+  loop overhead it removes (2 `lea`, `sub`, `jne` per step) already issues in the spare front-end slots of an
+  FMA-bound loop. Without the fence MSVC's scheduler turns every unrolled version into a spilling one, which
+  explains the 25% loss of section 11.
+- **Where the broadcast goes does not matter on Zen 3.** Broadcasting right before the two FMAs that use it
+  (baseline) is as fast as broadcasting a row ahead into a second register; the out-of-order core already
+  hides the broadcast's load latency, and the pipelined form costs about 1% (one more instruction
+  dependency chain through the alternating registers and the peeled last step).
+- The default stays shape 0. The variants remain selectable for other CPUs (a core with fewer rename
+  registers or a smaller scheduler might prefer the pipelined form), and `gemm_kernel_benchmark` measures
+  them on any machine in a few seconds.
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
 `matmul_openblas_benchmark 128 256 512 1024 2048` and `matmul_openblas_benchmark 4096`, OpenBLAS 0.3.34
@@ -640,6 +701,10 @@ At or above OpenBLAS in 40 of 42 combinations; the two below, 0.96x (n = 128, 2 
 at 4 threads (0.96x) and n = 2048 at 4 and 8 threads (0.97x, 0.95x) behind. As before, OpenBLAS's 12-24
 thread medians vary a lot between runs (n = 2048, 12 threads: 15.7 to 34.4 ms per call within this run),
 so the large ratios there say more about OpenBLAS's instability than about our speed.
+
+A repeat after section 20 (same defaults, new build) gave 41 of 42 at or above OpenBLAS (only n = 128 on
+2 threads, 0.96x); n = 2048 on 8 threads came out at 1.00x. Packed GFLOP/s in that run: 1066 / 1136 at
+n = 2048 on 12 / 24 threads, 1139 / 1202 at n = 4096; one thread 105.8 (n = 2048) and 106.3 (n = 4096).
 
 Absolute GFLOP/s of the packed kernel in that run:
 
@@ -676,6 +741,7 @@ n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchma
 | `tests/ops/gemm_packed_test.cpp` | Correctness tests |
 | `tests/ops/gemm_pack_test.cpp` | Packers against the scalar reference, with guard words |
 | `benchmarks/blas/gemm_pack_benchmark.cpp` | Packing speed, scalar vs AVX2 |
+| `benchmarks/blas/gemm_kernel_benchmark.cpp` | The micro-kernel variants alone (one thread, panels in cache), % of the core peak |
 | `benchmarks/blas/matmul_openblas_benchmark.cpp` | Comparison against OpenBLAS |
 | `benchmarks/blas/gemm_tune_benchmark.cpp` | Block-size sweep |
 | `benchmarks/blas/gemm_stride_benchmark.cpp` | Transposed operands copied first vs read in place; row-stride sweep |

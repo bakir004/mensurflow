@@ -136,8 +136,8 @@ int main() {
 
         // Every micro-kernel shape, with the default block sizes and with tiny ones, so partial
         // tiles and every block boundary (rows, depth, columns) are crossed on small matrices.
-        const char* shape_names[] = {"6x16", "6x16 unrolled", "4x24", "12x8"};
-        for (int shape = 0; shape < 4; ++shape) {
+        const char* shape_names[] = {"6x16", "6x16 unrolled", "4x24", "12x8", "6x16 reuse x2", "6x16 reuse x4", "6x16 pipelined", "6x16 pipelined x2", "6x16 reuse x2 fenced", "6x16 reuse x4 fenced", "6x16 pipelined x2 fenced", "6x16 pipelined x4 fenced"};
+        for (int shape = 0; shape < 12; ++shape) {
             for (int tiny = 0; tiny < 2; ++tiny) {
                 cpu::PackedGemmBlocking blocking = original;
                 blocking.shape = shape;

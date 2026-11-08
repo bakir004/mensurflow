@@ -202,6 +202,7 @@ mensurflow_add_benchmark(gemm_tune_benchmark benchmarks/blas/gemm_tune_benchmark
 mensurflow_add_benchmark(gemm_pack_benchmark benchmarks/blas/gemm_pack_benchmark.cpp)
 mensurflow_add_benchmark(gemm_thread_benchmark benchmarks/blas/gemm_thread_benchmark.cpp)
 mensurflow_add_benchmark(gemm_stride_benchmark benchmarks/blas/gemm_stride_benchmark.cpp)
+mensurflow_add_benchmark(gemm_kernel_benchmark benchmarks/blas/gemm_kernel_benchmark.cpp)
 mensurflow_add_benchmark(fma_peak_benchmark benchmarks/blas/fma_peak_benchmark.cpp)
 mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)

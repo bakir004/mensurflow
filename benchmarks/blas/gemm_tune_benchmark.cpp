@@ -10,7 +10,8 @@
 //     nc=        columns of B kept in L3  (default: the current default)
 //     tiles=     tiles of C per thread, threaded version only (default: the current default)
 //     prefetch=  6x16 kernel only: 0 none, 1 C tile, 2 C tile + A/B ahead (default 0)
-//     shape=     micro-kernel tile: 0 6x16, 1 6x16 unrolled x4, 2 4x24, 3 12x8 (default 0)
+//     shape=     micro-kernel: 0 6x16, 1 6x16 unrolled x4, 2 4x24, 3 12x8, 4-11 6x16 unrolled /
+//                pipelined variants (see PackedGemmBlocking::shape) (default 0)
 //     pack=      1 = scalar packers instead of the AVX2 ones (default 0)
 //   e.g. gemm_tune_benchmark threads=1,12 sizes=2048 mc=240,336,480 kc=384,512,768
 //

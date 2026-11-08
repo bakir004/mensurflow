@@ -25,7 +25,11 @@ struct PackedGemmBlocking {
     std::int64_t nc = 4080;
     std::int64_t tiles_per_thread = 4; // parallel version: tiles of C handed out per thread
     std::int64_t prefetch = 0;         // micro-kernel: 0 none, 1 prefetch the C tile, 2 also A and B
-    std::int64_t shape = 0;            // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8
+    std::int64_t shape = 0;            // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8;
+                                       // 6x16 loop variants: 4/5 unrolled x2/x4, 6 broadcasts
+                                       // pipelined a row ahead, 7 pipelined x2, 8/9 unrolled x2/x4
+                                       // with a compiler fence, 10/11 pipelined x2/x4 with the fence
+                                       // (docs/MATMUL_OPTIMIZATION.md section 20)
     std::int64_t scalar_pack = 0;      // 1 = use the scalar packers (to measure the AVX2 ones against)
     // Parallel version only:
     std::int64_t parallel = 0;   // strategy: 0 two parallel loops per step (shared packed A and B),
@@ -70,6 +74,14 @@ struct PackedGemmProfile {
     std::int64_t tiles = 0;      // work items handed out in the compute step(s)
 };
 PackedGemmProfile packed_gemm_profile();
+
+// For benchmarks of the micro-kernel alone: the tile (mr x nr) of micro-kernel `shape` (see
+// PackedGemmBlocking::shape), and one call of it on packed panels pa (kc steps of mr floats) and pb
+// (kc steps of nr floats, 32-byte aligned), writing (or adding to) C[mr, nr] with row stride ldc.
+// Both return false, doing nothing, for an unknown shape or a CPU without AVX2.
+bool packed_microkernel_tile(int shape, std::int64_t& mr, std::int64_t& nr);
+bool run_packed_microkernel(int shape, std::int64_t kc, const float* pa, const float* pb, float* c,
+                            std::int64_t ldc, bool accumulate);
 
 // Row-major C[m,n] = A[m,k] * B[k,n]. C is overwritten and must not overlap A or B. k == 0 fills C
 // with zeros. Products are accumulated with fused multiply-adds in increasing p, so results can
