@@ -5,8 +5,11 @@
 #include "backends/backend.hpp"
 
 #include "backends/cpu/ops/blas/blas.hpp"
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/elementwise/cast.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
+#include "backends/cpu/ops/gemm/gemm_batched.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
+#include "backends/cpu/ops/movement/movement.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/dispatcher.hpp"
@@ -15,6 +18,7 @@
 
 #include <cstring>
 #include <new>
+#include <vector>
 
 namespace mensurflow::detail {
 
@@ -123,8 +127,8 @@ void matmul_kernel(const OpArgs& args, Stream&) {
     if (cpu::packed_gemm_supported()) {
         // The AVX2 + FMA packed kernel; it runs on one thread when the build has no OpenMP and for
         // products too small to split.
-        const auto kernel = use_parallel ? cpu::matmul_f32_packed_parallel_strided
-                                         : cpu::matmul_f32_packed_strided;
+        const auto kernel =
+            use_parallel ? cpu::matmul_f32_packed_parallel_strided : cpu::matmul_f32_packed_strided;
         const Strides& sa = a.strides();
         const Strides& sb = b.strides();
         kernel(data<float>(a), sa[0], sa[1], data<float>(b), sb[0], sb[1], c, n, m, n, k);
@@ -137,6 +141,110 @@ void matmul_kernel(const OpArgs& args, Stream&) {
     } else {
         cpu::matmul_f32_sequential(data<float>(x), data<float>(y), c, m, n, k);
     }
+}
+
+void ger_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    const float* initial = args.inputs.size() > 2 ? data<float>(args.inputs[2]) : nullptr;
+    cpu::ger_f32(args.alpha, data<float>(args.inputs[0]), data<float>(args.inputs[1]), initial,
+                 data<float>(out), out.size(0), out.size(1));
+}
+
+// Ops hand gemm_strided_batched two views with the full batch shape, [batch..., m, k] and
+// [batch..., k, n] (broadcast batch dimensions have stride 0, matrices any strides), a contiguous
+// [batch..., m, n] output and, when beta != 0, a contiguous c of the output's shape. Each matrix's
+// starting offset is found by walking the batch index through both views' batch strides.
+template <void (*Kernel)(const cpu::BatchedGemm&)>
+void gemm_batched_kernel(const OpArgs& args, Stream&) {
+    const Tensor& a = args.inputs[0];
+    const Tensor& b = args.inputs[1];
+    const Tensor& out = args.outputs[0];
+    const int batch_dims = out.dim() - 2;
+    std::int64_t batch = 1;
+    for (int d = 0; d < batch_dims; ++d) {
+        batch *= out.size(d);
+    }
+    std::vector<std::int64_t> a_offsets(static_cast<std::size_t>(batch));
+    std::vector<std::int64_t> b_offsets(static_cast<std::size_t>(batch));
+    std::vector<std::int64_t> index(static_cast<std::size_t>(batch_dims), 0);
+    std::int64_t a_offset = 0, b_offset = 0;
+    for (std::int64_t i = 0; i < batch; ++i) {
+        a_offsets[static_cast<std::size_t>(i)] = a_offset;
+        b_offsets[static_cast<std::size_t>(i)] = b_offset;
+        // Advance the batch index like an odometer, last batch dimension fastest.
+        for (int d = batch_dims - 1; d >= 0; --d) {
+            const auto du = static_cast<std::size_t>(d);
+            if (++index[du] < out.size(d)) {
+                a_offset += a.strides()[du];
+                b_offset += b.strides()[du];
+                break;
+            }
+            a_offset -= (index[du] - 1) * a.strides()[du];
+            b_offset -= (index[du] - 1) * b.strides()[du];
+            index[du] = 0;
+        }
+    }
+    cpu::BatchedGemm g;
+    g.a = data<float>(a);
+    g.a_offsets = a_offsets.data();
+    g.rsa = a.strides()[static_cast<std::size_t>(batch_dims)];
+    g.csa = a.strides()[static_cast<std::size_t>(batch_dims) + 1];
+    g.b = data<float>(b);
+    g.b_offsets = b_offsets.data();
+    g.rsb = b.strides()[static_cast<std::size_t>(batch_dims)];
+    g.csb = b.strides()[static_cast<std::size_t>(batch_dims) + 1];
+    g.c = data<float>(out);
+    g.c0 = args.inputs.size() > 2 ? data<float>(args.inputs[2]) : nullptr;
+    g.batch = batch;
+    g.m = out.size(-2);
+    g.n = out.size(-1);
+    g.k = a.size(-1);
+    g.alpha = args.alpha;
+    g.beta = args.beta;
+    Kernel(g);
+}
+
+// The default: the parallel version (which picks over-batch or within-matrix from the shapes) when
+// the build has OpenMP, the sequential one otherwise.
+constexpr void (*gemm_batched_default)(const cpu::BatchedGemm&) =
+    use_parallel ? cpu::gemm_batched_f32_parallel : cpu::gemm_batched_f32_sequential;
+
+// ---- Data movement -------------------------------------------------------------------------
+
+// Ops hand concat contiguous inputs, all of the output's shape except along args.axis.
+void concat_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    const int axis = args.axis;
+    std::int64_t outer = 1;
+    for (int d = 0; d < axis; ++d) {
+        outer *= out.size(d);
+    }
+    std::int64_t inner = 1;
+    for (int d = axis + 1; d < out.dim(); ++d) {
+        inner *= out.size(d);
+    }
+    std::vector<const float*> inputs;
+    std::vector<std::int64_t> widths;
+    for (const Tensor& t : args.inputs) {
+        inputs.push_back(data<float>(t));
+        widths.push_back(t.size(axis) * inner);
+    }
+    cpu::concat_f32(inputs.data(), widths.data(), static_cast<std::int64_t>(inputs.size()),
+                    data<float>(out), outer);
+}
+
+// Ops hand pad a contiguous input and args.padding as (before, after) per dimension, in order.
+void pad_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const int ndim = x.dim();
+    std::vector<std::int64_t> before(static_cast<std::size_t>(ndim));
+    std::vector<std::int64_t> after(static_cast<std::size_t>(ndim));
+    for (std::size_t d = 0; d < static_cast<std::size_t>(ndim); ++d) {
+        before[d] = args.padding[2 * d];
+        after[d] = args.padding[2 * d + 1];
+    }
+    cpu::pad_f32(data<float>(x), data<float>(args.outputs[0]), x.shape().data(), before.data(),
+                 after.data(), ndim, args.alpha);
 }
 
 // ---- Elementwise ---------------------------------------------------------------------------
@@ -152,6 +260,62 @@ template <void (*Kernel)(const float*, float*, std::int64_t)>
 void unary_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
     Kernel(data<float>(args.inputs[0]), data<float>(out), out.numel());
+}
+
+template <void (*Kernel)(const float*, const float*, std::uint8_t*, std::int64_t)>
+void comparison_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    Kernel(data<float>(args.inputs[0]), data<float>(args.inputs[1]), data<std::uint8_t>(out),
+           out.numel());
+}
+
+void where_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    // Value inputs come first so the existing dispatcher selects their F32 kernel key.
+    cpu::where_f32(data<std::uint8_t>(args.inputs[2]), data<float>(args.inputs[0]),
+                   data<float>(args.inputs[1]), data<float>(out), out.numel());
+}
+
+void* cast_data(const Tensor& tensor) {
+    switch (tensor.dtype()) {
+    case DType::F32:
+        return data<float>(tensor);
+    case DType::I32:
+        return data<std::int32_t>(tensor);
+    case DType::F16:
+    case DType::BF16:
+        return data<std::uint16_t>(tensor);
+    default:
+        throw NotImplemented("cast: unsupported dtype");
+    }
+}
+
+void cast_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    cpu::cast_buffer(cast_data(x), x.dtype(), cast_data(out), out.dtype(), out.numel());
+}
+
+void leaky_relu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& out = args.outputs[0];
+    cpu::leaky_relu_f32(data<float>(x), data<float>(out), out.numel(), args.alpha);
+}
+
+void gelu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::gelu_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.approximate);
+}
+
+void elu_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::elu_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.alpha);
+}
+
+void softplus_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::softplus_f32(data<float>(args.inputs[0]), data<float>(out), out.numel(), args.alpha,
+                      args.beta);
 }
 
 void axpy_kernel(const OpArgs& args, Stream&) {
@@ -248,12 +412,27 @@ class CpuBackend final : public Backend {
         add(OpId::Pow, binary_kernel<pow_f32>);
         add(OpId::Minimum, binary_kernel<minimum_f32>);
         add(OpId::Maximum, binary_kernel<maximum_f32>);
+        add(OpId::Eq, comparison_kernel<eq_f32>);
+        add(OpId::Ne, comparison_kernel<ne_f32>);
+        add(OpId::Lt, comparison_kernel<lt_f32>);
+        add(OpId::Le, comparison_kernel<le_f32>);
+        add(OpId::Gt, comparison_kernel<gt_f32>);
+        add(OpId::Ge, comparison_kernel<ge_f32>);
+        add(OpId::Where, where_kernel);
+        for (DType type : {DType::F32, DType::I32, DType::F16, DType::BF16}) {
+            dispatcher.register_kernel({OpId::Cast, DeviceType::CPU, type}, cast_kernel);
+        }
         add(OpId::Axpy, axpy_kernel);
         add(OpId::BiasAdd, bias_add_kernel);
         add(OpId::Neg, unary_kernel<neg_f32>);
         add(OpId::Abs, unary_kernel<abs_f32>);
         add(OpId::Square, unary_kernel<square_f32>);
         add(OpId::Relu, unary_kernel<relu_f32>);
+        add(OpId::LeakyRelu, leaky_relu_kernel);
+        add(OpId::Gelu, gelu_kernel);
+        add(OpId::Silu, unary_kernel<silu_f32>);
+        add(OpId::Elu, elu_kernel);
+        add(OpId::Softplus, softplus_kernel);
         add(OpId::Sqrt, unary_kernel<sqrt_f32>);
         add(OpId::Exp, unary_kernel<exp_f32>);
         add(OpId::Sigmoid, unary_kernel<sigmoid_f32>);
@@ -276,6 +455,11 @@ class CpuBackend final : public Backend {
         add(OpId::AxisMin, axis_reduce_kernel<min_axis_f32>);
         add(OpId::AxisProd, axis_reduce_kernel<prod_axis_f32>);
         add(OpId::Argmax, argmax_kernel);
+
+        add(OpId::Ger, ger_kernel);
+        add(OpId::GemmBatched, gemm_batched_kernel<gemm_batched_default>);
+        add(OpId::Concat, concat_kernel);
+        add(OpId::Pad, pad_kernel);
     }
 
   private:

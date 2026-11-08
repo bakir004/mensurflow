@@ -9,11 +9,11 @@
 // Packed layouts, both zero-padded to full panels so the kernel never branches on edges:
 //   A panel: for each p, 6 floats  (A[i0..i0+5][p])
 //   B panel: for each p, 16 floats (B[p][j0..j0+15])
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 
 #include "backends/cpu/affinity.hpp"
 #include "backends/cpu/ops/blas/blas.hpp"
-#include "backends/cpu/ops/blas/gemm_pack.hpp"
+#include "backends/cpu/ops/gemm/gemm_pack.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>

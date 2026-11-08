@@ -4,7 +4,7 @@
 // bandwidth, not the FMA units.
 #include "bench.hpp"
 
-#include "backends/cpu/ops/blas/gemm_pack.hpp"
+#include "backends/cpu/ops/gemm/gemm_pack.hpp"
 
 #include <cstdint>
 #include <string>
@@ -26,6 +26,7 @@ int main() {
         std::int64_t cols; // columns of the source block: kc for A, nc for B
         std::int64_t ld;   // row stride of the source matrix
     };
+
     const Case cases[] = {
         {"A 240x1024", true, 240, 1024, 2048},  {"A 240x256", true, 240, 256, 2048},
         {"A 24x1024", true, 24, 1024, 2048},    {"B 1024x4080", false, 1024, 4080, 8192},

@@ -42,12 +42,17 @@ add_library(mensurflow
     src/core/tensor.cpp
     src/ops/blas.cpp
     src/ops/elementwise.cpp
+    src/ops/movement.cpp
     src/ops/reduction.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/affinity.cpp
     src/backends/cpu/ops/blas/blas.cpp
-    src/backends/cpu/ops/blas/gemm_packed.cpp
+    src/backends/cpu/ops/gemm/gemm_batched.cpp
+    src/backends/cpu/ops/gemm/gemm_packed.cpp
+    src/backends/cpu/ops/elementwise/parallel_cutoffs.cpp
     src/backends/cpu/ops/elementwise/elementwise.cpp
+    src/backends/cpu/ops/elementwise/cast.cpp
+    src/backends/cpu/ops/movement/movement.cpp
     src/backends/cpu/ops/reduction/reduction.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
@@ -128,6 +133,10 @@ mensurflow_add_test(transfer_test tests/core/transfer_test.cpp)
 mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
+mensurflow_add_test(activation_test tests/ops/activation_test.cpp)
+mensurflow_add_test(selection_test tests/ops/selection_test.cpp)
+mensurflow_add_test(parallel_cutoff_test tests/ops/parallel_cutoff_test.cpp)
+mensurflow_add_test(cast_test tests/ops/cast_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 mensurflow_add_test(affinity_test tests/core/affinity_test.cpp)
@@ -137,6 +146,9 @@ mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
 mensurflow_add_test(argmax_test tests/ops/argmax_test.cpp)
 mensurflow_add_test(reduction_test tests/ops/reduction_test.cpp)
 mensurflow_add_test(p0_extended_test tests/ops/p0_extended_test.cpp)
+mensurflow_add_test(gemm_batched_test tests/ops/gemm_batched_test.cpp)
+mensurflow_add_test(ger_test tests/ops/ger_test.cpp)
+mensurflow_add_test(movement_test tests/ops/movement_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -208,6 +220,36 @@ mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
+mensurflow_add_benchmark(selection_benchmark benchmarks/selection_benchmark.cpp)
+mensurflow_add_benchmark(cast_benchmark benchmarks/cast_benchmark.cpp)
+mensurflow_add_benchmark(gemm_batched_benchmark benchmarks/blas/gemm_batched_benchmark.cpp)
+mensurflow_add_benchmark(ger_benchmark benchmarks/blas/ger_benchmark.cpp)
+mensurflow_add_benchmark(movement_benchmark benchmarks/movement_benchmark.cpp)
+
+# LibTorch from a CPU PyTorch wheel is an optional native reference, not a core dependency.
+# Configure a separate build directory with Torch's CMake prefix when enabling this target.
+option(MENSURFLOW_TORCH_BENCHMARK "Build native CPU operation comparisons with LibTorch" OFF)
+if(MENSURFLOW_TORCH_BENCHMARK)
+    find_package(Torch CONFIG REQUIRED)
+    if(TORCH_CXX_FLAGS)
+        # Keep the ABI consistent across libraries that exchange std::string/vector values.
+        separate_arguments(MENSURFLOW_TORCH_CXX_FLAGS NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        target_compile_options(mensurflow PUBLIC ${MENSURFLOW_TORCH_CXX_FLAGS})
+    endif()
+    mensurflow_add_benchmark(activation_torch_benchmark benchmarks/activation_torch_benchmark.cpp)
+    target_link_libraries(activation_torch_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_link_libraries(selection_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(selection_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
+    target_link_libraries(cast_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(cast_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
+    # The imported torch target supplies the C++ standard its installed headers require.
+endif()
 
 add_executable(mlp_xor examples/mlp_xor.cpp)
 target_link_libraries(mlp_xor PRIVATE mensurflow)
+
+add_executable(client client/main.cpp)
+target_link_libraries(client PRIVATE mensurflow)
+
+add_executable(client_perf client/perf.cpp)
+target_link_libraries(client_perf PRIVATE mensurflow)

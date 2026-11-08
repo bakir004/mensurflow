@@ -27,7 +27,7 @@
 //     sleep=     idle time in ms before each "slept" call (default 5)
 #include "bench.hpp"
 
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>
@@ -120,8 +120,8 @@ int main(int argc, char** argv) {
         cpu::set_max_threads(static_cast<int>(threads));
         for (std::int64_t n : options["sizes"]) {
             const auto len = static_cast<std::size_t>(n * n);
-            const double flops = 2.0 * static_cast<double>(n) * static_cast<double>(n) *
-                                 static_cast<double>(n);
+            const double flops =
+                2.0 * static_cast<double>(n) * static_cast<double>(n) * static_cast<double>(n);
             bench::Arrays arrays(len, 3);
             float* a = arrays[0];
             float* b = arrays[1];
@@ -209,19 +209,18 @@ int main(int argc, char** argv) {
                 best = std::max(best, median_of(v.median));
             }
             for (const Variant& v : variants) {
-                std::printf("%-8lld %3lld/%-4lld %5lld %5lld %5lld | %8.1f %8.1f %8.1f | "
-                            "      %5.1fms %5.1fms %5.1f%% |       %5.1fms %5.1fms %5.1f%%%s\n",
-                            static_cast<long long>(v.blocking.parallel),
-                            static_cast<long long>(v.blocking.loop_order),
-                            static_cast<long long>(v.blocking.pin),
-                            static_cast<long long>(v.blocking.tiles_per_thread),
-                            static_cast<long long>(v.blocking.kc),
-                            static_cast<long long>(v.blocking.mc), median_of(v.median),
-                            median_of(v.burst), median_of(v.slept), v.warm.compute_mean_s * 1e3,
-                            v.warm.pack_mean_s * 1e3, wait_percent(v.warm),
-                            v.cold.compute_mean_s * 1e3, v.cold.pack_mean_s * 1e3,
-                            wait_percent(v.cold),
-                            median_of(v.median) == best ? "   <- best median" : "");
+                std::printf(
+                    "%-8lld %3lld/%-4lld %5lld %5lld %5lld | %8.1f %8.1f %8.1f | "
+                    "      %5.1fms %5.1fms %5.1f%% |       %5.1fms %5.1fms %5.1f%%%s\n",
+                    static_cast<long long>(v.blocking.parallel),
+                    static_cast<long long>(v.blocking.loop_order),
+                    static_cast<long long>(v.blocking.pin),
+                    static_cast<long long>(v.blocking.tiles_per_thread),
+                    static_cast<long long>(v.blocking.kc), static_cast<long long>(v.blocking.mc),
+                    median_of(v.median), median_of(v.burst), median_of(v.slept),
+                    v.warm.compute_mean_s * 1e3, v.warm.pack_mean_s * 1e3, wait_percent(v.warm),
+                    v.cold.compute_mean_s * 1e3, v.cold.pack_mean_s * 1e3, wait_percent(v.cold),
+                    median_of(v.median) == best ? "   <- best median" : "");
             }
             std::fflush(stdout);
         }

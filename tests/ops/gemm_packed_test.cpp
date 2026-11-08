@@ -1,7 +1,7 @@
 // Tests the packed AVX2 GEMM (matmul_f32_packed) against a float64 reference on shapes around every
 // tile and block boundary: the 6 x 16 tile, MC = 168, KC = 256, NC = 4080, and degenerate sizes.
 #include "backends/cpu/ops/blas/blas.hpp"
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/threads.hpp"
 #include "test_util.hpp"
 
@@ -26,11 +26,12 @@ std::vector<float> make_input(std::int64_t n, std::uint32_t seed) {
     return v;
 }
 
-using Kernel = void (*)(const float*, const float*, float*, std::int64_t, std::int64_t, std::int64_t);
+using Kernel = void (*)(const float*, const float*, float*, std::int64_t, std::int64_t,
+                        std::int64_t);
 
 void check_shape(Kernel kernel, const char* name, std::int64_t m, std::int64_t n, std::int64_t k) {
-    const std::string what =
-        std::string(name) + " m=" + std::to_string(m) + " n=" + std::to_string(n) + " k=" + std::to_string(k);
+    const std::string what = std::string(name) + " m=" + std::to_string(m) +
+                             " n=" + std::to_string(n) + " k=" + std::to_string(k);
     const auto a = make_input(m * k, 1);
     const auto b = make_input(k * n, 2);
     // Poison C to prove every entry is written, not accumulated into.
@@ -44,10 +45,12 @@ void check_shape(Kernel kernel, const char* name, std::int64_t m, std::int64_t n
             }
             const float got = c[static_cast<std::size_t>(i * n + j)];
             // Products are exact in float; only the summation order/rounding can differ.
-            const double tolerance = 1e-5 * (1.0 + std::abs(expected)) * (1.0 + static_cast<double>(k) / 64.0);
+            const double tolerance =
+                1e-5 * (1.0 + std::abs(expected)) * (1.0 + static_cast<double>(k) / 64.0);
             test::require(std::abs(static_cast<double>(got) - expected) <= tolerance,
                           what + " wrong at (" + std::to_string(i) + "," + std::to_string(j) +
-                              "): got " + std::to_string(got) + " expected " + std::to_string(expected));
+                              "): got " + std::to_string(got) + " expected " +
+                              std::to_string(expected));
         }
     }
 }
@@ -64,11 +67,26 @@ using StridedKernel = void (*)(const float*, std::int64_t, std::int64_t, const f
 void layout_strides(int kind, std::int64_t rows, std::int64_t cols, std::int64_t& rs,
                     std::int64_t& cs) {
     switch (kind) {
-    case 0: rs = cols; cs = 1; break;
-    case 1: rs = cols + 5; cs = 1; break;
-    case 2: rs = 1; cs = rows; break;
-    case 3: rs = 1; cs = rows + 3; break;
-    default: rs = 2; cs = 2 * rows; break;
+    case 0:
+        rs = cols;
+        cs = 1;
+        break;
+    case 1:
+        rs = cols + 5;
+        cs = 1;
+        break;
+    case 2:
+        rs = 1;
+        cs = rows;
+        break;
+    case 3:
+        rs = 1;
+        cs = rows + 3;
+        break;
+    default:
+        rs = 2;
+        cs = 2 * rows;
+        break;
     }
 }
 
@@ -94,7 +112,8 @@ void check_strided(StridedKernel kernel, const std::string& name, int kind_a, in
             if (j >= n) {
                 if (i * ldc + j < static_cast<std::int64_t>(c.size())) {
                     test::require(got == poison, what + ": wrote outside the matrix at (" +
-                                                     std::to_string(i) + "," + std::to_string(j) + ")");
+                                                     std::to_string(i) + "," + std::to_string(j) +
+                                                     ")");
                 }
                 continue;
             }
@@ -107,7 +126,8 @@ void check_strided(StridedKernel kernel, const std::string& name, int kind_a, in
                 1e-5 * (1.0 + std::abs(expected)) * (1.0 + static_cast<double>(k) / 64.0);
             test::require(std::abs(static_cast<double>(got) - expected) <= tolerance,
                           what + ": wrong at (" + std::to_string(i) + "," + std::to_string(j) +
-                              "): got " + std::to_string(got) + " expected " + std::to_string(expected));
+                              "): got " + std::to_string(got) + " expected " +
+                              std::to_string(expected));
         }
     }
     for (std::size_t i = c.size() - 16; i < c.size(); ++i) {
@@ -119,18 +139,20 @@ void check_strided(StridedKernel kernel, const std::string& name, int kind_a, in
 
 int main() {
     return test::run("gemm_packed_test", [] {
-        std::cout << "AVX2 packed kernel: " << (cpu::packed_gemm_supported() ? "yes" : "no (fallback)")
-                  << '\n';
+        std::cout << "AVX2 packed kernel: "
+                  << (cpu::packed_gemm_supported() ? "yes" : "no (fallback)") << '\n';
         const std::int64_t shapes[][3] = {
-            {1, 1, 1},     {1, 17, 3},   {5, 15, 7},     {6, 16, 1},    {6, 16, 256},  {7, 17, 257},
-            {12, 32, 512}, {13, 33, 255}, {167, 31, 20}, {168, 16, 20}, {169, 17, 300}, {337, 49, 513},
-            {40, 4080, 9}, {20, 4081, 17}, {9, 8200, 5}, {64, 64, 64}, {100, 1, 100}, {1, 100, 100},
+            {1, 1, 1},      {1, 17, 3},     {5, 15, 7},    {6, 16, 1},     {6, 16, 256},
+            {7, 17, 257},   {12, 32, 512},  {13, 33, 255}, {167, 31, 20},  {168, 16, 20},
+            {169, 17, 300}, {337, 49, 513}, {40, 4080, 9}, {20, 4081, 17}, {9, 8200, 5},
+            {64, 64, 64},   {100, 1, 100},  {1, 100, 100},
         };
-        const std::int64_t extra[][3] = {{11, 7, 5},   {13, 9, 17},  {3, 23, 7},   {5, 25, 9},
+        const std::int64_t extra[][3] = {{11, 7, 5},    {13, 9, 17},   {3, 23, 7},    {5, 25, 9},
                                          {24, 48, 300}, {25, 49, 301}, {50, 50, 1100}};
         // The threaded version needs shapes large enough to really split (the others fall back to
         // the sequential kernel).
-        const std::int64_t big[][3] = {{200, 300, 100}, {500, 70, 400}, {37, 1000, 300}, {1000, 37, 300}};
+        const std::int64_t big[][3] = {
+            {200, 300, 100}, {500, 70, 400}, {37, 1000, 300}, {1000, 37, 300}};
         const int saved_threads = cpu::max_threads();
         const cpu::PackedGemmBlocking original = cpu::packed_gemm_blocking();
 
@@ -147,8 +169,8 @@ int main() {
                     blocking.nc = 48;
                 }
                 cpu::set_packed_gemm_blocking(blocking);
-                const std::string name = std::string("packed ") + shape_names[shape] +
-                                         (tiny != 0 ? " tiny blocks" : "");
+                const std::string name =
+                    std::string("packed ") + shape_names[shape] + (tiny != 0 ? " tiny blocks" : "");
                 for (const auto& s : shapes) {
                     check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
                 }
@@ -233,19 +255,23 @@ int main() {
                             blocking.nc = 48;
                         }
                         cpu::set_packed_gemm_blocking(blocking);
-                        const std::string name = "packed parallel strategy " + std::to_string(strategy) +
-                                                 " pin " + std::to_string(pin) + " loop " +
+                        const std::string name = "packed parallel strategy " +
+                                                 std::to_string(strategy) + " pin " +
+                                                 std::to_string(pin) + " loop " +
                                                  std::to_string(loop) + (tiny != 0 ? " tiny" : "");
                         for (int threads : {3, 24}) {
                             cpu::set_max_threads(threads);
                             for (const auto& s : big) {
-                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1], s[2]);
+                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0],
+                                            s[1], s[2]);
                             }
                             for (const auto& s : extra) {
-                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1], s[2]);
+                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0],
+                                            s[1], s[2]);
                             }
                             for (const auto& s : large) {
-                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1], s[2]);
+                                check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0],
+                                            s[1], s[2]);
                             }
                         }
                         cpu::set_max_threads(saved_threads);
@@ -257,8 +283,8 @@ int main() {
 
         // Strided operands (transposed, padded, interleaved) and a padded C, with the single-thread
         // and the threaded kernel, with default and tiny block sizes.
-        const std::int64_t strided_shapes[][3] = {{1, 1, 1},     {5, 15, 7},    {13, 33, 255},
-                                                  {37, 50, 300}, {169, 17, 300}, {64, 64, 64},
+        const std::int64_t strided_shapes[][3] = {{1, 1, 1},      {5, 15, 7},     {13, 33, 255},
+                                                  {37, 50, 300},  {169, 17, 300}, {64, 64, 64},
                                                   {200, 100, 70}, {9, 200, 5}};
         for (int tiny = 0; tiny < 2; ++tiny) {
             cpu::PackedGemmBlocking blocking = original;

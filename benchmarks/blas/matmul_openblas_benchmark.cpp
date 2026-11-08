@@ -15,7 +15,7 @@
 #include "bench.hpp"
 
 #include "backends/cpu/ops/blas/blas.hpp"
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <cblas.h>
@@ -23,8 +23,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <thread>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace cpu = mensurflow::cpu;
@@ -35,9 +35,7 @@ namespace {
 // on an SMT CPU they take cores and execution units from whatever is timed next (our packed kernel
 // read 376 instead of 620 GFLOP/s at n = 1024, 8 threads). Pause before every measurement so each
 // library starts from idle threads.
-void settle() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-}
+void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(500)); }
 
 } // namespace
 
@@ -62,7 +60,8 @@ int main(int argc, char** argv) {
              std::to_string(cpu::packed_gemm_blocking().kc) + ", " +
              std::to_string(cpu::packed_gemm_blocking().nc) + ", " +
              std::to_string(cpu::packed_gemm_blocking().tiles_per_thread),
-         "impl: sequential = plain i-k-j loop; parallel = our blocked kernel; openblas = cblas_sgemm",
+         "impl: sequential = plain i-k-j loop; parallel = our blocked kernel; openblas = "
+         "cblas_sgemm",
          "vs seq = sequential median time / this row's; vs obl = OpenBLAS median time at the same "
          "n and threads / this row's (1.00 = as fast as OpenBLAS)"});
     bench::Table table("GFLOP/s", 1e9, "vs seq", "vs obl");
@@ -143,8 +142,8 @@ int main(int argc, char** argv) {
                 settle();
                 run_parallel();
                 bench::check_close(reference, c, len, 1e-3,
-                                   "parallel matmul n=" + label + " threads=" +
-                                       std::to_string(threads));
+                                   "parallel matmul n=" + label +
+                                       " threads=" + std::to_string(threads));
                 par = bench::measure(config, run_parallel, [&] { return bench::checksum(c, len); });
             }
 
@@ -152,15 +151,15 @@ int main(int argc, char** argv) {
             settle();
             run_packed_parallel();
             bench::check_close(reference, c, len, 1e-3,
-                               "packed parallel n=" + label + " threads=" + std::to_string(threads));
+                               "packed parallel n=" + label +
+                                   " threads=" + std::to_string(threads));
             const bench::Sample packed_par = bench::measure(
                 config, run_packed_parallel, [&] { return bench::checksum(c, len); });
 
             if (!big) {
                 table.row(label, "parallel", std::to_string(threads), par, flops, seq, &obl);
             }
-            table.row(label, "packed", std::to_string(threads), packed_par, flops, seq,
-                      &obl);
+            table.row(label, "packed", std::to_string(threads), packed_par, flops, seq, &obl);
             table.row(label, "openblas", std::to_string(threads), obl, flops, seq);
         }
         table.blank();

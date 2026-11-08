@@ -1,0 +1,285 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="mensurflow architecture: a call such as dot(a, b, Execution::GPU) goes from user code through the public headers into src/ops, which validates and calls the Dispatcher. The Dispatcher picks the execution device, asks the Registry for that backend, looks up the kernel by op, device and dtype, and runs it on the CPU, CUDA or Metal backend. Backends register themselves and their kernels once, when the Registry is first used.">
+  <style>
+/* SVG classes */
+.band { fill: #f0f3f6; }
+.box { fill: #ffffff; stroke: #c6ced7; stroke-width: 1.2; }
+.box-hot { fill: #ffffff; stroke: #0a7a72; stroke-width: 1.8; }
+.box-plan { fill: none; stroke: #c6ced7; stroke-width: 1.4; stroke-dasharray: 6 5; }
+.sep { stroke: #c6ced7; stroke-width: 1; }
+.pill { fill: #f0f3f6; stroke: #c6ced7; stroke-width: 1; }
+.step-badge { fill: #0a7a72; }
+.a-hot { stroke: #0a7a72; stroke-width: 2.6; fill: none; }
+.a-thin { stroke: #5d6875; stroke-width: 1.4; fill: none; }
+.a-start { stroke: #5d6875; stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; }
+.m-hot { fill: #0a7a72; }
+.m-thin { fill: #5d6875; }
+text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif; white-space: pre; }
+.title { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
+.sub { font-size: 15px; fill: #5d6875; }
+.layer { font-size: 12.5px; font-weight: 700; letter-spacing: 0.12em; }
+.path { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
+.h { font-size: 16px; font-weight: 600; }
+.h-sm { font-size: 14px; font-weight: 600; }
+.b { font-size: 13px; }
+.s { font-size: 12px; fill: #5d6875; }
+.xs { font-size: 11px; fill: #5d6875; }
+.m { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.m13 { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 13px; }
+.mm { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
+.hot-t { fill: #0a7a72; font-weight: 600; }
+.bad-t { fill: #b4372b; }
+.badge-t { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; font-weight: 600; fill: #ffffff; }
+.lbl { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
+.lbl-hot { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11.5px; fill: #0a7a72; font-weight: 500; }
+.dim { fill: #5d6875; }
+
+</style>
+<rect width="1600" height="900" fill="#fbfcfd"/>
+<defs>
+    <marker id="ah-hot" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="m-hot" d="M0 0 L10 5 L0 10 z"/>
+    </marker>
+    <marker id="ah-thin" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="m-thin" d="M0 0 L10 5 L0 10 z"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text class="title" x="40" y="54">mensurflow, one call from top to bottom</text>
+  <text class="sub" x="40" y="80">What happens inside <tspan class="m13">dot(a, b, Execution::GPU)</tspan>, and how the library finds the devices it can run on.</text>
+
+  <!-- Legend -->
+  <line class="a-hot" x1="1118" y1="44" x2="1158" y2="44" marker-end="url(#ah-hot)"/>
+  <text class="s" x="1168" y="48">path of one call</text>
+  <line class="a-thin" x1="1300" y1="44" x2="1340" y2="44" marker-end="url(#ah-thin)"/>
+  <text class="s" x="1350" y="48">lookup / helper call</text>
+  <line class="a-start" x1="1118" y1="72" x2="1158" y2="72" marker-end="url(#ah-thin)"/>
+  <text class="s" x="1168" y="76">once, when the Registry is first used</text>
+
+  <!-- ========== Bands ========== -->
+  <rect class="band" x="30" y="100" width="1540" height="68" rx="6"/>
+  <rect class="band" x="30" y="184" width="1540" height="84" rx="6"/>
+  <rect class="band" x="30" y="284" width="1540" height="88" rx="6"/>
+  <rect class="band" x="30" y="388" width="1540" height="252" rx="6"/>
+  <rect class="band" x="30" y="656" width="1540" height="210" rx="6"/>
+
+  <!-- Layer labels -->
+  <text class="layer" x="46" y="129">USER CODE</text>
+  <text class="xs" x="46" y="147">your program</text>
+
+  <text class="layer" x="46" y="213">PUBLIC API</text>
+  <text class="path" x="46" y="231">include/mensurflow/</text>
+
+  <text class="layer" x="46" y="313">OPS</text>
+  <text class="path" x="46" y="331">src/ops/</text>
+  <text class="xs" x="46" y="349">checks live here;</text>
+  <text class="xs" x="46" y="363">kernels trust inputs</text>
+
+  <text class="layer" x="46" y="417">CORE</text>
+  <text class="path" x="46" y="435">src/core/</text>
+
+  <text class="layer" x="46" y="685">BACKENDS</text>
+  <text class="path" x="46" y="703">src/backends/</text>
+  <text class="mm" x="46" y="734" style="fill: #15202b">class Backend</text>
+  <text class="mm" x="54" y="752">type()</text>
+  <text class="mm" x="54" y="768">device_count()</text>
+  <text class="mm" x="54" y="784">allocate() → Buffer</text>
+  <text class="mm" x="54" y="800">stream() → Stream</text>
+  <text class="mm" x="54" y="816">register_kernels()</text>
+
+  <!-- ========== L1 USER CODE ========== -->
+  <rect class="box" x="190" y="110" width="810" height="48" rx="5"/>
+  <text class="m13" x="206" y="130">Tensor c = mensurflow::dot(a, b, Execution::GPU);</text>
+  <text class="m13" x="206" y="149">float v = c.item();   <tspan class="dim">// copies back; waits for the GPU</tspan></text>
+
+  <rect class="box" x="1040" y="110" width="520" height="48" rx="5"/>
+  <text class="m13" x="1056" y="130">list_devices()   <tspan class="dim">→ [cpu:0, metal:0]</tspan></text>
+  <text class="m13" x="1056" y="149">default_device() <tspan class="dim">env, else CUDA → Metal → CPU</tspan></text>
+
+  <!-- ========== L2 PUBLIC API ========== -->
+  <rect class="box-hot" x="190" y="194" width="410" height="64" rx="5"/>
+  <text class="path" x="206" y="214">ops/blas.hpp · elementwise.hpp · reduction.hpp</text>
+  <text class="b" x="206" y="240">dot, matmul, add, relu, sum … each ends in <tspan class="m">Execution</tspan></text>
+
+  <rect class="box" x="620" y="194" width="280" height="64" rx="5"/>
+  <text class="path" x="636" y="214">tensor.hpp</text>
+  <text class="b" x="636" y="240">Tensor · from_host · to(device) · item()</text>
+
+  <rect class="box" x="920" y="194" width="280" height="64" rx="5"/>
+  <text class="path" x="936" y="214">execution.hpp</text>
+  <text class="m" x="936" y="240">enum Execution { Auto, CPU, GPU }</text>
+
+  <rect class="box" x="1220" y="194" width="340" height="64" rx="5"/>
+  <text class="path" x="1236" y="214">device.hpp</text>
+  <text class="b" x="1236" y="240">Device · list_devices() · default_device()</text>
+
+  <!-- L1 → L2 arrows -->
+  <line class="a-hot" x1="282" y1="158" x2="282" y2="192" marker-end="url(#ah-hot)"/>
+  <text class="lbl-hot" x="292" y="180">calls</text>
+  <line class="a-thin" x1="760" y1="158" x2="760" y2="192" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="768" y="180">item()</text>
+  <line class="a-thin" x1="1390" y1="158" x2="1390" y2="192" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="1398" y="180">calls</text>
+
+  <!-- ========== L3 OPS pipeline ========== -->
+  <g>
+    <rect class="box-hot" x="190" y="296" width="184" height="64" rx="5"/>
+    <circle class="step-badge" cx="210" cy="316" r="9"/><text class="badge-t" x="210" y="320" text-anchor="middle">1</text>
+    <text class="h-sm" x="226" y="321">validate</text>
+    <text class="s" x="206" y="345">shape, dtype, same device</text>
+
+    <rect class="box-hot" x="396" y="296" width="184" height="64" rx="5"/>
+    <circle class="step-badge" cx="416" cy="316" r="9"/><text class="badge-t" x="416" y="320" text-anchor="middle">2</text>
+    <text class="h-sm" x="432" y="321">make contiguous</text>
+    <text class="s" x="412" y="345">stride 1 for every backend</text>
+
+    <rect class="box-hot" x="602" y="296" width="184" height="64" rx="5"/>
+    <circle class="step-badge" cx="622" cy="316" r="9"/><text class="badge-t" x="622" y="320" text-anchor="middle">3</text>
+    <text class="h-sm" x="638" y="321">allocate output</text>
+    <text class="s" x="618" y="345">Tensor::empty on a's device</text>
+
+    <rect class="box-hot" x="808" y="296" width="184" height="64" rx="5"/>
+    <circle class="step-badge" cx="828" cy="316" r="9"/><text class="badge-t" x="828" y="320" text-anchor="middle">4</text>
+    <text class="h-sm" x="844" y="321">dispatch</text>
+    <text class="mm" x="824" y="345">dispatch(OpId::Dot, …)</text>
+
+    <rect class="box" x="1014" y="296" width="184" height="64" rx="5"/>
+    <circle class="step-badge" cx="1034" cy="316" r="9" style="fill: #5d6875"/><text class="badge-t" x="1034" y="320" text-anchor="middle">5</text>
+    <text class="h-sm" x="1050" y="321">record autograd</text>
+    <text class="s" x="1030" y="345">node: parents + backward</text>
+
+    <line class="a-hot" x1="374" y1="328" x2="394" y2="328" marker-end="url(#ah-hot)"/>
+    <line class="a-hot" x1="580" y1="328" x2="600" y2="328" marker-end="url(#ah-hot)"/>
+    <line class="a-hot" x1="786" y1="328" x2="806" y2="328" marker-end="url(#ah-hot)"/>
+    <line class="a-thin" x1="992" y1="328" x2="1012" y2="328" marker-end="url(#ah-thin)"/>
+  </g>
+
+  <!-- Memory model -->
+  <rect class="box" x="1230" y="296" width="250" height="64" rx="5"/>
+  <text class="h-sm" x="1246" y="321">Tensor → Storage → Buffer</text>
+  <text class="s" x="1246" y="345">view → owns → device memory</text>
+
+  <!-- L2 → L3 -->
+  <line class="a-hot" x1="282" y1="258" x2="282" y2="294" marker-end="url(#ah-hot)"/>
+
+  <!-- ========== L4 CORE ========== -->
+  <!-- Kernel table -->
+  <rect class="box" x="190" y="410" width="310" height="218" rx="5"/>
+  <text class="h" x="206" y="438">Kernel table</text>
+  <text class="mm" x="206" y="457">map&lt;(op, device, dtype), KernelFn&gt;</text>
+  <line class="sep" x1="206" y1="470" x2="484" y2="470"/>
+  <text class="m" x="206" y="490">Dot · CPU · F32</text>   <text class="m dim" x="484" y="490" text-anchor="end">dot_f32</text>
+  <line class="sep" x1="206" y1="500" x2="484" y2="500"/>
+  <text class="m hot-t" x="206" y="520">Dot · Metal · F32</text><text class="m hot-t" x="484" y="520" text-anchor="end">MPSGraph</text>
+  <line class="sep" x1="206" y1="530" x2="484" y2="530"/>
+  <text class="m" x="206" y="550">Dot · CUDA · F32</text>  <text class="m dim" x="484" y="550" text-anchor="end">cuBLAS</text>
+  <line class="sep" x1="206" y1="560" x2="484" y2="560"/>
+  <text class="m" x="206" y="580">Div · CUDA · F32</text>  <text class="m bad-t" x="484" y="580" text-anchor="end">missing</text>
+  <text class="xs" x="206" y="604">missing key → NotImplemented,</text>
+  <text class="xs" x="206" y="619">never a silent fallback</text>
+
+  <!-- Dispatcher -->
+  <rect class="box-hot" x="560" y="410" width="500" height="218" rx="5" style="fill: #e1f2ef"/>
+  <text class="h" x="580" y="438">Dispatcher</text>
+  <text class="mm" x="672" y="438">detail::dispatch(op, args, execution)</text>
+
+  <text class="m hot-t" x="580" y="466">a</text>
+  <text class="m" x="598" y="466">execution_device(exec, data device)</text>
+  <text class="s" x="598" y="484">Auto → cpu:0 · CPU → cpu:0 · GPU → data's GPU, else CUDA, else Metal</text>
+
+  <text class="m hot-t" x="580" y="512">b</text>
+  <text class="m" x="598" y="512">registry.get(target) → Backend&amp;</text>
+
+  <text class="m hot-t" x="580" y="540">c</text>
+  <text class="m" x="598" y="540">lookup({op, target.type, dtype})</text>
+
+  <text class="m hot-t" x="580" y="568">d</text>
+  <text class="m" x="598" y="568">target == data device ?</text>
+  <text class="s" x="598" y="588"><tspan style="fill: #15202b">yes</tspan>  run kernel(args, stream) in place</text>
+  <text class="s" x="598" y="607"><tspan style="fill: #15202b">no</tspan>   copy inputs over, run, copy outputs back</text>
+
+  <!-- Registry -->
+  <rect class="box" x="1120" y="410" width="440" height="218" rx="5"/>
+  <text class="h" x="1140" y="438">Registry</text>
+  <text class="s" x="1215" y="438">singleton, built on first use</text>
+  <text class="m" x="1140" y="466">register_cpu_backend()</text>   <text class="xs" x="1544" y="466" text-anchor="end">required</text>
+  <text class="m" x="1140" y="490">register_cuda_backend()</text>  <text class="xs" x="1544" y="490" text-anchor="end">if built · skipped on error</text>
+  <text class="m" x="1140" y="514">register_metal_backend()</text> <text class="xs" x="1544" y="514" text-anchor="end">if built · skipped on error</text>
+  <line class="sep" x1="1140" y1="528" x2="1544" y2="528"/>
+  <text class="b" x="1140" y="550">add(backend) keeps it only if <tspan class="m">device_count() &gt; 0</tspan>,</text>
+  <text class="b" x="1140" y="569">then calls its <tspan class="m">register_kernels()</tspan></text>
+  <line class="sep" x1="1140" y1="584" x2="1544" y2="584"/>
+  <text class="m" x="1140" y="608">get(device) · find(type) · devices()</text>
+
+  <!-- L3 → L4 -->
+  <line class="a-hot" x1="900" y1="360" x2="900" y2="408" marker-end="url(#ah-hot)"/>
+  <text class="lbl-hot" x="910" y="384">OpArgs + Execution</text>
+  <line class="a-thin" x1="1350" y1="360" x2="1350" y2="408" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="1342" y="384" text-anchor="end">get(device).allocate()</text>
+  <line class="a-thin" x1="1530" y1="258" x2="1530" y2="408" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="1522" y="384" text-anchor="end">devices()</text>
+
+  <!-- Dispatcher ↔ neighbours -->
+  <line class="a-thin" x1="1060" y1="508" x2="1118" y2="508" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="1089" y="500" text-anchor="middle">get</text>
+  <line class="a-thin" x1="560" y1="536" x2="502" y2="536" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="531" y="528" text-anchor="middle">lookup</text>
+
+  <!-- ========== L5 BACKENDS ========== -->
+  <!-- CPU -->
+  <rect class="box" x="190" y="690" width="327" height="162" rx="5"/>
+  <text class="h" x="206" y="716">CPU</text>
+  <rect class="pill" x="403" y="702" width="98" height="20" rx="10"/><text class="mm" x="452" y="716" text-anchor="middle">always built</text>
+  <text class="b" x="206" y="746"><tspan class="m">CpuBuffer</tspan>  64-byte aligned memory</text>
+  <text class="b" x="206" y="768"><tspan class="m">CpuStream</tspan>  memcpy, done on return</text>
+  <text class="b" x="206" y="790"><tspan class="m">ops/</tspan> blas · elementwise · reduction</text>
+  <text class="b" x="206" y="812">OpenMP via <tspan class="m">PARALLEL_FOR</tspan></text>
+  <text class="s" x="206" y="836">registers all 42 ops</text>
+
+  <!-- CUDA -->
+  <rect class="box" x="537" y="690" width="327" height="162" rx="5"/>
+  <text class="h" x="553" y="716">CUDA</text>
+  <rect class="pill" x="722" y="702" width="126" height="20" rx="10"/><text class="mm" x="785" y="716" text-anchor="middle">MENSURFLOW_CUDA</text>
+  <text class="b" x="553" y="746"><tspan class="m">CudaBuffer</tspan>  cudaMalloc</text>
+  <text class="b" x="553" y="768"><tspan class="m">CudaStream</tspan>  async + cuBLAS handle</text>
+  <text class="b" x="553" y="790">kernels: dot, add, sub, mul</text>
+  <text class="b" x="553" y="812">copy back waits for the stream</text>
+  <text class="s" x="553" y="836">registers 4 ops</text>
+
+  <!-- Metal -->
+  <rect class="box-hot" x="884" y="690" width="327" height="162" rx="5"/>
+  <text class="h" x="900" y="716">Metal</text>
+  <rect class="pill" x="1061" y="702" width="134" height="20" rx="10"/><text class="mm" x="1128" y="716" text-anchor="middle">MENSURFLOW_METAL</text>
+  <text class="b" x="900" y="746"><tspan class="m">MetalBuffer</tspan>  shared MTLBuffer</text>
+  <text class="b" x="900" y="768"><tspan class="m">MetalStream</tspan>  command queue</text>
+  <text class="b" x="900" y="790">MPSGraph: dot, add, sub, mul, div</text>
+  <text class="b" x="900" y="812">unified memory, copies are memcpy</text>
+  <text class="s" x="900" y="836">registers 5 ops · macOS only</text>
+
+  <!-- Vulkan -->
+  <rect class="box-plan" x="1231" y="690" width="327" height="162" rx="5"/>
+  <text class="h dim" x="1247" y="716">Vulkan</text>
+  <rect class="pill" x="1468" y="702" width="74" height="20" rx="10"/><text class="mm" x="1505" y="716" text-anchor="middle">planned</text>
+  <text class="b dim" x="1247" y="746">DeviceType::Vulkan is reserved</text>
+  <text class="b dim" x="1247" y="768">no backend yet, so get() throws</text>
+  <text class="b dim" x="1247" y="790">a new backend implements the</text>
+  <text class="b dim" x="1247" y="812">six methods on the left and</text>
+  <text class="s" x="1247" y="836">touches nothing above this layer</text>
+
+  <!-- Hot bus: Dispatcher → chosen backend -->
+  <path class="a-hot" d="M810 628 V664"/>
+  <path class="a-hot" d="M353 664 H1047"/>
+  <line class="a-hot" x1="353" y1="664" x2="353" y2="688" marker-end="url(#ah-hot)"/>
+  <line class="a-hot" x1="700" y1="664" x2="700" y2="688" marker-end="url(#ah-hot)"/>
+  <line class="a-hot" x1="1047" y1="664" x2="1047" y2="688" marker-end="url(#ah-hot)"/>
+  <text class="lbl-hot" x="822" y="656">kernel(args, stream) on the execution device</text>
+
+  <!-- Startup: backends fill the table; Registry creates backends -->
+  <line class="a-start" x1="260" y1="690" x2="260" y2="630" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="252" y="664" text-anchor="end">each backend: register_kernels()</text>
+  <line class="a-start" x1="1160" y1="628" x2="1160" y2="688" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="1170" y="664">register_*_backend() → add()</text>
+
+  <!-- Footer -->
+  <text class="s" x="40" y="888">Data stays on the device its Tensor was created on; <tspan class="m" style="fill: #15202b">Execution</tspan> picks where the kernel runs. When they differ, dispatch copies the inputs over and the result back.</text>
+</svg>

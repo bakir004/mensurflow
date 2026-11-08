@@ -20,7 +20,7 @@
 // in gemm_packed.cpp.
 #include "bench.hpp"
 
-#include "backends/cpu/ops/blas/gemm_packed.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>

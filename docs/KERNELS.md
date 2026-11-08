@@ -30,11 +30,12 @@ bit-identical CPU/GPU reductions.
 
 ## Current implementation status
 
-What exists today. Operations take `Tensor`s (float32 only, `mensurflow::` namespace) and an
+What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
-dispatcher where to run. CPU kernels are in `src/backends/cpu/ops/{blas,elementwise,reduction}/`;
-each is one loop that OpenMP parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`,
-`max` and `min`, which have separate sequential and parallel versions.
+dispatcher where to run. CPU kernels are in
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement}/`; each is one loop that OpenMP
+parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
+which have separate sequential and parallel versions.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
 |Operation|CPU|CUDA|Metal|
@@ -44,15 +45,57 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`neg`, `abs`, `square`, `relu`|OpenMP, float32; tensor views supported|—|—|
 |`sqrt`, `exp`, `sigmoid`|OpenMP, float32; tensor views supported|—|—|
 |`axpy`, `bias_add`|OpenMP, float32; tensor views supported|—|—|
+|`cast`|OpenMP, F32/I32/F16/BF16; tensor views supported, forward only|—|—|
 |`dot`|OpenMP, double accumulation|`cublasSdot`|MPSGraph, untested|
 |`matvec`|OpenMP, double accumulation per row|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
 |`matmul`|blocked, rows split across threads; CPU autograd backward|—|—|
+|`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|
+|`ger`|OpenMP, rows split across threads|—|—|
+|`concat`, `pad`|OpenMP, memcpy pieces and vectorized fills; `pad` is constant mode only|—|—|
+|`split`|views (no kernel)|views|views|
 
 CUDA was tested on an RTX 3060; Metal has never been built on real hardware. The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
 exists only in git history.
+
+## CPU elementwise behavior
+
+The additional F32 activations, comparisons, `where` and dtype casts provide forward execution
+only. Public calls pack strided/expanded inputs and return fresh contiguous outputs.
+
+```cpp
+leaky_relu(x);                 // negative slope 0.01; optional slope argument
+gelu(x);                       // exact Gaussian CDF; gelu(x, true) uses tanh approximation
+silu(x);                       // x * sigmoid(x)
+elu(x, 1.5f);                  // alpha; negative branch uses alpha * expm1(x)
+softplus(x, 2.0f, 15.0f);       // beta, linear threshold
+```
+
+Softplus requires positive finite beta and a finite threshold; it returns x when beta*x exceeds
+the threshold. NaNs propagate. GELU and SiLU return -0 at negative infinity and positive infinity
+at positive infinity. Stable formulas retain double intermediates where needed for negative tails.
+
+Comparisons `eq`, `ne`, `lt`, `le`, `gt`, `ge` broadcast F32 inputs and produce Bool bytes 0/1.
+`where(condition, x, y)` broadcasts a Bool condition and F32 values, treating any nonzero mask byte
+as true and preserving the selected value's bits. Supply Bool masks with
+`Tensor::from_host(bytes.data(), shape, DType::Bool)`; `from_vector<std::uint8_t>` creates U8 instead.
+Read Bool storage with `copy_to_host` into a byte buffer. NaNs compare unequal, all ordered
+comparisons involving NaNs are false, and signed zeros compare equal.
+
+`cast(x, dtype)` supports all 16 pairs among F32, I32, F16 and BF16. Same-dtype copies preserve bits.
+Floating outputs round to nearest, ties to even; F16/BF16 retain subnormals and overflow to infinity.
+Floating-to-I32 truncates toward zero; NaN, infinity and out-of-range inputs become `INT32_MIN`.
+Integer-to-floating conversions round directly, avoiding an intermediate rounded F32 value.
+Read F16/BF16 bits into `std::uint16_t` buffers with `copy_to_host`, or cast to F32 for numerical values.
+Bool, U8 and I64 casts and GPU cast kernels are unsupported.
+
+Each CPU elementwise operation has an independent OpenMP cutoff in
+`src/backends/cpu/ops/elementwise/parallel_cutoffs.hpp`, including separate GELU variants.
+Defaults are 32,768 elements pending measurement; parallel execution requires `n > cutoff`.
+Without OpenMP, execution stays serial. Benchmark controls and tuning guidance are in
+[BENCHMARKING.md](BENCHMARKING.md#elementwise-parallel-cutoffs).
 
 ## P0 — Minimum useful dense inference library
 
@@ -116,7 +159,8 @@ with a reference. This supports inference, not training by itself.
 **Current project status:** the CPU float32 path now includes reverse-mode
 autograd for the implemented elementwise, reduction, bias, and matrix multiply
 operations, and a runnable MLP example (`examples/mlp_xor.cpp`) that writes its
-loss and update step from those operations. Softmax, the loss operations, and
+loss and update step from those operations. The five additional activations below currently
+provide forward support only. Softmax, the loss operations, and
 the SGD optimizer were removed. GPU backends,
 backend-independent correctness infrastructure, and the broader vendor-kernel
 coverage table remain separate work.
@@ -131,8 +175,8 @@ Implement these after P0 works end to end.
 * \[x] `exp` and `sqrt` — exponential and square root (CPU, float32).
 * \[x] `log` and `rsqrt`.
 * \[x] `minimum`, `maximum`, and `clamp`.
-* \[ ] `equal`, `less`, `greater`, and related comparisons producing boolean masks.
-* \[ ] `where(mask, a, b)` — conditional element selection.
+* \[x] `eq`, `ne`, `lt`, `le`, `gt`, `ge` — CPU F32 comparisons producing Bool masks, with broadcasting.
+* \[x] `where(mask, a, b)` — CPU Bool/F32 conditional element selection, with broadcasting; forward only.
 * \[x] `tanh` — activation used by older networks and recurrent models.
 * \[x] `pow` and `reciprocal`.
 * \[x] `sin` and `cos` — rotary and sinusoidal position encodings.
@@ -149,8 +193,8 @@ negative inputs.
 masks.
 * \[ ] `bitwise\_and`, `bitwise\_or`, `bitwise\_xor`, `bitwise\_not`, and shifts —
 integer masks and unpacking int4 weights.
-* \[ ] `cast` — dtype conversion; needed once integer, boolean, or half types exist.
-`bitcast` reinterprets the bits without converting values.
+* \[x] `cast` — CPU dtype conversion among F32, I32, F16 and BF16; see [CPU elementwise behavior](#cpu-elementwise-behavior).
+* \[ ] `bitcast` — reinterpret bits without converting values.
 * \[ ] `add\_n` — sum of many same-shaped tensors in one pass.
 * \[ ] `bucketize` / `searchsorted` — map values to bins given sorted boundaries.
 * \[ ] General broadcasting for elementwise operations.
@@ -165,8 +209,8 @@ integer masks and unpacking int4 weights.
 * \[ ] Lp normalization, e.g. L2 `x / ||x||` — embedding and retrieval models.
 * \[ ] Variance and standard deviation; specify population/sample convention and
 use a numerically stable algorithm where practical.
-* \[ ] Batched `matmul`, initially for matching batch dimensions.
-* \[ ] `outer(x, y)` — outer product; also appears in gradient formulas.
+* \[x] Batched `matmul` (`gemm_strided_batched`), with NumPy-style batch broadcasting.
+* \[x] `outer(x, y)` — outer product, as `ger(1, x, y)`; also appears in gradient formulas.
 * \[ ] `einsum` — lowered to permute, reshape, and batched GEMM.
 * \[ ] Pairwise squared Euclidean distances, initially composed from reductions
 and GEMM; clamp small negative roundoff artifacts to zero.
@@ -178,7 +222,7 @@ slice) can follow.
 * \[ ] `select` and `diagonal` — single-index and diagonal views. Also building a
 diagonal matrix from a vector and overwriting a diagonal.
 * \[ ] `as\_strided` — general strided view, once views are supported.
-* \[ ] `concat` and `split` along a selected axis.
+* \[x] `concat` and `split` along a selected axis (`split` returns views).
 * \[ ] `stack` / `unstack` — join along, or split into, a new axis.
 * \[ ] `gather` / row selection with integer indices and bounds validation.
 * \[ ] `gather\_nd` / `scatter\_nd` — multi-dimensional index tuples.
@@ -189,7 +233,7 @@ diagonal matrix from a vector and overwriting a diagonal.
 unsupported.
 * \[ ] `squeeze` / `unsqueeze` — metadata-only.
 * \[ ] `repeat` / tile.
-* \[ ] `pad` — constant, reflection, and replication modes.
+* \[ ] `pad` — constant mode done; reflection and replication modes remain.
 * \[ ] `flip` and `roll`; `reverse\_sequence` for variable-length sequences.
 * \[ ] `depth\_to\_space` / `space\_to\_depth` (pixel shuffle) — super-resolution.
 `batch\_to\_space` / `space\_to\_batch` are the batch-axis equivalents.
@@ -306,12 +350,17 @@ normalization is the case of one group per channel.
 
 ### Additional activations
 
-* \[ ] `silu` (swish), `x \* sigmoid(x)` — LLaMA-family MLPs and diffusion U-Nets.
-* \[ ] `leaky\_relu`, `elu`, and `softplus`.
+* \[x] `silu` (swish), `x \* sigmoid(x)` — CPU F32 forward.
+* \[x] `gelu` — Gaussian CDF and tanh approximation, CPU F32 forward.
+* \[x] `leaky\_relu`, `elu`, and `softplus` — CPU F32 forward; see
+  [CPU elementwise behavior](#cpu-elementwise-behavior) for parameters and numeric conventions.
+
 * \[ ] `hardswish`, `hardsigmoid`, and `relu6` / `hardtanh` — mobile CNNs.
 * \[ ] `prelu` — leaky ReLU with a learned slope.
 * \[ ] Squared ReLU, `relu(x)^2` — used in some recent LLMs.
 * \[ ] `selu`, `celu`, `mish`, `softsign`, `shrink`, and `thresholded\_relu`.
+
+The five implemented activations currently provide forward execution only.
 
 ### Recurrent networks
 
@@ -334,7 +383,7 @@ behavior.
 * \[ ] Relative position bias and ALiBi — biases added to attention scores
 (T5, SAM, BLOOM).
 * \[ ] Window partition / unpartition for windowed attention (Swin, SAM).
-* \[ ] GELU activation; specify exact or approximate formula.
+* \[x] GELU activation — exact and tanh approximation, CPU F32 forward only.
 * \[ ] LayerNorm or RMSNorm as required by the chosen model. Variants: Gemma's
 `(1 + w)` scale and gated RMSNorm.
 * \[ ] Positional encodings or rotary positional embeddings, model-dependent.

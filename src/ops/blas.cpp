@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mensurflow {
@@ -258,6 +259,138 @@ Tensor gemm(const Tensor& a, const Tensor& b, float alpha, const Tensor* c, floa
         throw std::invalid_argument("gemm: beta requires c");
     }
     return result;
+}
+
+Tensor ger(float alpha, const Tensor& x, const Tensor& y, const Tensor* a, Execution execution) {
+    require_vector(x, "ger", "x");
+    require_vector(y, "ger", "y");
+    if (a != nullptr) {
+        require_matrix(*a, "ger", "a");
+    }
+    if (x.dtype() != y.dtype() || (a != nullptr && a->dtype() != x.dtype())) {
+        throw std::invalid_argument("ger: dtypes differ");
+    }
+    if (x.device() != y.device() || (a != nullptr && a->device() != x.device())) {
+        throw std::invalid_argument("ger: tensors are on different devices; move one with "
+                                    "Tensor::to()");
+    }
+    const std::int64_t m = x.size(0), n = y.size(0);
+    if (a != nullptr && a->shape() != Shape{m, n}) {
+        throw std::invalid_argument("ger: a has shape " + to_string(a->shape()) + ", expected " +
+                                    to_string(Shape{m, n}));
+    }
+    Tensor out = Tensor::empty({m, n}, x.dtype(), x.device());
+    if (m == 0 || n == 0) {
+        return out;
+    }
+    detail::OpArgs args{
+        {x.strides()[0] == 1 ? x : x.contiguous(), y.strides()[0] == 1 ? y : y.contiguous()},
+        {out}};
+    if (a != nullptr) {
+        args.inputs.push_back(a->contiguous());
+    }
+    args.alpha = alpha;
+    detail::dispatch(detail::OpId::Ger, args, execution);
+    return out;
+}
+
+Tensor gemm_strided_batched(const Tensor& a, const Tensor& b, float alpha, const Tensor* c,
+                            float beta, bool transpose_a, bool transpose_b, Execution execution) {
+    for (const auto& [t, name] : {std::pair<const Tensor*, const char*>{&a, "a"}, {&b, "b"}}) {
+        if (!t->defined()) {
+            throw std::invalid_argument(std::string("gemm_strided_batched: ") + name +
+                                        " is an undefined tensor");
+        }
+        if (t->dim() < 2) {
+            throw std::invalid_argument(std::string("gemm_strided_batched: ") + name +
+                                        " must be at least 2-D, got shape " +
+                                        to_string(t->shape()));
+        }
+    }
+    if (a.dtype() != b.dtype() || (c != nullptr && c->dtype() != a.dtype())) {
+        throw std::invalid_argument("gemm_strided_batched: dtypes differ");
+    }
+    if (a.device() != b.device() || (c != nullptr && c->device() != a.device())) {
+        throw std::invalid_argument("gemm_strided_batched: tensors are on different devices; move "
+                                    "one with Tensor::to()");
+    }
+    if (c == nullptr && beta != 0.0f) {
+        throw std::invalid_argument("gemm_strided_batched: beta requires c");
+    }
+
+    // op(a) and op(b) as views: a transpose only swaps the last two strides.
+    const Tensor left = transpose_a ? a.transpose(-2, -1) : a;
+    const Tensor right = transpose_b ? b.transpose(-2, -1) : b;
+    const std::int64_t m = left.size(-2), k = left.size(-1), n = right.size(-1);
+    if (right.size(-2) != k) {
+        throw std::invalid_argument("gemm_strided_batched: inner dimensions differ (" +
+                                    to_string(left.shape()) + " times " + to_string(right.shape()) +
+                                    ")");
+    }
+    const Shape left_batch(left.shape().begin(), left.shape().end() - 2);
+    const Shape right_batch(right.shape().begin(), right.shape().end() - 2);
+    Shape batch;
+    try {
+        batch = broadcast_shapes(left_batch, right_batch);
+    } catch (const std::invalid_argument&) {
+        throw std::invalid_argument("gemm_strided_batched: batch shapes " + to_string(left_batch) +
+                                    " and " + to_string(right_batch) + " do not broadcast");
+    }
+    Shape out_shape = batch;
+    out_shape.push_back(m);
+    out_shape.push_back(n);
+
+    // c is broadcast to the result (a shared bias matrix needs no copy of its own) and packed, so
+    // the kernel reads it with the result's layout.
+    Tensor initial;
+    if (c != nullptr) {
+        bool broadcasts = c->dim() <= static_cast<int>(out_shape.size());
+        if (broadcasts) {
+            try {
+                broadcasts = broadcast_shapes(c->shape(), out_shape) == out_shape;
+            } catch (const std::invalid_argument&) {
+                broadcasts = false;
+            }
+        }
+        if (!broadcasts) {
+            throw std::invalid_argument("gemm_strided_batched: c has shape " +
+                                        to_string(c->shape()) + ", which does not broadcast to " +
+                                        to_string(out_shape));
+        }
+        if (beta != 0.0f) {
+            initial = c->expand(out_shape).contiguous();
+        }
+    }
+
+    Tensor out = Tensor::empty(out_shape, a.dtype(), a.device());
+    if (out.numel() == 0) {
+        return out;
+    }
+    if (k == 0) {
+        // No products: the result is beta * c, or zeros.
+        if (initial.defined()) {
+            return scal(beta, initial.view({initial.numel()}), execution).view(out_shape);
+        }
+        const std::vector<std::byte> zeros(out.nbytes());
+        return Tensor::from_host(zeros.data(), out_shape, a.dtype(), a.device());
+    }
+
+    // Every matrix of the batch as a view with the full batch shape: broadcast batch dimensions get
+    // stride 0, so the kernel reaches each matrix through its strides without copying anything.
+    Shape left_shape = batch;
+    left_shape.push_back(m);
+    left_shape.push_back(k);
+    Shape right_shape = batch;
+    right_shape.push_back(k);
+    right_shape.push_back(n);
+    detail::OpArgs args{{left.expand(left_shape), right.expand(right_shape)}, {out}};
+    if (initial.defined()) {
+        args.inputs.push_back(initial);
+    }
+    args.alpha = alpha;
+    args.beta = initial.defined() ? beta : 0.0f;
+    detail::dispatch(detail::OpId::GemmBatched, args, execution);
+    return out;
 }
 
 } // namespace mensurflow

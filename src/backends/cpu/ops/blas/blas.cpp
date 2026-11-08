@@ -77,6 +77,26 @@ void gemv_f32(const float* a, const float* x, float* y, std::int64_t rows, std::
     }
 }
 
+// One row of out per iteration; the inner loop is a contiguous axpy the compiler vectorizes.
+void ger_f32(float alpha, const float* x, const float* y, const float* a, float* out,
+             std::int64_t m, std::int64_t n) {
+    MENSURFLOW_PARALLEL_FOR(if (m * n > parallel_threshold))
+    for (std::int64_t i = 0; i < m; ++i) {
+        const float scale = alpha * x[i];
+        float* row = out + i * n;
+        if (a == nullptr) {
+            for (std::int64_t j = 0; j < n; ++j) {
+                row[j] = scale * y[j];
+            }
+        } else {
+            const float* initial = a + i * n;
+            for (std::int64_t j = 0; j < n; ++j) {
+                row[j] = scale * y[j] + initial[j];
+            }
+        }
+    }
+}
+
 // The plain i-k-j loop: for each row of A, every A[i,p] scales row p of B into row i of C.
 void matmul_f32_sequential(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
                            std::int64_t k) {

@@ -7,7 +7,7 @@
 // row of a matrix, and so on. The result has the broadcast shape and is a new contiguous tensor;
 // inputs are never modified. Broadcast or strided inputs are expanded into a packed copy before
 // the kernel runs, so they cost extra memory traffic compared with two same-shape tensors.
-// Only float32 so far.
+// Arithmetic is float32; comparisons return Bool and cast supports the dtypes documented below.
 //
 // Throw invalid_argument for undefined tensors, mismatched dtypes or devices, and shapes that do
 // not broadcast. NotImplemented (a runtime_error) means the execution device has no kernel for
@@ -53,6 +53,21 @@ Tensor abs(const Tensor& x, Execution execution = Execution::Auto);
 Tensor square(const Tensor& x, Execution execution = Execution::Auto);
 // x < 0 ? +0 : x; preserves NaNs and signed zeros
 Tensor relu(const Tensor& x, Execution execution = Execution::Auto);
+// The following five activations provide forward execution only; backward is not implemented.
+// Negative values are multiplied by negative_slope.
+Tensor leaky_relu(const Tensor& x, float negative_slope = 0.01f,
+                  Execution execution = Execution::Auto);
+// Gaussian error linear unit. approximate=true selects the tanh approximation.
+// GELU and SiLU use their limiting value -0 at -infinity, and +infinity at +infinity.
+Tensor gelu(const Tensor& x, bool approximate = false, Execution execution = Execution::Auto);
+// x * sigmoid(x), computed without exponential overflow.
+Tensor silu(const Tensor& x, Execution execution = Execution::Auto);
+// Negative values become alpha * expm1(x).
+Tensor elu(const Tensor& x, float alpha = 1.0f, Execution execution = Execution::Auto);
+// log(1 + exp(beta*x)) / beta; returns x when beta*x > threshold.
+// beta must be positive and finite; threshold must be finite.
+Tensor softplus(const Tensor& x, float beta = 1.0f, float threshold = 20.0f,
+                Execution execution = Execution::Auto);
 // sqrt(x); negatives -> NaN, preserves signed zeros
 Tensor sqrt(const Tensor& x, Execution execution = Execution::Auto);
 // exp(x); overflow -> +inf, underflow may produce +0
@@ -74,5 +89,33 @@ Tensor minimum(const Tensor& a, const Tensor& b, Execution execution = Execution
 // elementwise maximum
 Tensor maximum(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
 Tensor clamp(const Tensor& x, float lower, float upper, Execution execution = Execution::Auto);
+
+// Elementwise F32 comparisons. Inputs must have the same dtype/device and broadcast normally.
+// Return a new contiguous Bool tensor on the inputs' device, with byte values 0 or 1.
+// NaN follows ordinary floating-point comparisons: only ne is true for a NaN operand.
+// CPU F32 only; unsupported dtype/backend throws NotImplemented, including empty inputs.
+// Comparisons do not track gradients. Read Bool values with copy_to_host into uint8_t storage.
+Tensor eq(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor ne(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor lt(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor le(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor gt(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+Tensor ge(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+
+// Select x where condition is nonzero, otherwise y. Condition must be Bool; x/y must be F32
+// with the same dtype/device. All three shapes broadcast together. Returns a new contiguous F32
+// tensor on their device and preserves the selected value's bits, including signed zeros/NaNs.
+// CPU forward only: no gradient graph is recorded. Unsupported dtype/backend throws
+// NotImplemented even for empty results; invalid condition, devices or shapes throw invalid_argument.
+Tensor where(const Tensor& condition, const Tensor& x, const Tensor& y,
+             Execution execution = Execution::Auto);
+
+// Convert between F32, I32, F16 and BF16, returning a fresh contiguous tensor of the same
+// shape and device, even when the dtype is unchanged. Views are packed before conversion.
+// Floating results round to nearest, ties to even. Floating-to-I32 truncates toward zero;
+// NaN, infinity or an out-of-range value produces INT32_MIN. Same-dtype casts preserve bits.
+// CPU forward only: no gradient graph is recorded. Unsupported source/target dtype or backend
+// throws NotImplemented, including empty inputs. Undefined input/invalid dtype throws invalid_argument.
+Tensor cast(const Tensor& x, DType dtype, Execution execution = Execution::Auto);
 
 } // namespace mensurflow

@@ -1,6 +1,9 @@
 # Generated CMake build directories are not source.
 build/
 build-*/
+# Generated Python bytecode and caches.
+__pycache__/
+*.py[cod]
 # Local macOS metadata.
 .DS_Store
 
