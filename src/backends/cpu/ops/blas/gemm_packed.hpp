@@ -24,7 +24,12 @@ struct PackedGemmBlocking {
     std::int64_t kc = 256;
     std::int64_t nc = 4080;
     std::int64_t tiles_per_thread = 4; // parallel version: tiles of C handed out per thread
-    std::int64_t prefetch = 0;         // micro-kernel: 0 none, 1 prefetch the C tile, 2 also A and B
+    std::int64_t prefetch = 0;         // micro-kernel (6x16 shape 0): 0 none, 1 the C tile, 2 C and
+                                       // A/B 8 steps ahead, 3 B 32 steps ahead (L1), 4 B 128 steps
+                                       // ahead (L2), 5 the C tile with write intent, 6 = 5 + 3
+    std::int64_t prefetch_block = 0;   // between tiles: 0 none, 1 the next C tile, 2 the same with
+                                       // write intent, 3 the next A panel spread over the row of
+                                       // tiles (loop order 1), 4 = 2 + 3
     std::int64_t shape = 0;            // micro-kernel tile: 0 6x16, 1 6x16 unrolled, 2 4x24, 3 12x8;
                                        // 6x16 loop variants: 4/5 unrolled x2/x4, 6 broadcasts
                                        // pipelined a row ahead, 7 pipelined x2, 8/9 unrolled x2/x4

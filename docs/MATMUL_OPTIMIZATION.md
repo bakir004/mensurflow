@@ -33,6 +33,7 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 18 | Multi-panel `pack_b` | B is packed 4 panels per pass over the rows, so each source row is read as a run of 4 cache lines | Packing B alone 1.5-1.9x faster; no measurable end-to-end change with threads (packing is DRAM-bound there and already hidden by 16) |
 | 19 | Approaches measured and rejected | Tiles per thread re-swept for strategy 4; masked edge tiles considered | 16 tiles stays best; partial edge tiles cost at most 2% (n = 1025, 2047), not worth a kernel |
 | 20 | Manual unrolling and broadcast placement in the 6x16 kernel | 8 new variants (unrolled x2/x4, broadcasts pipelined one row ahead in the 16th register, with and without a compiler fence), a kernel-only benchmark, assembly of each | The default kernel already runs at 97.7% of the core's FMA peak by itself. Unrolling without a fence spills (64-75% of peak); with the fence it is spill-free but equal (98.0%, noise); pipelining costs ~1%. Default unchanged |
+| 21 | Prefetching, second round (write-intent C prefetch now the default) | 6 kernel prefetch modes, 4 between-tile modes, prefetch in the B packer; also fixed `gemm_tune_benchmark` (variants started from a blank configuration, not the defaults) | PREFETCHW of the C tile before the depth loop: 0 to +3.5% (n = 1024, 12 threads: 914 -> 942 GFLOP/s), never more than 0.7% behind. B prefetch, next-tile and next-A-panel prefetch: no gain or worse |
 
 ## The improvements, explained
 
@@ -135,7 +136,7 @@ each time re-timing the best five against the default in interleaved rounds. CPU
 | 1 | 1 thread; MC 120-720, KC 256-1024, NC 2048-8160; n = 1024, 2048 | Flat: every setting within 2% (KC 1024 marginally best). One thread is limited by the micro-kernel, not by cache blocking |
 | 2 | 8 and 24 threads; MC 240-720, KC 384-1024, NC 4080-8160, 4/8/16 tiles per thread; n = 2048, 4096 | KC = 1024 and 16 tiles per thread win everywhere (+3% to +30% over the old default); NC = 8160 helps at n = 4096; MC 240-720 about equal |
 | 3 | 8 and 24 threads; KC 1024-2048, 16-64 tiles per thread | Plateau: KC 1024 to 2048 and 16 to 64 tiles per thread equal within noise |
-| extra | Software prefetch (C tile, and A/B panels 8 steps ahead), 1 and 24 threads | No effect (1005-1008 GFLOP/s in all three modes); left off (`prefetch = 0`), the option stays for other CPUs |
+| extra | Software prefetch (C tile, and A/B panels 8 steps ahead), 1 and 24 threads | No effect (1005-1008 GFLOP/s in all three modes); left off (`prefetch = 0`), the option stays for other CPUs. Revisited in section 21: a write-intent prefetch of the C tile is now on |
 
 Parameter by parameter:
 
@@ -662,7 +663,11 @@ on the two FMA pipes and issues in about 4, so it is FMA bound.
 
 End to end (`gemm_tune_benchmark shape=0,8,9,10,11`, interleaved re-timing), 1 thread: shape 0 best or tied
 at n = 512, 1024, 2048 and 4096; fenced unrolling 0-2% behind, pipelined x4 always last (1-5% behind). 12
-and 24 threads: all within noise of shape 0 at every size.
+and 24 threads: all within noise of shape 0 at every size. (The threaded part of that first run was affected
+by a bug in `gemm_tune_benchmark`, see section 21; rerun with the fix, prefetch off for all, GFLOP/s:
+n = 1024 / 2048 / 4096 on 12 threads, shape 0: 918 / 1084 / 1147, shapes 8-10: 921-923 / 1065-1071 /
+1137-1141; on 24 threads shape 0: 958 / 1123 / 1204, shapes 8-10: 932-953 / 1119-1133 / 1185-1195. The
+conclusion is the same.)
 
 Findings:
 
@@ -682,10 +687,98 @@ Findings:
   registers or a smaller scheduler might prefer the pipelined form), and `gemm_kernel_benchmark` measures
   them on any machine in a few seconds.
 
+### 21. Prefetching, second round
+
+Section 7 tried two software prefetches (the C tile, and A/B 8 steps ahead) and found nothing. Since then the
+picture has changed: the kernel alone runs at 97.7% of peak (section 20) but end to end it is 94-95% on one
+thread and lower with 12-24 threads, so the losses are in memory traffic around the kernel. This round tried
+prefetching at each place that touches memory.
+
+**A benchmark bug, fixed first.** `gemm_tune_benchmark` built each swept variant from a blank
+`PackedGemmBlocking{}` instead of the current defaults, so the variants ran with strategy 0, no pinning and
+loop order 0, while the "default" row it compares them with used the real defaults. Single-thread sweeps
+were barely affected; threaded variants looked 6-34% slower than the default (seen in section 20's first
+run). Variants now start from the defaults and change only the swept settings. Earlier sections' block-size
+sweeps (section 7) ran before strategy 1 and pinning existed, when the blank configuration *was* the
+default, so they are not affected.
+
+**The modes** (`PackedGemmBlocking::prefetch` inside the 6x16 kernel, `prefetch_block` between tiles in
+`compute_block`; `gemm_packed_test` runs all 35 combinations in both loop orders):
+
+| Setting | What is prefetched |
+|---|---|
+| prefetch 1 / 2 | The C tile (T0) before the loop / also A and B 8 steps ahead (section 7) |
+| prefetch 3 | B 32 steps (2 KB) ahead into L1 |
+| prefetch 4 | B 128 steps (8 KB) ahead into L2 (for B panels that stream from L3 under threads) |
+| prefetch 5 | The C tile with **write intent** (`PREFETCHW`) before the depth loop |
+| prefetch 6 | 5 and 3 together |
+| prefetch_block 1 / 2 | The *next* tile's C, before computing this one (T0 / write intent) |
+| prefetch_block 3 | The next A panel (18 KB at KC = 768), spread over the tiles of the current row into L2, as BLIS does |
+| prefetch_block 4 | 2 and 3 together |
+| `pack_b(..., ahead)` | In the B packer, the source rows `ahead` rows down (runs of 4 lines per row) |
+
+**Results.** Kernel modes, one sweep (GFLOP/s relative to no prefetch): on 1 thread every mode is within
+0.4% at n = 1024-4096. On 12 and 24 threads, modes 5 and 6 are first or second in all six size/thread
+cells (+1-2%); B prefetch alone (3, 4) and the old mode 2 are level. Between-tile modes: the next-A-panel
+prefetch (3, 4) gains nothing on 1 thread and twice fell into the after-idle slowdown (0.58x and 0.80x at
+n = 2048), plausibly by pushing 18 KB per row of extra lines into L2; dropped.
+
+Deciding between write-intent prefetch of the current tile (prefetch 5), of the next tile (prefetch_block 2)
+and both, two repeats at n = 256-4096 on 1, 6, 12 and 24 threads; prefetch 5 against no prefetch:
+
+| Threads | n = 256-512 | n = 1024 | n = 2048-4096 |
+|---|---|---|---|
+| 1 | +0.1 to +0.6% | -0.0 / +0.2% | +0.1 to +0.5% |
+| 6 | -0.6 to +0.9% | +1.2 / +1.5% | +0.1 to +0.5% |
+| 12 | -1.0 to +0.0% | +3.5 / +3.4% | +0.2 to +1.2% |
+| 24 | -0.6 to -0.1% | +0.9 / +2.3% | -0.7 to +0.3% |
+
+prefetch_block 2 costs 1-4% at n = 256-512 (the extra loop and prefetches per tile) and is mixed above; both
+together are below prefetch 5 alone. **prefetch 5 is the new default.** Why it helps: the C update after the
+depth loop (load, add, store 6 rows) cannot start until the loop is retired, so a C line that is not in L1
+stalls the end of every tile; with threads the line was often last written by another core (the previous K
+step's tile), and a plain load then a store needs two transactions to get it exclusive. One `PREFETCHW` per
+line at the start of the tile, about 1.3 us before the update, brings it in owned. Why plain T0 prefetch of
+C (mode 1) did not do the same in section 7: it brings the line shared, so the store still has to upgrade
+it, and at that time pinning was off and the noise was larger than the effect.
+
+The B packer with software prefetch (`gemm_pack_benchmark`, run 4, GB/s): `ahead` = 2 rows is +3-7% on
+every B block (B 1024 x 4096: 34.8 -> 37.2; B 1024 x 2048: 44.9 -> 47.2), 4 mixed, 8-32 slower (down to
+-10%, the prefetches crowd the miss buffers). Packing B is about 3% of a single-thread call and DRAM-bound
+with threads, so +5% of it is under 0.2% end to end: left as an option, off.
+
+**End to end with the new default** (`matmul_openblas_benchmark`, packed GFLOP/s, before -> after): n = 1024
+on 12 / 24 threads 914 -> 942 / 951 -> 974; n = 2048 on 24 threads 1136 -> 1141; n = 4096 on 12 / 24
+threads 1139 -> 1161 / 1202 -> 1213; one thread unchanged (106).
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
-`matmul_openblas_benchmark 128 256 512 1024 2048` and `matmul_openblas_benchmark 4096`, OpenBLAS 0.3.34
-(prebuilt x64, from the SourceForge mirror this time), packed vs OpenBLAS:
+`matmul_openblas_benchmark 128 256 512 1024 2048` and `matmul_openblas_benchmark 4096`, OpenBLAS 0.3.34,
+after section 21 (prefetch 5 on), packed vs OpenBLAS:
+
+| n | 1 | 2 | 4 | 8 | 12 | 16 | 24 threads |
+|---|---|---|---|---|---|---|---|
+| 128 | 1.31x | 0.97x | 1.12x | 1.71x | 1.78x | 1.72x | 1.72x |
+| 256 | 1.16x | 1.03x | 1.09x | 1.25x | 1.61x | 1.93x | 2.50x |
+| 512 | 1.08x | 1.10x | 1.02x | 1.26x | 1.35x | 1.57x | 1.53x |
+| 1024 | 1.04x | 1.03x | 1.04x | 1.06x | 1.08x | 2.29x | 1.45x |
+| 2048 | 1.03x | 1.01x | 1.01x | 0.99x | 1.35x | 1.41x | 1.39x |
+| 4096 | 1.01x | 1.02x | 1.02x | 1.00x | 1.22x | 1.26x | 1.05x |
+
+Packed GFLOP/s in that run:
+
+| n | 1 thread | 8 | 12 | 24 |
+|---|---|---|---|---|
+| 512 | 104 | 629 | 806 | 806 |
+| 1024 | 105 | 706 | 942 | 974 |
+| 2048 | 106 | 760 | 1050 | 1141 |
+| 4096 | 106 | 800 | 1161 | 1213 |
+
+At or above OpenBLAS in 40 of 42 combinations; the two below are 0.97x (n = 128, 2 threads) and 0.99x
+(n = 2048, 8 threads), within noise. Best: 1213 GFLOP/s at n = 4096 on 24 threads (91% of the chip's measured
+1333) and 1141 at n = 2048 (86%).
+
+The earlier run after sections 16-18, packed vs OpenBLAS:
 
 | n | 1 | 2 | 4 | 8 | 12 | 16 | 24 threads |
 |---|---|---|---|---|---|---|---|

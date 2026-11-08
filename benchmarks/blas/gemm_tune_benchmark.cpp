@@ -9,7 +9,8 @@
 //     kc=        depth step               (default: the current default)
 //     nc=        columns of B kept in L3  (default: the current default)
 //     tiles=     tiles of C per thread, threaded version only (default: the current default)
-//     prefetch=  6x16 kernel only: 0 none, 1 C tile, 2 C tile + A/B ahead (default 0)
+//     prefetch=  6x16 kernel only, see PackedGemmBlocking::prefetch (0-6, default 0)
+//     pfblock=   prefetches between tiles, see PackedGemmBlocking::prefetch_block (0-4, default 0)
 //     shape=     micro-kernel: 0 6x16, 1 6x16 unrolled x4, 2 4x24, 3 12x8, 4-11 6x16 unrolled /
 //                pipelined variants (see PackedGemmBlocking::shape) (default 0)
 //     pack=      1 = scalar packers instead of the AVX2 ones (default 0)
@@ -66,6 +67,7 @@ int main(int argc, char** argv) {
         {"nc", {original.nc}},
         {"tiles", {original.tiles_per_thread}},
         {"prefetch", {0}},
+        {"pfblock", {0}},
         {"shape", {original.shape}},
         {"pack", {0}},
     };
@@ -127,6 +129,7 @@ int main(int argc, char** argv) {
             for (std::int64_t pack : options["pack"]) {
             for (std::int64_t shape : options["shape"]) {
             for (std::int64_t prefetch : options["prefetch"]) {
+            for (std::int64_t pfblock : options["pfblock"]) {
                 for (std::int64_t t : options["tiles"]) {
                     if (threads == 1 && t != options["tiles"].front()) {
                         continue; // tile granularity does nothing without threads
@@ -134,12 +137,13 @@ int main(int argc, char** argv) {
                     for (std::int64_t nc : options["nc"]) {
                         for (std::int64_t kc : options["kc"]) {
                             for (std::int64_t mc : options["mc"]) {
-                                cpu::PackedGemmBlocking blocking;
+                                cpu::PackedGemmBlocking blocking = original; // the other settings as in the default
                                 blocking.mc = mc;
                                 blocking.kc = kc;
                                 blocking.nc = nc;
                                 blocking.tiles_per_thread = t;
                                 blocking.prefetch = prefetch;
+                                blocking.prefetch_block = pfblock;
                                 blocking.shape = shape;
                                 blocking.scalar_pack = pack;
                                 results.push_back({blocking, time_it(blocking, sweep_config)});
@@ -148,6 +152,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+}
 }
 }
             std::sort(results.begin(), results.end(),
@@ -181,15 +186,16 @@ int main(int argc, char** argv) {
                         static_cast<long long>(original.prefetch),
                         static_cast<long long>(original.shape),
                         static_cast<long long>(original.scalar_pack), default_gflops);
-            std::printf("   confirmed best:    mc   kc    nc tiles pf\n");
+            std::printf("   confirmed best:    mc   kc    nc tiles pf pfb shape pack\n");
             for (const Result& r : finalists) {
-                std::printf("                   %4lld %4lld %5lld %5lld %2lld %5lld %6lld   %8.1f GFLOP/s  "
+                std::printf("                   %4lld %4lld %5lld %5lld %2lld %3lld %5lld %4lld   %8.1f GFLOP/s  "
                             "(%.2fx default)\n",
                             static_cast<long long>(r.blocking.mc),
                             static_cast<long long>(r.blocking.kc),
                             static_cast<long long>(r.blocking.nc),
                             static_cast<long long>(r.blocking.tiles_per_thread),
                             static_cast<long long>(r.blocking.prefetch),
+                            static_cast<long long>(r.blocking.prefetch_block),
                             static_cast<long long>(r.blocking.shape),
                             static_cast<long long>(r.blocking.scalar_pack), r.gflops,
                             r.gflops / default_gflops);

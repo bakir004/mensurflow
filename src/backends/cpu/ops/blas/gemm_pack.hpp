@@ -220,7 +220,7 @@ MENSURFLOW_TARGET_AVX2 inline void pack_b_panel_avx2(const float* b, std::int64_
 template <int NV>
 MENSURFLOW_TARGET_AVX2 inline void pack_b_panels_avx2(const float* b, std::int64_t ldb,
                                                       std::int64_t kc, std::int64_t count,
-                                                      float* dst) {
+                                                      float* dst, std::int64_t ahead = 0) {
     constexpr int nr = NV * 8;
     const std::int64_t panel_stride = kc * nr;
     std::int64_t p = 0;
@@ -228,6 +228,12 @@ MENSURFLOW_TARGET_AVX2 inline void pack_b_panels_avx2(const float* b, std::int64
         const float* src0 = b + p * ldb;
         const float* src1 = src0 + ldb;
         float* out = dst + p * nr;
+        if (ahead > 0 && p + ahead + 1 < kc) { // software prefetch `ahead` rows down
+            for (std::int64_t q = 0; q < count; ++q) {
+                _mm_prefetch(reinterpret_cast<const char*>(src0 + ahead * ldb + q * nr), _MM_HINT_T0);
+                _mm_prefetch(reinterpret_cast<const char*>(src1 + ahead * ldb + q * nr), _MM_HINT_T0);
+            }
+        }
         for (std::int64_t q = 0; q < count; ++q) {
             __m256 x0[NV];
             __m256 x1[NV];
@@ -256,14 +262,15 @@ MENSURFLOW_TARGET_AVX2 inline void pack_b_panels_avx2(const float* b, std::int64
 template <int NV>
 MENSURFLOW_TARGET_AVX2 inline void pack_b_rows_avx2(const float* b, std::int64_t ldb,
                                                     std::int64_t kc, std::int64_t panels,
-                                                    std::int64_t run, float* dst) {
+                                                    std::int64_t run, float* dst,
+                                                    std::int64_t ahead = 0) {
     constexpr int nr = NV * 8;
     for (std::int64_t q = 0; q < panels; q += run) {
         const std::int64_t count = std::min(run, panels - q);
         if (count == 1) {
             pack_b_panel_avx2<NV>(b + q * nr, ldb, kc, dst + q * kc * nr);
         } else {
-            pack_b_panels_avx2<NV>(b + q * nr, ldb, kc, count, dst + q * kc * nr);
+            pack_b_panels_avx2<NV>(b + q * nr, ldb, kc, count, dst + q * kc * nr, ahead);
         }
     }
 }
@@ -395,9 +402,11 @@ inline void pack_a(std::int64_t mr, const float* a, std::int64_t rsa, std::int64
     pack_a_scalar(mr, a, rsa, csa, mc, kc, dst);
 }
 
-// `run`: for row-major B, how many full panels are copied per pass over the rows (1 = one at a time).
+// `run`: for row-major B, how many full panels are copied per pass over the rows (1 = one at a time);
+// `ahead`: with run > 1, software-prefetch the source rows that many rows ahead (0 = off).
 inline void pack_b(std::int64_t nr, const float* b, std::int64_t rsb, std::int64_t csb,
-                   std::int64_t kc, std::int64_t nc, float* dst, std::int64_t run = pack_b_run) {
+                   std::int64_t kc, std::int64_t nc, float* dst, std::int64_t run = pack_b_run,
+                   std::int64_t ahead = 0) {
 #ifdef MENSURFLOW_PACK_AVX2
     if (nr == 8 || nr == 16 || nr == 24) {
         const bool rows = csb == 1; // a depth step is a contiguous run of columns: plain copy
@@ -405,11 +414,11 @@ inline void pack_b(std::int64_t nr, const float* b, std::int64_t rsb, std::int64
         if (rows && run > 1) {
             const std::int64_t full = nc / nr;
             if (nr == 8) {
-                pack_b_rows_avx2<1>(b, rsb, kc, full, run, dst);
+                pack_b_rows_avx2<1>(b, rsb, kc, full, run, dst, ahead);
             } else if (nr == 16) {
-                pack_b_rows_avx2<2>(b, rsb, kc, full, run, dst);
+                pack_b_rows_avx2<2>(b, rsb, kc, full, run, dst, ahead);
             } else {
-                pack_b_rows_avx2<3>(b, rsb, kc, full, run, dst);
+                pack_b_rows_avx2<3>(b, rsb, kc, full, run, dst, ahead);
             }
             if (full * nr < nc) { // a last, partial panel: scalar with zero padding
                 pack_b_scalar(nr, b + full * nr, rsb, 1, kc, nc - full * nr, dst + full * kc * nr);

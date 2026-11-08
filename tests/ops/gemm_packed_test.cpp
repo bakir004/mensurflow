@@ -180,6 +180,40 @@ int main() {
         }
         cpu::set_packed_gemm_blocking(original);
 
+        // Every prefetch mode of the kernel and between tiles, in both loop orders, with default and
+        // tiny blocks (the between-tile modes run their own tile loop, including partial tiles).
+        for (int prefetch = 0; prefetch <= 6; ++prefetch) {
+            for (int prefetch_block = 0; prefetch_block <= 4; ++prefetch_block) {
+                for (int loop = 0; loop < 2; ++loop) {
+                    for (int tiny = 0; tiny < 2; ++tiny) {
+                        cpu::PackedGemmBlocking blocking = original;
+                        blocking.prefetch = prefetch;
+                        blocking.prefetch_block = prefetch_block;
+                        blocking.loop_order = loop;
+                        if (tiny != 0) {
+                            blocking.mc = 24;
+                            blocking.kc = 20;
+                            blocking.nc = 48;
+                        }
+                        cpu::set_packed_gemm_blocking(blocking);
+                        const std::string name = "prefetch " + std::to_string(prefetch) + "/" +
+                                                 std::to_string(prefetch_block) + " loop " +
+                                                 std::to_string(loop) + (tiny != 0 ? " tiny" : "");
+                        for (const auto& s : extra) {
+                            check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                        }
+                        cpu::set_max_threads(3);
+                        for (const auto& s : big) {
+                            check_shape(cpu::matmul_f32_packed_parallel, name.c_str(), s[0], s[1],
+                                        s[2]);
+                        }
+                        cpu::set_max_threads(saved_threads);
+                    }
+                }
+            }
+        }
+        cpu::set_packed_gemm_blocking(original);
+
         // The ways of parallelizing the loops (strategy 0 to 3), with and without pinning the threads
         // to cores, in both loop orders, with the default block sizes and with tiny ones, on a thread
         // count below and one above the number of cores. Two larger shapes are included because

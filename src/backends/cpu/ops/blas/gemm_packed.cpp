@@ -219,6 +219,10 @@ PackedGemmBlocking initial_blocking() {
     if (blocking.kc == 1024) {
         blocking.kc = 768;
     }
+    // Micro-kernel prefetch 5: the C tile with write intent (PREFETCHW) before the depth loop, so the
+    // C update after it does not wait for the lines (which another core may own). Measured 0 to +3.5%
+    // (best at n = 1024 on 12 threads), never more than 0.7% behind (section 21).
+    blocking.prefetch = 5;
     return blocking;
 }
 
@@ -228,17 +232,45 @@ PackedGemmBlocking& blocking_state() {
 }
 
 
-// C[6,16] (row stride ldc) = or += sum over p < kc of pa[p*6 + r] * pb[p*16 + j].
-// Prefetch: 0 none; 1 also prefetch the C tile before the loop (it is read and written after it);
-// 2 also prefetch the packed A and B panels PrefetchSteps depth steps ahead inside the loop.
-template <int Prefetch>
-MENSURFLOW_TARGET_AVX2 void kernel_6x16(std::int64_t kc, const float* pa, const float* pb,
-                                        float* c, std::int64_t ldc, bool accumulate) {
-    if constexpr (Prefetch >= 1) {
-        for (int r = 0; r < 6; ++r) {
+// Prefetch with intent to write (PREFETCHW): the line arrives in a state that can be written without a
+// second request. Every AVX2 CPU has the instruction.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define MENSURFLOW_PREFETCH_WRITE(p) _m_prefetchw(p)
+#else
+#define MENSURFLOW_PREFETCH_WRITE(p) __builtin_prefetch((p), 1, 3)
+#endif
+
+// Prefetches the 6 rows of a 6 x 16 tile of C (each row is 64 bytes, so it can touch 2 lines).
+template <bool Write>
+inline void prefetch_c_tile(const float* c, std::int64_t ldc) {
+    for (int r = 0; r < 6; ++r) {
+        if constexpr (Write) {
+            MENSURFLOW_PREFETCH_WRITE(c + r * ldc);
+            MENSURFLOW_PREFETCH_WRITE(c + r * ldc + 15);
+        } else {
             _mm_prefetch(reinterpret_cast<const char*>(c + r * ldc), _MM_HINT_T0);
             _mm_prefetch(reinterpret_cast<const char*>(c + r * ldc + 15), _MM_HINT_T0);
         }
+    }
+}
+
+// C[6,16] (row stride ldc) = or += sum over p < kc of pa[p*6 + r] * pb[p*16 + j].
+// Prefetch (one prefetch per depth step covers one 64-byte B row):
+//   0 none
+//   1 the C tile before the loop (it is read and written after it)
+//   2 1, and the packed A and B panels 8 steps ahead (T0)
+//   3 B 32 steps (2 KB) ahead into L1 (T0)
+//   4 B 128 steps (8 KB) ahead into L2 (T1): for B panels streaming from L3
+//   5 the C tile with write intent (PREFETCHW) before the loop
+//   6 5 and 3 together
+template <int Prefetch>
+MENSURFLOW_TARGET_AVX2 void kernel_6x16(std::int64_t kc, const float* pa, const float* pb,
+                                        float* c, std::int64_t ldc, bool accumulate) {
+    if constexpr (Prefetch == 1 || Prefetch == 2) {
+        prefetch_c_tile<false>(c, ldc);
+    }
+    if constexpr (Prefetch == 5 || Prefetch == 6) {
+        prefetch_c_tile<true>(c, ldc);
     }
     __m256 c00 = _mm256_setzero_ps(), c01 = _mm256_setzero_ps();
     __m256 c10 = _mm256_setzero_ps(), c11 = _mm256_setzero_ps();
@@ -248,9 +280,15 @@ MENSURFLOW_TARGET_AVX2 void kernel_6x16(std::int64_t kc, const float* pa, const 
     __m256 c50 = _mm256_setzero_ps(), c51 = _mm256_setzero_ps();
 
     for (std::int64_t p = 0; p < kc; ++p) {
-        if constexpr (Prefetch >= 2) {
+        if constexpr (Prefetch == 2) {
             _mm_prefetch(reinterpret_cast<const char*>(pb + NR6 * prefetch_steps), _MM_HINT_T0);
             _mm_prefetch(reinterpret_cast<const char*>(pa + MR6 * prefetch_steps), _MM_HINT_T0);
+        }
+        if constexpr (Prefetch == 3 || Prefetch == 6) {
+            _mm_prefetch(reinterpret_cast<const char*>(pb + NR6 * 32), _MM_HINT_T0);
+        }
+        if constexpr (Prefetch == 4) {
+            _mm_prefetch(reinterpret_cast<const char*>(pb + NR6 * 128), _MM_HINT_T1);
         }
         const __m256 b0 = _mm256_load_ps(pb);
         const __m256 b1 = _mm256_load_ps(pb + 8);
@@ -686,6 +724,14 @@ Shape select_shape(const PackedGemmBlocking& blocking) {
             return {6, 16, &kernel_6x16<1>};
         case 2:
             return {6, 16, &kernel_6x16<2>};
+        case 3:
+            return {6, 16, &kernel_6x16<3>};
+        case 4:
+            return {6, 16, &kernel_6x16<4>};
+        case 5:
+            return {6, 16, &kernel_6x16<5>};
+        case 6:
+            return {6, 16, &kernel_6x16<6>};
         default:
             return {6, 16, &kernel_6x16<0>};
         }
@@ -811,12 +857,13 @@ bool run_packed_microkernel(int shape, std::int64_t kc, const float* pa, const f
 
 void set_packed_gemm_blocking(PackedGemmBlocking blocking) {
     if (blocking.mc <= 0 || blocking.kc <= 0 || blocking.nc <= 0 || blocking.tiles_per_thread <= 0 ||
-        blocking.prefetch < 0 || blocking.prefetch > 2 || blocking.shape < 0 || blocking.shape > 11 ||
+        blocking.prefetch < 0 || blocking.prefetch > 6 || blocking.prefetch_block < 0 ||
+        blocking.prefetch_block > 4 || blocking.shape < 0 || blocking.shape > 11 ||
         blocking.scalar_pack < 0 || blocking.scalar_pack > 1 || blocking.parallel < 0 ||
         blocking.parallel > 5 || blocking.loop_order < 0 || blocking.loop_order > 1 ||
         blocking.profile < 0 || blocking.profile > 1 || blocking.pin < 0 || blocking.pin > 3) {
         throw std::invalid_argument("packed gemm blocking: mc, kc, nc and tiles_per_thread must be "
-                                    "positive, prefetch 0-2, shape 0-11, scalar_pack 0-1, parallel "
+                                    "positive, prefetch 0-6, prefetch_block 0-4, shape 0-11, scalar_pack 0-1, parallel "
                                     "0-5, loop_order 0-1, profile 0-1, pin 0-3");
     }
     blocking_state() = blocking;
@@ -841,13 +888,90 @@ struct alignas(64) ThreadClock {
 //
 // loop_order 0: for each B panel, all A panels (the B panel is reused while it is in L1/L2).
 // loop_order 1: for each A panel, all B panels (the A panel is reused).
+//
+// prefetch_block (prefetches issued between tiles, 6 x 16 tiles only):
+//   0 none
+//   1 the C tile of the next tile (T0) before computing this one
+//   2 the same with write intent (PREFETCHW)
+//   3 loop order 1: the next A panel, spread over the tiles of the current row (a share of its lines
+//     into L2 before each tile, so it is there when the row ends; BLIS does this)
+//   4 2 and 3 together
 inline void compute_block(const Shape& shape, std::int64_t kc, const float* pa, std::int64_t mc,
                           const float* pb, std::int64_t cols, float* c, std::int64_t ldc,
-                          bool accumulate, std::int64_t loop_order) {
+                          bool accumulate, std::int64_t loop_order,
+                          std::int64_t prefetch_block = 0) {
     const std::int64_t MR = shape.mr;
     const std::int64_t NR = shape.nr;
     const KernelFn kernel = shape.kernel;
     alignas(64) float edge[max_tile_floats];
+    if (prefetch_block != 0 && MR == 6 && NR == 16) {
+        const bool next_c = prefetch_block == 1 || prefetch_block == 2 || prefetch_block == 4;
+        const bool write = prefetch_block != 1;
+        const bool next_a = (prefetch_block == 3 || prefetch_block == 4) && loop_order == 1;
+        const auto prefetch_c = [&](std::int64_t ir, std::int64_t jr) {
+            if (next_c && ir + MR <= mc && jr + NR <= cols) {
+                if (write) {
+                    prefetch_c_tile<true>(c + ir * ldc + jr, ldc);
+                } else {
+                    prefetch_c_tile<false>(c + ir * ldc + jr, ldc);
+                }
+            }
+        };
+        const std::int64_t row_tiles = (cols + NR - 1) / NR;
+        const std::int64_t a_lines = (kc * MR * 4 + 63) / 64;
+        const std::int64_t share = (a_lines + row_tiles - 1) / row_tiles;
+        const auto tile_at = [&](std::int64_t ir, std::int64_t jr) {
+            const std::int64_t rows = std::min(MR, mc - ir);
+            const std::int64_t cols_here = std::min(NR, cols - jr);
+            const float* pa_tile = pa + (ir / MR) * kc * MR;
+            const float* pb_tile = pb + (jr / NR) * kc * NR;
+            float* ctile = c + ir * ldc + jr;
+            if (rows == MR && cols_here == NR) {
+                kernel(kc, pa_tile, pb_tile, ctile, ldc, accumulate);
+            } else {
+                kernel(kc, pa_tile, pb_tile, edge, NR, false);
+                for (std::int64_t r = 0; r < rows; ++r) {
+                    for (std::int64_t q = 0; q < cols_here; ++q) {
+                        ctile[r * ldc + q] = accumulate ? ctile[r * ldc + q] + edge[r * NR + q]
+                                                        : edge[r * NR + q];
+                    }
+                }
+            }
+        };
+        if (loop_order == 0) {
+            for (std::int64_t jr = 0; jr < cols; jr += NR) {
+                for (std::int64_t ir = 0; ir < mc; ir += MR) {
+                    if (ir + MR < mc) {
+                        prefetch_c(ir + MR, jr);
+                    } else {
+                        prefetch_c(0, jr + NR);
+                    }
+                    tile_at(ir, jr);
+                }
+            }
+        } else {
+            for (std::int64_t ir = 0; ir < mc; ir += MR) {
+                const char* a_next = ir + MR < mc
+                                         ? reinterpret_cast<const char*>(pa + (ir / MR + 1) * kc * MR)
+                                         : nullptr;
+                for (std::int64_t jr = 0, t = 0; jr < cols; jr += NR, ++t) {
+                    if (jr + NR < cols) {
+                        prefetch_c(ir, jr + NR);
+                    } else {
+                        prefetch_c(ir + MR, 0);
+                    }
+                    if (next_a && a_next != nullptr) {
+                        const std::int64_t end = std::min(a_lines, (t + 1) * share);
+                        for (std::int64_t line = t * share; line < end; ++line) {
+                            _mm_prefetch(a_next + line * 64, _MM_HINT_T1);
+                        }
+                    }
+                    tile_at(ir, jr);
+                }
+            }
+        }
+        return;
+    }
     const auto tile = [&](std::int64_t ir, std::int64_t jr) {
         const std::int64_t rows = std::min(MR, mc - ir);
         const std::int64_t cols_here = std::min(NR, cols - jr);
@@ -925,6 +1049,7 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
     const std::int64_t NR = shape.nr;
     const bool scalar_pack = blocking_state().scalar_pack != 0;
     const std::int64_t loop_order = blocking_state().loop_order;
+    const std::int64_t prefetch_block = blocking_state().prefetch_block;
     // Block sizes are rounded down to whole tiles (at least one).
     const std::int64_t MC = std::max(MR, blocking_state().mc / MR * MR);
     const std::int64_t KC = blocking_state().kc;
@@ -950,7 +1075,7 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
                 const std::int64_t mc = std::min(MC, m - ic);
                 pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, packed_a.data);
                 compute_block(shape, kc, packed_a.data, mc, packed_b.data, nc,
-                              c + ic * ldc + jc, ldc, accumulate, loop_order);
+                              c + ic * ldc + jc, ldc, accumulate, loop_order, prefetch_block);
             }
         }
     }
@@ -1001,6 +1126,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     const bool scalar_pack = settings.scalar_pack != 0;
     const std::int64_t strategy = settings.parallel;
     const std::int64_t loop_order = settings.loop_order;
+    const std::int64_t prefetch_block = settings.prefetch_block;
     const bool profile = settings.profile != 0;
     // Block sizes are rounded down to whole tiles (at least one).
     const std::int64_t MC = std::max(MR, settings.mc / MR * MR);
@@ -1111,7 +1237,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         const std::int64_t last_panel = std::min(first_panel + panels_per_group, b_panels);
         const std::int64_t cols = std::min((last_panel - first_panel) * NR, nc - first_panel * NR);
         compute_block(shape, kc, pa + (ic / MR) * kc * MR, mc, pb + first_panel * kc * NR,
-                      cols, c + ic * ldc + jc + first_panel * NR, ldc, accumulate, loop_order);
+                      cols, c + ic * ldc + jc + first_panel * NR, ldc, accumulate, loop_order, prefetch_block);
         if (profile) {
             clocks[static_cast<std::size_t>(thread_index())].compute += wall_seconds() - t0;
         }
@@ -1288,7 +1414,8 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                 std::min((last_panel - first_panel) * NR, st.nc - first_panel * NR);
             compute_block(shape, st.kc, packed_a_of(s, g) + (ic / MR) * st.kc * MR, mc,
                           packed_b_of(s) + first_panel * st.kc * NR, cols,
-                          c + ic * ldc + st.jc + first_panel * NR, ldc, st.pc > 0, loop_order);
+                          c + ic * ldc + st.jc + first_panel * NR, ldc, st.pc > 0, loop_order,
+                          prefetch_block);
             if (profile) {
                 clocks[static_cast<std::size_t>(thread_index())].compute += wall_seconds() - t0;
             }
@@ -1405,7 +1532,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                             pack_a(scalar_pack, MR, a + ic * rsa + pc * csa, rsa, csa, mc, kc, my_a);
                             const double t1 = profile ? wall_seconds() : 0.0;
                             compute_block(shape, kc, my_a, mc, pb_base + p0 * kc * NR, cols,
-                                          c + ic * ldc + jc + p0 * NR, ldc, accumulate, loop_order);
+                                          c + ic * ldc + jc + p0 * NR, ldc, accumulate, loop_order, prefetch_block);
                             if (profile) {
                                 ThreadClock& clock = clocks[static_cast<std::size_t>(thread_index())];
                                 clock.pack += t1 - t0;
@@ -1474,7 +1601,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                         const double t1 = profile ? wall_seconds() : 0.0;
                         compute_block(shape, kc, my_a, mc, pb_base + first_panel * kc * NR, cols,
                                       c + ic * ldc + jc + first_panel * NR, ldc, accumulate,
-                                      loop_order);
+                                      loop_order, prefetch_block);
                         if (profile) {
                             ThreadClock& clock = clocks[static_cast<std::size_t>(thread_index())];
                             clock.pack += t1 - t0;

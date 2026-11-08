@@ -80,6 +80,17 @@ int main() {
                     config, runs, [&] { return bench::checksum(out_vector.data(), out_floats); });
                 table.row(c.name, "avx2 run " + std::to_string(run), "1", r, bytes, &s);
             }
+            // Run 4 with software prefetch of the source rows `ahead` rows down.
+            for (std::int64_t ahead : {2, 4, 8, 16, 32}) {
+                auto pf = [&] {
+                    dt::pack_b(16, src.data(), c.ld, 1, c.rows, c.cols, out_vector.data(), 4, ahead);
+                };
+                pf();
+                bench::check_bits(out_scalar.data(), out_vector.data(), out_floats, c.name);
+                const bench::Sample r = bench::measure(
+                    config, pf, [&] { return bench::checksum(out_vector.data(), out_floats); });
+                table.row(c.name, "run 4 pf " + std::to_string(ahead), "1", r, bytes, &s);
+            }
         }
         table.blank();
     }
