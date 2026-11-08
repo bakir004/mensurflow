@@ -1,4 +1,4 @@
-// Measure forced serial/parallel branches of existing kernels at matched thread counts.
+    // Measure forced serial/parallel branches of existing kernels at matched thread counts.
 #include "bench.hpp"
 
 #include "backends/cpu/ops/elementwise/cast.hpp"

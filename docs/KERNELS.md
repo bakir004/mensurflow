@@ -60,6 +60,43 @@ CUDA was tested on an RTX 3060; Metal has never been built on real hardware. The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
 exists only in git history.
 
+## CPU elementwise behavior
+
+The additional F32 activations, comparisons, `where` and dtype casts provide forward execution
+only. Public calls pack strided/expanded inputs and return fresh contiguous outputs.
+
+```cpp
+leaky_relu(x);                 // negative slope 0.01; optional slope argument
+gelu(x);                       // exact Gaussian CDF; gelu(x, true) uses tanh approximation
+silu(x);                       // x * sigmoid(x)
+elu(x, 1.5f);                  // alpha; negative branch uses alpha * expm1(x)
+softplus(x, 2.0f, 15.0f);       // beta, linear threshold
+```
+
+Softplus requires positive finite beta and a finite threshold; it returns x when beta*x exceeds
+the threshold. NaNs propagate. GELU and SiLU return -0 at negative infinity and positive infinity
+at positive infinity. Stable formulas retain double intermediates where needed for negative tails.
+
+Comparisons `eq`, `ne`, `lt`, `le`, `gt`, `ge` broadcast F32 inputs and produce Bool bytes 0/1.
+`where(condition, x, y)` broadcasts a Bool condition and F32 values, treating any nonzero mask byte
+as true and preserving the selected value's bits. Supply Bool masks with
+`Tensor::from_host(bytes.data(), shape, DType::Bool)`; `from_vector<std::uint8_t>` creates U8 instead.
+Read Bool storage with `copy_to_host` into a byte buffer. NaNs compare unequal, all ordered
+comparisons involving NaNs are false, and signed zeros compare equal.
+
+`cast(x, dtype)` supports all 16 pairs among F32, I32, F16 and BF16. Same-dtype copies preserve bits.
+Floating outputs round to nearest, ties to even; F16/BF16 retain subnormals and overflow to infinity.
+Floating-to-I32 truncates toward zero; NaN, infinity and out-of-range inputs become `INT32_MIN`.
+Integer-to-floating conversions round directly, avoiding an intermediate rounded F32 value.
+Read F16/BF16 bits into `std::uint16_t` buffers with `copy_to_host`, or cast to F32 for numerical values.
+Bool, U8 and I64 casts and GPU cast kernels are unsupported.
+
+Each CPU elementwise operation has an independent OpenMP cutoff in
+`src/backends/cpu/ops/elementwise/parallel_cutoffs.hpp`, including separate GELU variants.
+Defaults are 32,768 elements pending measurement; parallel execution requires `n > cutoff`.
+Without OpenMP, execution stays serial. Benchmark controls and tuning guidance are in
+[BENCHMARKING.md](BENCHMARKING.md#elementwise-parallel-cutoffs).
+
 ## P0 — Minimum useful dense inference library
 
 This is the first implementation target: linear regression, logistic regression,
@@ -156,7 +193,7 @@ negative inputs.
 masks.
 * \[ ] `bitwise\_and`, `bitwise\_or`, `bitwise\_xor`, `bitwise\_not`, and shifts —
 integer masks and unpacking int4 weights.
-* \[x] `cast` — CPU dtype conversion among F32, I32, F16 and BF16; see [CAST.md](CAST.md).
+* \[x] `cast` — CPU dtype conversion among F32, I32, F16 and BF16; see [CPU elementwise behavior](#cpu-elementwise-behavior).
 * \[ ] `bitcast` — reinterpret bits without converting values.
 * \[ ] `add\_n` — sum of many same-shaped tensors in one pass.
 * \[ ] `bucketize` / `searchsorted` — map values to bins given sorted boundaries.
@@ -316,7 +353,7 @@ normalization is the case of one group per channel.
 * \[x] `silu` (swish), `x \* sigmoid(x)` — CPU F32 forward.
 * \[x] `gelu` — Gaussian CDF and tanh approximation, CPU F32 forward.
 * \[x] `leaky\_relu`, `elu`, and `softplus` — CPU F32 forward; see
-  [ACTIVATIONS.md](ACTIVATIONS.md) for parameters and numeric conventions.
+  [CPU elementwise behavior](#cpu-elementwise-behavior) for parameters and numeric conventions.
 
 * \[ ] `hardswish`, `hardsigmoid`, and `relu6` / `hardtanh` — mobile CNNs.
 * \[ ] `prelu` — leaky ReLU with a learned slope.

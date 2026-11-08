@@ -178,8 +178,25 @@ The header line prints the OpenBLAS build and the core type it selected; report 
 ## Comparing activations against PyTorch
 
 `activation_torch_benchmark` is OFF by default; enable it with
-`-DMENSURFLOW_TORCH_BENCHMARK=ON`. See [the native reference instructions](ACTIVATIONS.md#native-c-reference-preferred-for-timing)
-for LibTorch discovery, the separate build directory and paired run commands.
+`-DMENSURFLOW_TORCH_BENCHMARK=ON`. Point CMake at an installed LibTorch configuration
+(a CPU PyTorch wheel supplies one) and use a separate build directory:
+
+```bash
+cmake -S . -B build-torch-bench -DCMAKE_BUILD_TYPE=Release \
+  -DMENSURFLOW_CUDA=OFF -DMENSURFLOW_METAL=OFF -DMENSURFLOW_NATIVE=OFF \
+  -DMENSURFLOW_OPENMP=ON -DMENSURFLOW_OPENBLAS=OFF \
+  -DMENSURFLOW_TORCH_BENCHMARK=ON -DCMAKE_PREFIX_PATH=/path/to/torch/share/cmake
+cmake --build build-torch-bench -j 4
+ctest --test-dir build-torch-bench --output-on-failure
+mkdir -p build-torch-bench/results
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=spread \
+  ./build-torch-bench/activation_torch_benchmark --sizes=1000,32769,1000000 \
+  --threads=1,2,6,12 > build-torch-bench/results/activations-run1.txt
+# Cool down, then repeat with --reverse and save as activations-run2.txt.
+```
+
+For a wheel, obtain the prefix with `python -c 'import torch; print(torch.utils.cmake_prefix_path)'`
+using the Python environment where Torch is installed.
 
 Both libraries use the same preallocated F32 input/output addresses and benchmark harness. The timed
 calls are direct MensurFlow CPU kernels and native C++ ATen `out` operators, including ATen dispatch;
@@ -202,8 +219,25 @@ The cast benchmark uses buffers of the actual storage type, with input/output/re
 offsets 0/1024/2048 modulo 4 KB, matching the shared float-buffer spacing strategy.
 
 The same build option enables native references in `selection_benchmark` and `cast_benchmark`.
-Their logs use the same paired format and parser. See [SELECTION.md](SELECTION.md) and
-[CAST.md](CAST.md) for dtype, input-distribution and byte-count details.
+Their logs use the same paired format and parser. Selection rates count 9 logical bytes per
+comparison and at most 13 for `where`; casts count source plus destination bytes. These are not
+physical DRAM bandwidth measurements. Selection uses deterministic finite inputs; cast floating
+inputs use quarter increments and I32 inputs use integers from -2046 to 2046. Cast names use
+`<source>_to_<destination>` (for example, `f32_to_bf16`); omit names to run all 16 pairs.
+
+## Elementwise parallel cutoffs
+
+`cpu_parallel_benchmark`, `selection_benchmark`, `cast_benchmark` and optional
+`activation_torch_benchmark` accept `--cutoff=n` for selected MensurFlow elementwise operations;
+`dot` and ATen scheduling are unaffected. Headers print effective values. Overrides are process-local
+and do not persist: omit the option for defaults, use `--cutoff=0` to force the parallel branch for
+nonempty inputs, or `--cutoff=9223372036854775807` to force serial execution.
+
+Compare forced serial and parallel medians at matching sizes and requested thread counts, including
+sizes around 32,768. Repeat cooled sessions in reversed order, refine the crossover interval, and
+check intermediate, physical-core and hardware-thread counts. Retain noisy rows and repeat if drift
+exceeds 10%. Change a default only from stable evidence; check sizes below/at/above it and rerun the
+suite with and without OpenMP. Current defaults remain untuned.
 
 ## Before you report numbers
 
@@ -228,7 +262,7 @@ Their logs use the same paired format and parser. See [SELECTION.md](SELECTION.m
 
 - Activation kernels use ordinary C++/OpenMP loops; no current activation benchmark establishes
   explicit SIMD gain.
-- Per-operation elementwise cutoffs and measurement commands are described in
-  [PARALLEL_CUTOFFS.md](PARALLEL_CUTOFFS.md); final measurements are pending.
+- Per-operation elementwise cutoff tuning and final measurements are pending; see
+  [the measurement guidance above](#elementwise-parallel-cutoffs).
 - Results in BENCHMARKS.md were taken with the earlier kernel layout (`parallel_for` helpers, and a
   `scalar` no-SIMD baseline that has since been removed); its file paths refer to that layout.
