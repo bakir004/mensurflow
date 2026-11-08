@@ -11,6 +11,15 @@ namespace mensurflow::cpu {
 // Number of physical cores, or 0 when the topology cannot be read on this platform.
 int physical_core_count();
 
+// The level-3 cache domain of the physical core that pin index `index` goes to (index modulo
+// physical_core_count(), in the order pin_current_thread uses). Domains are numbered 0, 1, ... in the
+// order their first core appears, so on a CPU made of two chiplets with one L3 each, the first cores
+// are domain 0 and the rest domain 1. 0 when the topology or the caches cannot be read.
+int core_cache_domain(int index);
+
+// Number of distinct level-3 cache domains among the cores (1 when unknown).
+int cache_domain_count();
+
 // How a thread is restricted:
 //   Core:    to the hardware threads of one physical core (either SMT half). The OS may still move it
 //            between the two halves, but never to another core.

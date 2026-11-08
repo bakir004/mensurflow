@@ -185,7 +185,7 @@ int main() {
         // count below and one above the number of cores. Two larger shapes are included because
         // pinning is only done for products of at least 8 million multiply-adds.
         const std::int64_t large[][3] = {{300, 300, 300}, {97, 257, 901}};
-        for (int strategy = 0; strategy < 4; ++strategy) {
+        for (int strategy = 0; strategy < 6; ++strategy) {
             for (int pin : {0, 1}) {
                 for (int loop : {0, 1}) {
                     for (int tiny = 0; tiny < 2; ++tiny) {
@@ -253,13 +253,19 @@ int main() {
         }
         // One product big enough to be pinned (at least 8 million multiply-adds) in the layouts that
         // matter: transposed A, transposed B, both, and a padded view.
-        cpu::set_packed_gemm_blocking(original);
-        for (int kinds : {0, 1, 2, 3}) {
-            cpu::set_max_threads(12);
-            check_strided(cpu::matmul_f32_packed_parallel_strided, "strided parallel large",
-                          kinds == 1 || kinds == 3 ? 2 : 1, kinds == 2 || kinds == 3 ? 2 : 1, 300,
-                          300, 300);
-            cpu::set_max_threads(saved_threads);
+        // Every parallel strategy, so each one honours the row stride of C.
+        for (int strategy = 0; strategy < 6; ++strategy) {
+            cpu::PackedGemmBlocking blocking = original;
+            blocking.parallel = strategy;
+            cpu::set_packed_gemm_blocking(blocking);
+            for (int kinds : {0, 1, 2, 3}) {
+                cpu::set_max_threads(12);
+                check_strided(cpu::matmul_f32_packed_parallel_strided,
+                              "strided parallel large strategy " + std::to_string(strategy),
+                              kinds == 1 || kinds == 3 ? 2 : 1, kinds == 2 || kinds == 3 ? 2 : 1,
+                              300, 300, 300);
+                cpu::set_max_threads(saved_threads);
+            }
         }
         cpu::set_packed_gemm_blocking(original);
 

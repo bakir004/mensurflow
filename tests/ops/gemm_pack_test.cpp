@@ -87,6 +87,15 @@ int main() {
                     compare(vec, ref, floats,
                             "pack_b nr=" + std::to_string(nr) + " nc=" + std::to_string(nc) +
                                 " kc=" + std::to_string(kc));
+                    // Several panels per pass over the rows, including runs that do not divide
+                    // the number of panels.
+                    for (std::int64_t run : {1, 2, 3, 4, 8}) {
+                        auto runs = destination(floats);
+                        dt::pack_b(nr, b.data(), ldb, 1, kc, nc, runs.data(), run);
+                        compare(runs, ref, floats,
+                                "pack_b run=" + std::to_string(run) + " nr=" + std::to_string(nr) +
+                                    " nc=" + std::to_string(nc) + " kc=" + std::to_string(kc));
+                    }
                 }
             }
         }

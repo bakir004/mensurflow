@@ -29,7 +29,21 @@ struct Core {
 #elif defined(__linux__)
     std::vector<int> cpus; // sorted logical processor numbers
 #endif
+    long long l3_key = -1; // identifies the L3 cache of the core (-1: unknown)
+    int domain = 0;        // compact L3 domain number, see core_cache_domain
 };
+
+// Numbers the L3 caches 0, 1, ... in the order of the cores.
+void number_domains(std::vector<Core>& cores) {
+    std::vector<long long> keys;
+    for (Core& core : cores) {
+        const auto found = std::find(keys.begin(), keys.end(), core.l3_key);
+        core.domain = static_cast<int>(found - keys.begin());
+        if (found == keys.end()) {
+            keys.push_back(core.l3_key);
+        }
+    }
+}
 
 std::vector<Core> read_cores() {
     std::vector<Core> cores;
@@ -60,6 +74,29 @@ std::vector<Core> read_cores() {
     std::stable_sort(cores.begin(), cores.end(), [](const Core& x, const Core& y) {
         return x.efficiency_class > y.efficiency_class;
     });
+    // The L3 caches: each core belongs to the one whose processor mask overlaps its own.
+    DWORD cache_bytes = 0;
+    GetLogicalProcessorInformationEx(RelationCache, nullptr, &cache_bytes);
+    if (cache_bytes > 0) {
+        std::vector<char> caches(cache_bytes);
+        auto* head = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(caches.data());
+        if (GetLogicalProcessorInformationEx(RelationCache, head, &cache_bytes)) {
+            long long number = 0;
+            for (char* p = caches.data(); p < caches.data() + cache_bytes;) {
+                auto* info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(p);
+                if (info->Relationship == RelationCache && info->Cache.Level == 3) {
+                    const GROUP_AFFINITY& mask = info->Cache.GroupMask;
+                    for (Core& core : cores) {
+                        if (core.affinity.Group == mask.Group && (core.affinity.Mask & mask.Mask) != 0) {
+                            core.l3_key = number;
+                        }
+                    }
+                    ++number;
+                }
+                p += info->Size;
+            }
+        }
+    }
 #elif defined(__linux__)
     // Cores are identified by the list of hardware threads that share them, for example "0,12" or
     // "0-1"; the first thread of each list names the core.
@@ -90,10 +127,30 @@ std::vector<Core> read_cores() {
         if (!cpus.empty() && cpus.front() == cpu) {
             Core core;
             core.cpus = cpus;
+            // The L3 cache: the "id" of the level-3 entry among the core's caches.
+            for (int index = 0; index < 8; ++index) {
+                const std::string dir = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                                        "/cache/index" + std::to_string(index) + "/";
+                std::ifstream level_file(dir + "level");
+                if (!level_file) {
+                    break;
+                }
+                int level = 0;
+                level_file >> level;
+                if (level == 3) {
+                    std::ifstream id_file(dir + "id");
+                    long long id = -1;
+                    if (id_file >> id) {
+                        core.l3_key = id;
+                    }
+                    break;
+                }
+            }
             cores.push_back(core);
         }
     }
 #endif
+    number_domains(cores);
     return cores;
 }
 
@@ -106,6 +163,22 @@ const std::vector<Core>& cores() {
 
 int physical_core_count() {
     return static_cast<int>(cores().size());
+}
+
+int core_cache_domain(int index) {
+    const std::vector<Core>& list = cores();
+    if (list.empty() || index < 0) {
+        return 0;
+    }
+    return list[static_cast<std::size_t>(index) % list.size()].domain;
+}
+
+int cache_domain_count() {
+    int count = 1;
+    for (const Core& core : cores()) {
+        count = std::max(count, core.domain + 1);
+    }
+    return count;
 }
 
 bool pin_current_thread(int index, PinMode mode) {

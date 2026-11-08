@@ -28,6 +28,10 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 13 | Hand-vectorized packing | AVX2 `pack_a` (8 x 8 register transpose) and `pack_b` (256-bit copies) replace scalar loops | Packing 3.0-3.6x (A) and 1.4-2.3x (B) faster alone; 1-6% faster matmul end to end; 106 GFLOP/s on 1 thread at n = 1024 (95% of peak) |
 | 14 | Threading: pinning, placement, loop order | Each thread pinned to its own physical core (adjacent cores first), strategy 1 (one parallel region), A panel kept in L1, 16 tiles per thread, no SMT threads for small products | Removes a random 40-45% slowdown (n = 2048, 12 threads: 597 -> 1036); placement on one chiplet +3-45% at 2-6 threads; loop order +4-7% at n = 2048; 4 strategies compared, 3 kept as options |
 | 15 | Strided operands | The packing step reads transposed, sliced and padded matrices in place (new fast paths for transposed A and B); `matmul` no longer copies them to contiguous memory on the CPU | Transposed operands 2.5-3.8x faster (one operand), 4.0-6.6x (both, the backward pass); same speed as contiguous; leading dimension (n, n+16, n+1) makes no difference |
+| 16 | Packing overlapped with compute (strategy 4, now the default), KC = 768 | The next K step is packed into a second buffer while this one is multiplied: one barrier per step instead of two | Barrier wait 4-7% -> 1.4-3%; +3-12% over strategy 1 at n = 1536-4096 (n = 4096, 24 threads: 1147 -> 1208 GFLOP/s in the thread benchmark) |
+| 17 | Team split by chiplet for small products (strategy 5) | Each L3 domain computes its own columns of C from its own copy of A and its own B panels; used automatically below 2^29 multiply-adds | n = 256-768 on 12 threads: +11% to +23% (n = 512: 677 -> 811 GFLOP/s) |
+| 18 | Multi-panel `pack_b` | B is packed 4 panels per pass over the rows, so each source row is read as a run of 4 cache lines | Packing B alone 1.5-1.9x faster; no measurable end-to-end change with threads (packing is DRAM-bound there and already hidden by 16) |
+| 19 | Approaches measured and rejected | Tiles per thread re-swept for strategy 4; masked edge tiles considered | 16 tiles stays best; partial edge tiles cost at most 2% (n = 1025, 2047), not worth a kernel |
 
 ## The improvements, explained
 
@@ -506,30 +510,157 @@ and checks the gradient of `sum(a x b)` exactly (the backward pass with the stri
 separate elementwise passes after the product (fusing them into the kernel is on the open list, probably to be done another time). `contiguous()` itself is still single-threaded for the
 operations that need it.
 
+### 16. Packing overlapped with compute (strategy 4) and KC = 768
+
+The profile of strategy 1 (`gemm_thread_benchmark`, `profile` on) at n = 4096 showed where the last
+14% goes: each thread spent about 5% of the call packing and 4-7% waiting at barriers. Packing is slow
+under threads: 12 threads together packed at about 1.7 GB/s each, against 77 (A) and 14-30 (B) GB/s for
+one thread alone, because every thread packs at the same moment and they share the DRAM bandwidth.
+The micro-kernel, meanwhile, hardly touches memory. So the two should run at the same time.
+
+**Strategy 4** (`PackedGemmBlocking::parallel = 4`, the new default) keeps two copies of the packed A and B.
+Per (jc, pc) step there is one work list: the tiles of this step, with the pack items of the next step
+spread evenly among them (item t is a pack item when `floor((t+1) P / N) > floor(t P / N)`), handed out
+dynamically, the packs writing into the other buffer. Only the first step is packed on its own. One
+barrier per step remains (the buffer of step s is repacked only during step s + 2). Cost: twice the
+packing memory (at n = 4096 and KC = 768, 2 x 24 MB).
+
+Each strategy measured in its own process (strategies in one process share the scratch buffers, and the
+buffer size turned out to matter, see below), GFLOP/s, median / back to back / after 5 ms idle:
+
+| n | threads | strategy 1, KC 1024 (old default) | strategy 4, KC 1024 | strategy 4, KC 768 (new default) |
+|---|---|---|---|---|
+| 1536 | 12 | 1013 / 1013 / 673 | 1032 / 1054 / 993 | 1067 / 1069 / 1055 |
+| 2048 | 12 | 1056 / 1059 / 1053 | 695 / 1056 / 679 | 1084 / 1077 / 1057 |
+| 2560 | 12 | 1066 / 1067 / 1011 | 963 / 1106 / 927 | 960 / 1100 / 820 |
+| 3072 | 12 | 950 / 1080 / 864 | 1015 / 1135 / 939 | 986 / 1108 / 928 |
+| 4096 | 12 | 1092 / 1111 / 1046 | 1161 / 1168 / 1090 | 1141 / 1133 / 1135 |
+| 1536 | 24 | 1031 / 1048 / 999 | 935 / 1101 / 830 | 1089 / 1100 / 1084 |
+| 2048 | 24 | 1080 / 1104 / 816 | 849 / 1105 / 664 | 1134 / 1119 / 1130 |
+| 2560 | 24 | 1077 / 1096 / 860 | 891 / 1128 / 885 | 1101 / 1147 / 834 |
+| 3072 | 24 | 983 / 1152 / 913 | 1052 / 1191 / 971 | 1042 / 1181 / 964 |
+| 4096 | 24 | 1151 / 1165 / 1113 | 1213 / 1228 / 1152 | 1204 / 1213 / 1200 |
+
+(One of two repeats shown; the second agreed within a few percent except where noted below.) On 6
+threads, one chiplet, strategy 4 is 2-5% ahead of strategy 1 at every size from 512 to 4096 in all three
+modes. Barrier wait dropped from 4-7% to 1.4-3% of the call.
+
+**Why KC = 768.** With KC = 1024, strategy 4 has a large slowdown at exactly n = 2048 in the median and
+after-idle modes (about 680 instead of 1060 GFLOP/s), while back to back it is fine. The same slowdown
+appears for strategy 1 when its buffers are made as large (KC = 1536 or 2048, or after strategy 4 grew the
+shared buffers in the same process), so it depends on how much packed memory is in use, not on the
+overlap. A KC sweep at n = 2048 (12 threads): strategy 4 is clean at KC 512 and 768 and slow at 256,
+384 and 1024; strategy 1 is clean at 512-1024 and slow at 256 and 1536. KC = 768 is clean at 2048 and
+within 0-2% of KC 1024 elsewhere back to back. Single-thread speed does not change (105.6-105.9 GFLOP/s).
+
+**The slowdown after idle time, what is known.** It is the same effect as the "10 ms penalty" of strategies
+2 and 3 (section 14). Facts gathered this time: it only appears in calls that follow other work or idle
+time, never back to back; it shows as extra micro-kernel time (about 8-12 ms per thread at n = 2048-4096),
+not packing time; it **never appears on 6 threads** (one chiplet) at any size; it depends on the size of the
+packing buffers; at n = 2560 and 3072 it still hits every strategy now and then (strategy 4, KC 768, 12
+threads, n = 2560: median 960 and 822 in two repeats, against 1100 back to back). A first guess, that the
+cross-chiplet traffic on shared packed panels causes it, was tested with strategy 5 (no panel is shared
+across chiplets) and is wrong: strategy 5 shows it as well. Clock ramp-up was already excluded (section
+14). Still untested: power states of the Infinity Fabric and memory controller after idle (BIOS settings
+"DF C-states" / "APBDIS"), which would fit "only with both chiplets and only after idle".
+
+### 17. Splitting the team by chiplet (strategy 5)
+
+Section 14 found that putting threads on adjacent cores (one chiplet) before spreading them is up to 45%
+faster for small products, because the packed panels are shared and a cache line that crosses chiplets is
+slow. With 12 or 24 threads both chiplets are in use, so the same loss returns. Strategy 5 splits the team
+by L3 cache: `core_cache_domain()` (new in `affinity.hpp`, from `GetLogicalProcessorInformationEx(
+RelationCache)` on Windows and `cache/index3/id` on Linux; `affinity_test` checks it) gives each pinned
+thread its chiplet. Each group computes the columns of C in proportion to its thread count, packs the B
+panels of those columns and its **own copy of A**, and takes work only from its own lists (if the runtime
+ever gives fewer threads than asked, every thread works through every list, so the result stays correct).
+It runs on the double-buffered scheme of strategy 4.
+
+Strategy 4 against 5, 12 threads, two separate processes each, median / back to back / after idle:
+
+| n | strategy 4 | strategy 5 | |
+|---|---|---|---|
+| 256 | 277 / 274 / 212 | 309 / 307 / 209 | +11% |
+| 384 | 499 / 493 / 430 | 618 / 613 / 452 | +24% |
+| 512 | 678 / 677 / 574 | 812 / 810 / 641 | +20% |
+| 768 | 869 / 866 / 728 | 1025 / 1024 / 560 | +18% (worse after idle) |
+| 1024 | 918 / 916 / 904 | 801 / 1054 / 574, 628 / 885 / 529 | erratic |
+| 4096 | 1161 / 1169 / 1083 | 1137 / 1168 / 1102 | equal; A is packed twice |
+
+So the default strategy 4 splits by chiplet below 2^29 multiply-adds (about n = 810, `max_macs_for_groups`)
+and shares above. Strategy 5 forces the split at every size.
+
+### 18. Packing several B panels per pass
+
+Section 13 left one idea for `pack_b`: one panel at a time reads a single 64-byte line from each of the kc
+rows, with a stride the hardware prefetcher does not follow. `pack_b_panels_avx2` copies `run` panels per
+pass over the rows (two rows per iteration), so each row is read as a run of `run` lines; the threaded
+driver's B work items are runs of 4 panels. `gemm_pack_benchmark`, one thread, GB/s:
+
+| Block (ld) | 1 panel per pass | 2 | 4 (default) | 8 |
+|---|---|---|---|---|
+| B 1024 x 4096 (4096) | 17.8 | 23.4 | 34.0 | 37.0 |
+| B 1024 x 4080 (8192) | 17.1 | 24.2 | 26.4 | 32.4 |
+| B 1024 x 2048 (2048) | 28.5 | 40.7 | 45.5 | 45.7 |
+| B 256 x 4080 (8192) | 32.9 | 48.6 | 52.5 | 48.2 |
+| B 1024 x 256 (2048) | 27.1 | 43.7 | 46.2 | 45.9 |
+
+1.5-1.9x faster on its own. In the threaded matmul it changes nothing measurable (pack time at n = 4096,
+12 threads, stayed at 5.4-5.8 ms per thread): with all cores packing at once the limit is DRAM bandwidth,
+and strategy 4 already hides packing behind the arithmetic. Kept, since it costs nothing and helps one
+thread. `gemm_pack_test` checks runs of 1, 2, 3, 4 and 8 panels against the scalar reference.
+
+### 19. Measured and not adopted
+
+| Approach | Result |
+|---|---|
+| Tiles per thread 8 / 16 / 24 / 32 with strategy 4 (n = 1536-4096, 12 and 24 threads) | 16 best or tied everywhere; 8 collapses in the median mode at 1536-2048; unchanged |
+| Masked edge tiles for sizes that are not multiples of 6 x 16 | Not written: the current scratch-tile edges cost at most 2% (12 threads: n = 1000 931, 1024 918, 1025 899, 2047 1076, 2048 1076, 2050 1071; 1 thread: all within 2%) |
+| Strategy 5 at every size | Erratic at n = 1024, equal at 4096 (A is packed twice); used only for small products |
+
+Also fixed: strategy 3 wrote C with row stride n instead of `ldc` (wrong results for a padded C with that
+non-default strategy). `gemm_packed_test` now runs the large strided case with every strategy.
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
-| n | Packed vs OpenBLAS, 1 to 24 threads |
-|---|---|
-| 128 | 0.98x to 2.07x |
-| 256 | 1.04x to 2.32x |
-| 512 | 0.96x to 1.43x |
-| 1024 | 1.00x to 1.04x |
-| 2048 | 0.95x to 1.01x on 1-8 threads; 1.48x on 12 and 1.32x on 24 (OpenBLAS drops there: its 12-thread median is 709 GFLOP/s, and it varied between 600 and 1087 across runs, so treat those two as optimistic) |
-| 4096 | 0.97x to 1.19x (run with `matmul_openblas_benchmark 4096`): 1.00x-1.01x on 1-2 threads, 0.97x-0.98x on 4-8, 1.07x on 12, 1.19x on 16, 1.02x on 24. OpenBLAS's best single run is a little higher than ours on 12 and 24 threads (1200 against 1177 GFLOP/s on 24), its median is less stable |
+`matmul_openblas_benchmark 128 256 512 1024 2048` and `matmul_openblas_benchmark 4096`, OpenBLAS 0.3.34
+(prebuilt x64, from the SourceForge mirror this time), packed vs OpenBLAS:
 
-Of the 30 combinations from 128 to 2048 (5 sizes x 6 thread counts) the packed kernel is at or above OpenBLAS
-in 26. The four below are 0.98x (n = 128, 2 threads), 0.96x (n = 512, 4 threads), 0.97x and 0.95x
-(n = 2048, 4 and 8 threads).
+| n | 1 | 2 | 4 | 8 | 12 | 16 | 24 threads |
+|---|---|---|---|---|---|---|---|
+| 128 | 1.32x | 0.96x | 1.15x | 1.97x | 1.74x | 1.78x | 1.73x |
+| 256 | 1.16x | 1.04x | 1.11x | 1.39x | 1.73x | 1.90x | 2.67x |
+| 512 | 1.07x | 1.10x | 1.07x | 1.26x | 1.37x | 1.59x | 1.85x |
+| 1024 | 1.04x | 1.04x | 1.04x | 1.05x | 1.03x | 1.74x | 1.02x |
+| 2048 | 1.03x | 1.01x | 1.01x | 0.98x | 1.44x | 1.40x | 1.81x |
+| 4096 | 1.01x | 1.01x | 1.01x | 1.00x | 1.20x | 1.28x | 1.05x |
 
-Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's measured 1333) and about
-1142 at n = 4096 on 24 threads (86%). One thread: 106 GFLOP/s (95% of the core's 112).
+At or above OpenBLAS in 40 of 42 combinations; the two below, 0.96x (n = 128, 2 threads) and 0.98x
+(n = 2048, 8 threads), are within noise. Before sections 16-18 it was 26 of 30 up to n = 2048, with n = 512
+at 4 threads (0.96x) and n = 2048 at 4 and 8 threads (0.97x, 0.95x) behind. As before, OpenBLAS's 12-24
+thread medians vary a lot between runs (n = 2048, 12 threads: 15.7 to 34.4 ms per call within this run),
+so the large ratios there say more about OpenBLAS's instability than about our speed.
+
+Absolute GFLOP/s of the packed kernel in that run:
+
+| n | 1 thread | 8 | 12 | 24 |
+|---|---|---|---|---|
+| 512 | 104 | 639 | 807 | 812 |
+| 1024 | 105 | 697 | 925 | 949 |
+| 2048 | 106 | 750 | 1035 | 1131 |
+| 4096 | 106 | 792 | 1145 | 1184 |
+
+Best: 1131 GFLOP/s at n = 2048 on 24 threads (85% of the chip's measured 1333, before: 1094) and 1184 at
+n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchmark, 92%). One thread:
+106 GFLOP/s (95% of the core's 112).
 
 ## Open items
 
 | Item | Why |
 |---|---|
-| Threaded efficiency (82-86% of the 1333 GFLOP/s chip peak at best; about 5% behind OpenBLAS at n = 2048 on 4-8 threads) | What is left is overlapping packing with compute, reading several B panels per source row so `pack_b` stops being latency bound, and the last small row block |
-| The 10 ms per-call penalty of strategies 2 and 3 after idle time | Their back-to-back speed (1075-1110 GFLOP/s) is the best measured, so removing the penalty would beat the default; cause not found (not buffer placement, not thread placement, not clock ramp-up) |
+| Threaded efficiency (85-89% of the 1333 GFLOP/s chip peak at n = 2048-4096; level with OpenBLAS at n = 2048 on 4-8 threads) | Overlapped packing and multi-panel `pack_b` are done (sections 16, 18). Left: the micro-kernel runs at about 94% of peak under 12 threads against 97% under 6, and 1.4-3% barrier wait remains |
+| The slowdown of calls after idle time (sections 14, 16) | Now the largest loss: n = 2560-3072 at 12-24 threads lose up to 20% in the median and after-idle modes against back to back. Only with both chiplets, grows with the packing buffers, not cross-chiplet panel sharing, not clock ramp-up. Next test: BIOS "DF C-states" off (the user's decision, it changes idle power) |
+| Strategy 5 at n = 1024 | Much faster back to back (1054-1088) but erratic in the other modes; if the slowdown above is fixed, the chiplet split may pay off at larger sizes too |
 | Linux timings and the i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) compiles and passes `affinity_test` and `gemm_packed_test` on the GitHub Ubuntu runner, but nothing has been timed on Linux; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
 | Fuse alpha and beta into the kernel (probably another time) | `gemm` applies alpha and beta as separate elementwise passes over C (`mul`, `scal`, `add`, each a full read and write plus a temporary). Fusing them into the micro-kernel's C update (scale the accumulators by alpha, add beta times the old C when storing) would remove those passes and temporaries. Estimated cost of the passes at n = 2048 (not measured): about 4 ms on top of a 16 ms product with both alpha and beta, about 1 ms with alpha only, and several times the product when k is small. It only matters for `gemm` calls with alpha other than 1 or beta other than 0; `matmul` and the backward pass are unaffected. Decided to postpone until such calls are on a hot path; measure `gemm` against `matmul` first |
@@ -550,7 +681,7 @@ Best absolute results: 1094 GFLOP/s at n = 2048 on 24 threads (82% of the chip's
 | `benchmarks/blas/gemm_stride_benchmark.cpp` | Transposed operands copied first vs read in place; row-stride sweep |
 | `benchmarks/blas/fma_peak_benchmark.cpp` | Register-only FMA throughput: the real per-core and per-chip peak; `ramp` shows the effect of thread placement |
 | `benchmarks/blas/gemm_thread_benchmark.cpp` | Compares parallelization strategies, pinning, loop order and tile size, with the time split per thread |
-| `src/backends/cpu/affinity.hpp`, `.cpp` | CPU topology and thread pinning |
+| `src/backends/cpu/affinity.hpp`, `.cpp` | CPU topology, L3 cache domains (`core_cache_domain`) and thread pinning |
 | `src/backends/cpu/threads.hpp` | Adds parallel-region, worksharing-loop and barrier macros, thread index, wall clock |
 | `tests/core/affinity_test.cpp` | Pinning restricts, wraps, and restores the original affinity |
 | `CMakeLists.txt`, `docs/BENCHMARKING.md` | Build options and how to run the comparison |

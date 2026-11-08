@@ -17,7 +17,7 @@ bool packed_gemm_supported();
 // Cache-block sizes of the packed kernels: an MC x KC block of A is meant to stay in L2, a KC x NC
 // block of B in L3. mc and nc are rounded down to whole tiles of the chosen shape. The defaults are BLIS's
 // Haswell values (168, 256, 4080, 4 tiles per thread), except with an L2 of 512 KB or more, where
-// they are (240, 1024, L3-derived up to 8160, 16). The setter exists for tuning benchmarks: it is not thread-safe
+// they are (240, 768, L3-derived up to 8160, 16). The setter exists for tuning benchmarks: it is not thread-safe
 // and must not be called while a matmul is running.
 struct PackedGemmBlocking {
     std::int64_t mc = 168;
@@ -32,7 +32,12 @@ struct PackedGemmBlocking {
                                  // 1 one parallel region per call (same split, fewer thread wake-ups),
                                  // 2 one region, B packed together, A packed privately by each thread
                                  // (BLIS-style rows x columns grid of threads),
-                                 // 3 one region, the tiles of 0 with A packed privately per tile
+                                 // 3 one region, the tiles of 0 with A packed privately per tile,
+                                 // 4 one region, the next step packed while this one is multiplied
+                                 // (two buffers); below 2^29 multiply-adds the team is split by L3
+                                 // cache as in 5 (the default),
+                                 // 5 as 4, always split by L3 cache: each chiplet computes its own
+                                 // columns of C from its own copy of A and its own B panels
     std::int64_t loop_order = 0; // inside a block: 0 B panel outer / A panel inner, 1 the other way round
     std::int64_t pin = 0;        // 0 threads not pinned, 1 each thread pinned to its own physical core
                                  // (either SMT half), 2 to one hardware thread of it, 3 only a preference

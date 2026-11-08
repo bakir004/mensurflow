@@ -27,6 +27,10 @@
 
 namespace mensurflow::cpu::detail {
 
+// How many panels of row-major B the AVX2 packer copies per pass over the rows (see
+// pack_b_panels_avx2).
+constexpr std::int64_t pack_b_run = 4;
+
 // ---- Scalar reference ---------------------------------------------------------------------------
 
 // Copies A[0..mc, 0..kc) (row stride lda) into mr-row panels, padding the last panel with zeros.
@@ -208,6 +212,62 @@ MENSURFLOW_TARGET_AVX2 inline void pack_b_panel_avx2(const float* b, std::int64_
 }
 
 
+// `count` full panels of NV * 8 columns at once, the depth steps outermost: for each depth step the
+// count * NV * 8 consecutive floats of that row of B are copied to the count panels. One panel at a
+// time reads a single 64-byte line from each of the kc rows, a stride of ldb floats that the hardware
+// prefetcher does not follow (a large power of two for n = 2048, 4096); reading several panels per
+// row turns that into runs of `count` lines, which it does follow.
+template <int NV>
+MENSURFLOW_TARGET_AVX2 inline void pack_b_panels_avx2(const float* b, std::int64_t ldb,
+                                                      std::int64_t kc, std::int64_t count,
+                                                      float* dst) {
+    constexpr int nr = NV * 8;
+    const std::int64_t panel_stride = kc * nr;
+    std::int64_t p = 0;
+    for (; p + 2 <= kc; p += 2) { // two rows per iteration: more loads in flight
+        const float* src0 = b + p * ldb;
+        const float* src1 = src0 + ldb;
+        float* out = dst + p * nr;
+        for (std::int64_t q = 0; q < count; ++q) {
+            __m256 x0[NV];
+            __m256 x1[NV];
+            for (int v = 0; v < NV; ++v) {
+                x0[v] = _mm256_loadu_ps(src0 + q * nr + v * 8);
+                x1[v] = _mm256_loadu_ps(src1 + q * nr + v * 8);
+            }
+            for (int v = 0; v < NV; ++v) {
+                _mm256_storeu_ps(out + q * panel_stride + v * 8, x0[v]);
+                _mm256_storeu_ps(out + q * panel_stride + nr + v * 8, x1[v]);
+            }
+        }
+    }
+    for (; p < kc; ++p) {
+        const float* src = b + p * ldb;
+        float* out = dst + p * nr;
+        for (std::int64_t q = 0; q < count; ++q) {
+            for (int v = 0; v < NV; ++v) {
+                _mm256_storeu_ps(out + q * panel_stride + v * 8, _mm256_loadu_ps(src + q * nr + v * 8));
+            }
+        }
+    }
+}
+
+// Full panels of row-major B, `run` panels per pass over the rows (1 = one panel at a time).
+template <int NV>
+MENSURFLOW_TARGET_AVX2 inline void pack_b_rows_avx2(const float* b, std::int64_t ldb,
+                                                    std::int64_t kc, std::int64_t panels,
+                                                    std::int64_t run, float* dst) {
+    constexpr int nr = NV * 8;
+    for (std::int64_t q = 0; q < panels; q += run) {
+        const std::int64_t count = std::min(run, panels - q);
+        if (count == 1) {
+            pack_b_panel_avx2<NV>(b + q * nr, ldb, kc, dst + q * kc * nr);
+        } else {
+            pack_b_panels_avx2<NV>(b + q * nr, ldb, kc, count, dst + q * kc * nr);
+        }
+    }
+}
+
 // Transposes an 8 x 8 block held in eight registers: afterwards r_q holds what was column q.
 // Three steps (unpack, shuffle, permute) that each consume their inputs, so it fits the 16 registers.
 MENSURFLOW_TARGET_AVX2 inline void transpose8x8(__m256& r0, __m256& r1, __m256& r2, __m256& r3,
@@ -335,12 +395,27 @@ inline void pack_a(std::int64_t mr, const float* a, std::int64_t rsa, std::int64
     pack_a_scalar(mr, a, rsa, csa, mc, kc, dst);
 }
 
+// `run`: for row-major B, how many full panels are copied per pass over the rows (1 = one at a time).
 inline void pack_b(std::int64_t nr, const float* b, std::int64_t rsb, std::int64_t csb,
-                   std::int64_t kc, std::int64_t nc, float* dst) {
+                   std::int64_t kc, std::int64_t nc, float* dst, std::int64_t run = pack_b_run) {
 #ifdef MENSURFLOW_PACK_AVX2
     if (nr == 8 || nr == 16 || nr == 24) {
         const bool rows = csb == 1; // a depth step is a contiguous run of columns: plain copy
         const bool transposed = !rows && rsb == 1; // columns are contiguous along the depth
+        if (rows && run > 1) {
+            const std::int64_t full = nc / nr;
+            if (nr == 8) {
+                pack_b_rows_avx2<1>(b, rsb, kc, full, run, dst);
+            } else if (nr == 16) {
+                pack_b_rows_avx2<2>(b, rsb, kc, full, run, dst);
+            } else {
+                pack_b_rows_avx2<3>(b, rsb, kc, full, run, dst);
+            }
+            if (full * nr < nc) { // a last, partial panel: scalar with zero padding
+                pack_b_scalar(nr, b + full * nr, rsb, 1, kc, nc - full * nr, dst + full * kc * nr);
+            }
+            return;
+        }
         if (rows || transposed) {
             for (std::int64_t j = 0; j < nc; j += nr) {
                 const std::int64_t cols = std::min(nr, nc - j);
