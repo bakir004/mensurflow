@@ -3,3 +3,5 @@ build/
 build-*/
 # Local macOS metadata.
 .DS_Store
+
+ForPc_run.bat
