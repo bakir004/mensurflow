@@ -6,6 +6,7 @@
 #include "mensurflow/execution.hpp"
 #include "mensurflow/ops/blas.hpp"
 #include "mensurflow/ops/elementwise.hpp"
+#include "mensurflow/ops/movement.hpp"
 #include "mensurflow/ops/reduction.hpp"
 #include "mensurflow/shape.hpp"
 #include "mensurflow/tensor.hpp"

@@ -42,10 +42,17 @@ add_library(mensurflow
     src/core/tensor.cpp
     src/ops/blas.cpp
     src/ops/elementwise.cpp
+    src/ops/movement.cpp
     src/ops/reduction.cpp
     src/backends/cpu/backend.cpp
+    src/backends/cpu/affinity.cpp
     src/backends/cpu/ops/blas/blas.cpp
+    src/backends/cpu/ops/gemm/gemm_batched.cpp
+    src/backends/cpu/ops/gemm/gemm_packed.cpp
+    src/backends/cpu/ops/elementwise/parallel_cutoffs.cpp
     src/backends/cpu/ops/elementwise/elementwise.cpp
+    src/backends/cpu/ops/elementwise/cast.cpp
+    src/backends/cpu/ops/movement/movement.cpp
     src/backends/cpu/ops/reduction/reduction.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
@@ -126,12 +133,23 @@ mensurflow_add_test(transfer_test tests/core/transfer_test.cpp)
 mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
 mensurflow_add_test(elementwise_ops_test tests/ops/elementwise_ops_test.cpp)
+mensurflow_add_test(activation_test tests/ops/activation_test.cpp)
+mensurflow_add_test(selection_test tests/ops/selection_test.cpp)
+mensurflow_add_test(parallel_cutoff_test tests/ops/parallel_cutoff_test.cpp)
+mensurflow_add_test(cast_test tests/ops/cast_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
+mensurflow_add_test(affinity_test tests/core/affinity_test.cpp)
+mensurflow_add_test(gemm_packed_test tests/ops/gemm_packed_test.cpp)
+mensurflow_add_test(gemm_pack_test tests/ops/gemm_pack_test.cpp)
 mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
 mensurflow_add_test(argmax_test tests/ops/argmax_test.cpp)
 mensurflow_add_test(reduction_test tests/ops/reduction_test.cpp)
 mensurflow_add_test(p0_extended_test tests/ops/p0_extended_test.cpp)
+mensurflow_add_test(gemm_batched_test tests/ops/gemm_batched_test.cpp)
+mensurflow_add_test(ger_test tests/ops/ger_test.cpp)
+mensurflow_add_test(movement_test tests/ops/movement_test.cpp)
+mensurflow_add_test(activation_movement_test tests/ops/activation_movement_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -147,12 +165,94 @@ function(mensurflow_add_benchmark name source)
 endfunction()
 
 mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.cpp)
+mensurflow_add_benchmark(bandwidth_benchmark benchmarks/bandwidth_benchmark.cpp)
+mensurflow_add_benchmark(activation_movement_benchmark benchmarks/activation_movement_benchmark.cpp)
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
 mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
+# Optional reference: matmul against OpenBLAS. AUTO builds it when OpenBLAS is found, ON requires
+# it, OFF skips it. Point CMake at an install with -DOPENBLAS_ROOT=<dir containing include/ lib/ bin/>
+# (the prebuilt Windows zip from the OpenBLAS releases works) or with vcpkg's toolchain file.
+set(MENSURFLOW_OPENBLAS AUTO CACHE STRING "matmul_openblas_benchmark: AUTO, ON or OFF")
+set_property(CACHE MENSURFLOW_OPENBLAS PROPERTY STRINGS AUTO ON OFF)
+set(OPENBLAS_ROOT "" CACHE PATH "OpenBLAS install prefix (include/, lib/, bin/)")
+if(NOT MENSURFLOW_OPENBLAS STREQUAL "OFF")
+    find_package(OpenBLAS CONFIG QUIET)
+    set(MENSURFLOW_OPENBLAS_TARGET "")
+    set(MENSURFLOW_OPENBLAS_DLL "")
+    if(TARGET OpenBLAS::OpenBLAS)
+        set(MENSURFLOW_OPENBLAS_TARGET OpenBLAS::OpenBLAS)
+    else()
+        find_path(MENSURFLOW_OPENBLAS_INCLUDE cblas.h
+                  HINTS ${OPENBLAS_ROOT} ENV OPENBLAS_ROOT
+                  PATH_SUFFIXES include include/openblas)
+        find_library(MENSURFLOW_OPENBLAS_LIB NAMES openblas libopenblas
+                     HINTS ${OPENBLAS_ROOT} ENV OPENBLAS_ROOT PATH_SUFFIXES lib)
+        find_file(MENSURFLOW_OPENBLAS_DLL_FILE NAMES libopenblas.dll openblas.dll
+                  HINTS ${OPENBLAS_ROOT} ENV OPENBLAS_ROOT PATH_SUFFIXES bin)
+        if(MENSURFLOW_OPENBLAS_INCLUDE AND MENSURFLOW_OPENBLAS_LIB)
+            add_library(mensurflow_openblas INTERFACE)
+            target_include_directories(mensurflow_openblas INTERFACE ${MENSURFLOW_OPENBLAS_INCLUDE})
+            target_link_libraries(mensurflow_openblas INTERFACE ${MENSURFLOW_OPENBLAS_LIB})
+            set(MENSURFLOW_OPENBLAS_TARGET mensurflow_openblas)
+            set(MENSURFLOW_OPENBLAS_DLL "${MENSURFLOW_OPENBLAS_DLL_FILE}")
+        endif()
+    endif()
+    if(MENSURFLOW_OPENBLAS_TARGET)
+        mensurflow_add_benchmark(matmul_openblas_benchmark benchmarks/blas/matmul_openblas_benchmark.cpp)
+        target_link_libraries(matmul_openblas_benchmark PRIVATE ${MENSURFLOW_OPENBLAS_TARGET})
+        if(MENSURFLOW_OPENBLAS_DLL)
+            add_custom_command(TARGET matmul_openblas_benchmark POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MENSURFLOW_OPENBLAS_DLL}"
+                        "$<TARGET_FILE_DIR:matmul_openblas_benchmark>")
+        endif()
+        message(STATUS "OpenBLAS benchmark: enabled")
+    elseif(MENSURFLOW_OPENBLAS STREQUAL "ON")
+        message(FATAL_ERROR "MENSURFLOW_OPENBLAS=ON but OpenBLAS was not found (set OPENBLAS_ROOT)")
+    else()
+        message(STATUS "OpenBLAS benchmark: disabled (OpenBLAS not found, set OPENBLAS_ROOT)")
+    endif()
+endif()
+
+mensurflow_add_benchmark(gemm_tune_benchmark benchmarks/blas/gemm_tune_benchmark.cpp)
+mensurflow_add_benchmark(gemm_pack_benchmark benchmarks/blas/gemm_pack_benchmark.cpp)
+mensurflow_add_benchmark(gemm_thread_benchmark benchmarks/blas/gemm_thread_benchmark.cpp)
+mensurflow_add_benchmark(gemm_stride_benchmark benchmarks/blas/gemm_stride_benchmark.cpp)
+mensurflow_add_benchmark(gemm_kernel_benchmark benchmarks/blas/gemm_kernel_benchmark.cpp)
+mensurflow_add_benchmark(fma_peak_benchmark benchmarks/blas/fma_peak_benchmark.cpp)
 mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
+mensurflow_add_benchmark(selection_benchmark benchmarks/selection_benchmark.cpp)
+mensurflow_add_benchmark(cast_benchmark benchmarks/cast_benchmark.cpp)
+mensurflow_add_benchmark(gemm_batched_benchmark benchmarks/blas/gemm_batched_benchmark.cpp)
+mensurflow_add_benchmark(ger_benchmark benchmarks/blas/ger_benchmark.cpp)
+mensurflow_add_benchmark(movement_benchmark benchmarks/movement_benchmark.cpp)
+
+# LibTorch from a CPU PyTorch wheel is an optional native reference, not a core dependency.
+# Configure a separate build directory with Torch's CMake prefix when enabling this target.
+option(MENSURFLOW_TORCH_BENCHMARK "Build native CPU operation comparisons with LibTorch" OFF)
+if(MENSURFLOW_TORCH_BENCHMARK)
+    find_package(Torch CONFIG REQUIRED)
+    if(TORCH_CXX_FLAGS)
+        # Keep the ABI consistent across libraries that exchange std::string/vector values.
+        separate_arguments(MENSURFLOW_TORCH_CXX_FLAGS NATIVE_COMMAND "${TORCH_CXX_FLAGS}")
+        target_compile_options(mensurflow PUBLIC ${MENSURFLOW_TORCH_CXX_FLAGS})
+    endif()
+    mensurflow_add_benchmark(activation_torch_benchmark benchmarks/activation_torch_benchmark.cpp)
+    target_link_libraries(activation_torch_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_link_libraries(selection_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(selection_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
+    target_link_libraries(cast_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(cast_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
+    # The imported torch target supplies the C++ standard its installed headers require.
+endif()
 
 add_executable(mlp_xor examples/mlp_xor.cpp)
 target_link_libraries(mlp_xor PRIVATE mensurflow)
+
+add_executable(client client/main.cpp)
+target_link_libraries(client PRIVATE mensurflow)
+
+add_executable(client_perf client/perf.cpp)
+target_link_libraries(client_perf PRIVATE mensurflow)

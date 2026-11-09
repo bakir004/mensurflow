@@ -67,13 +67,14 @@ The available CMake options are:
 | `MENSURFLOW_METAL` | `AUTO`, `ON`, `OFF` | `AUTO` |
 | `MENSURFLOW_OPENMP` | `ON`, `OFF` | `ON` |
 | `MENSURFLOW_NATIVE` | `ON`, `OFF` | `OFF` |
+| `MENSURFLOW_TORCH_BENCHMARK` | `ON`, `OFF` | `OFF` |
 
 `AUTO` enables a backend when its development SDK is found. `ON` requires the
 backend SDK and fails configuration when it is unavailable. `OFF` disables the
 backend.
 
-CPU kernels live in `src/backends/cpu/ops/{blas,elementwise,reduction}/`. Each
-is a loop marked with `MENSURFLOW_PARALLEL_FOR`, which splits it across threads
+CPU kernels live in `src/backends/cpu/ops/{blas,elementwise,reduction}/`. Most
+use a loop marked with `MENSURFLOW_PARALLEL_FOR`, which splits it across threads
 in an OpenMP build and does nothing otherwise; `matmul`, `max`, and `min` have a
 separate sequential and parallel version. `MENSURFLOW_NATIVE=ON` enables
 machine-specific compiler optimizations and should not be used for portable
@@ -171,11 +172,25 @@ written with the operations above; see `examples/mlp_xor.cpp`.
 - `abs`
 - `square`
 - `relu`
+- `leaky_relu`, `gelu` (exact and tanh approximation), `silu`, `elu`, `softplus`
 - `sqrt`
 - `exp`
 - `sigmoid`
 - `log`, `rsqrt`, `tanh`, `sin`, `cos`, and `reciprocal`
 - `pow`, `minimum`, and `maximum`
+
+The five CPU float32 activations `leaky_relu`, `gelu`, `silu`, `elu`, and `softplus` provide forward
+execution and share a portable parallel loop. Parameters and numeric conventions are described in
+[KERNELS.md](docs/KERNELS.md#cpu-elementwise-behavior).
+
+`eq`, `ne`, `lt`, `le`, `gt`, and `ge` compare F32 tensors and return Bool masks. `where(mask, x, y)`
+selects F32 values using a Bool mask; all three inputs broadcast. These operations use ordinary
+C++/OpenMP CPU loops. `where` provides forward execution only. See
+[KERNELS.md](docs/KERNELS.md#cpu-elementwise-behavior) for Bool storage and numeric conventions.
+
+`cast(x, dtype)` converts among CPU F32, I32, F16 and BF16 with nearest-even floating rounding.
+It returns a fresh contiguous tensor and supports views. See
+[KERNELS.md](docs/KERNELS.md#cpu-elementwise-behavior) for integer conversion rules and 16-bit storage.
 
 `matvec` and `matmul` currently have CPU implementations only. Asking for an
 execution device that has no kernel for an operation throws `NotImplemented`;
@@ -266,6 +281,11 @@ kernel implementations:
 - `reduction_benchmark`
 - `argmax_benchmark`
 - `cpu_parallel_benchmark`
+- `selection_benchmark`
+
+The optional `activation_torch_benchmark` compares the CPU activations with native C++ ATen calls.
+It requires LibTorch and `MENSURFLOW_TORCH_BENCHMARK=ON`; setup and paired-run commands are in
+[BENCHMARKING.md](docs/BENCHMARKING.md#comparing-activations-against-pytorch).
 
 Build the benchmark targets with:
 

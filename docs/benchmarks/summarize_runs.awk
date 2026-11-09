@@ -15,7 +15,9 @@
 # different size with -v size=... and a different SIMD size with -v simd_size=...
 #
 # Reads the standard table printed by the benchmark harness: n impl threads median ms ... in
-# columns 1-4, and the rate in the column four from the end.
+# columns 1-4, and the rate in column 7 (with either one or two speedup columns).
+# Current CPU output uses sequential as its one-thread baseline and has no scalar rows.
+# Historical output with a scalar baseline and a separate parallel 1-thread row is also supported.
 
 FNR == 1 { file++ }
 /^== / {
@@ -26,16 +28,27 @@ FNR == 1 { file++ }
 /^ +[0-9]+ +(scalar|sequential|parallel) / {
     n = $1; impl = $2; thr = (impl == "parallel") ? $3 : "-"
     median[file, op, n, impl, thr] = $4
-    rate[file, op, n, impl, thr] = $(NF - 3)
+    rate[file, op, n, impl, thr] = $7
+    if (impl == "scalar") has_scalar = 1
     if (impl == "parallel") threads_seen[$3] = 1
     if (file > runs) runs = file
 }
 
-function speedup(f, o, n, t,    s, p) {
-    s = median[f, o, n, "sequential", "-"]; p = median[f, o, n, "parallel", t]
-    return (s > 0 && p > 0) ? s / p : 0
+function ratio(a, b) { return (a > 0 && b > 0) ? a / b : 0 }
+function speedup(f, o, n, t,    s, p, key) {
+    s = median[f, o, n, "sequential", "-"]
+    key = f SUBSEP o SUBSEP n SUBSEP "parallel" SUBSEP t
+    if (t == 1 && !(key in median)) return (s > 0) ? 1 : 0
+    p = median[key]
+    return ratio(s, p)
 }
-function cell(a, b, fmt) { return (runs > 1) ? sprintf(fmt " / " fmt, a, b) : sprintf(fmt, a) }
+function formatted(v, fmt) { return (v + 0 > 0) ? sprintf(fmt, v) : "n/a" }
+function cell(a, b, fmt) {
+    return formatted(a, fmt) ((runs > 1) ? " / " formatted(b, fmt) : "")
+}
+function scalar_note() {
+    if (!has_scalar) print "\nScalar baseline unavailable in this output; scalar time/rate and SIMD gain are n/a."
+}
 
 END {
     if (mode == "matmul") {
@@ -50,10 +63,11 @@ END {
         asort_numeric(szlist, nsz)
         for (i = 1; i <= nsz; i++) {
             n = szlist[i]; o = order[1]
-            row = "| " n " | " rate[1, o, n, "scalar", "-"] " | " rate[1, o, n, "sequential", "-"] " |"
-            for (j = 1; j <= ncols; j++) row = row " " rate[1, o, n, "parallel", tlist[j]] " |"
+            row = "| " n " | " formatted(rate[1, o, n, "scalar", "-"], "%s") " | " formatted(rate[1, o, n, "sequential", "-"], "%s") " |"
+            for (j = 1; j <= ncols; j++) row = row " " formatted(rate[1, o, n, "parallel", tlist[j]], "%s") " |"
             print row
         }
+        scalar_note()
         exit
     }
     if (mode == "simd") {
@@ -63,9 +77,10 @@ END {
             printf "| %s | %s | %s | %s |\n", o,
                 cell(median[1, o, n, "scalar", "-"], median[2, o, n, "scalar", "-"], "%s"),
                 cell(median[1, o, n, "sequential", "-"], median[2, o, n, "sequential", "-"], "%s"),
-                cell(median[1, o, n, "scalar", "-"] / median[1, o, n, "sequential", "-"],
-                     median[2, o, n, "scalar", "-"] / median[2, o, n, "sequential", "-"], "%.1fx")
+                cell(ratio(median[1, o, n, "scalar", "-"], median[1, o, n, "sequential", "-"]),
+                     ratio(median[2, o, n, "scalar", "-"], median[2, o, n, "sequential", "-"]), "%.1fx")
         }
+        scalar_note()
         exit
     }
     # mode threads

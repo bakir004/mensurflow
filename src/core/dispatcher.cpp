@@ -41,6 +41,26 @@ const char* op_name(OpId op) {
         return "square";
     case OpId::Relu:
         return "relu";
+    case OpId::LeakyRelu:
+        return "leaky_relu";
+    case OpId::Gelu:
+        return "gelu";
+    case OpId::Silu:
+        return "silu";
+    case OpId::Elu:
+        return "elu";
+    case OpId::Softplus:
+        return "softplus";
+    case OpId::ReluBackward:
+        return "relu_backward";
+    case OpId::SigmoidBackward:
+        return "sigmoid_backward";
+    case OpId::TanhBackward:
+        return "tanh_backward";
+    case OpId::GeluBackward:
+        return "gelu_backward";
+    case OpId::SiluBackward:
+        return "silu_backward";
     case OpId::Sqrt:
         return "sqrt";
     case OpId::Exp:
@@ -67,6 +87,22 @@ const char* op_name(OpId op) {
         return "maximum";
     case OpId::Clamp:
         return "clamp";
+    case OpId::Eq:
+        return "eq";
+    case OpId::Ne:
+        return "ne";
+    case OpId::Lt:
+        return "lt";
+    case OpId::Le:
+        return "le";
+    case OpId::Gt:
+        return "gt";
+    case OpId::Ge:
+        return "ge";
+    case OpId::Where:
+        return "where";
+    case OpId::Cast:
+        return "cast";
     case OpId::BiasAdd:
         return "bias_add";
     case OpId::Sum:
@@ -91,6 +127,18 @@ const char* op_name(OpId op) {
         return "prod_axis";
     case OpId::Argmax:
         return "argmax";
+    case OpId::GemmBatched:
+        return "gemm_strided_batched";
+    case OpId::Ger:
+        return "ger";
+    case OpId::Concat:
+        return "concat";
+    case OpId::Pad:
+        return "pad";
+    case OpId::Gather:
+        return "gather";
+    case OpId::IndexSelect:
+        return "index_select";
     }
     throw std::invalid_argument("invalid OpId");
 }

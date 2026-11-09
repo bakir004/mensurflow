@@ -167,6 +167,105 @@ void test_views(Device device) {
     check_against_reference(sliced.to_vector<float>(), rows, b, 4, n, k, "sliced rows");
 }
 
+// Stores a logical rows x cols matrix (row-major in `values`) as a view with the given kind of
+// layout: 0 contiguous, 1 columns sliced out of a wider matrix (leading dimension larger than the
+// width), 2 transposed, 3 transposed and sliced. The view always has shape {rows, cols}.
+Tensor make_view(const std::vector<float>& values, std::int64_t rows, std::int64_t cols, int kind,
+                 Device device) {
+    const auto fill = [&](std::int64_t stored_rows, std::int64_t stored_cols, std::int64_t row0,
+                          std::int64_t col0, bool transposed) {
+        std::vector<float> stored(static_cast<std::size_t>(stored_rows * stored_cols), -77.0f);
+        for (std::int64_t i = 0; i < rows; ++i) {
+            for (std::int64_t j = 0; j < cols; ++j) {
+                // Stored row r, column c holds the element: for the transposed layouts the logical
+                // row i runs along the stored columns and the logical column j along the stored rows.
+                const std::int64_t r = transposed ? row0 + j : row0 + i;
+                const std::int64_t c = transposed ? col0 + i : col0 + j;
+                stored[static_cast<std::size_t>(r * stored_cols + c)] =
+                    values[static_cast<std::size_t>(i * cols + j)];
+            }
+        }
+        return Tensor::from_vector(stored, {stored_rows, stored_cols}, device);
+    };
+    switch (kind) {
+    case 0:
+        return Tensor::from_vector(values, {rows, cols}, device);
+    case 1:
+        return fill(rows + 2, cols + 9, 1, 3, false).slice(0, 1, 1 + rows).slice(1, 3, 3 + cols);
+    case 2:
+        return fill(cols, rows, 0, 0, true).transpose(0, 1);
+    default:
+        return fill(cols + 3, rows + 5, 2, 4, true)
+            .slice(0, 2, 2 + cols)
+            .slice(1, 4, 4 + rows)
+            .transpose(0, 1);
+    }
+}
+
+// Products big enough to be split over threads, with every combination of layouts for A and B, through
+// the public API.
+void test_strided_large(Device device) {
+    const Execution on = test::execution_on(device);
+    const Shape3 sizes[] = {{70, 60, 90}, {130, 200, 150}, {300, 300, 300}};
+    for (const Shape3& s : sizes) {
+        const auto a = make_input(s.m * s.k, 21);
+        const auto b = make_input(s.k * s.n, 22);
+        for (int kind_a = 0; kind_a < 4; ++kind_a) {
+            for (int kind_b = 0; kind_b < 4; ++kind_b) {
+                if (s.m == 300 && (kind_a == 1 || kind_b == 1)) {
+                    continue; // the biggest size only in the contiguous and transposed layouts
+                }
+                const Tensor va = make_view(a, s.m, s.k, kind_a, device);
+                const Tensor vb = make_view(b, s.k, s.n, kind_b, device);
+                check_against_reference(matmul(va, vb, on).to_vector<float>(), a, b, s.m, s.n, s.k,
+                                        "strided " + std::to_string(s.m) + "x" + std::to_string(s.n) +
+                                            "x" + std::to_string(s.k) + " A" + std::to_string(kind_a) +
+                                            " B" + std::to_string(kind_b));
+            }
+        }
+    }
+}
+
+// The backward pass multiplies by transposed views and by a broadcast gradient (stride 0). For
+// loss = sum(a x b), the gradient of a[i][p] is the sum of row p of b, and of b[p][j] the sum of
+// column p of a.
+void test_gradient(Device device) {
+    if (device.type != DeviceType::CPU) {
+        return; // autograd is exercised on the CPU
+    }
+    const std::int64_t m = 70, k = 90, n = 60;
+    const auto av = make_input(m * k, 31);
+    const auto bv = make_input(k * n, 32);
+    Tensor a = Tensor::from_vector(av, {m, k}, device);
+    Tensor b = Tensor::from_vector(bv, {k, n}, device);
+    a.set_requires_grad();
+    b.set_requires_grad();
+    sum(matmul(a, b)).backward();
+
+    const auto grad_a = a.grad().to_vector<float>();
+    const auto grad_b = b.grad().to_vector<float>();
+    for (std::int64_t i = 0; i < m; ++i) {
+        for (std::int64_t p = 0; p < k; ++p) {
+            float expected = 0.0f;
+            for (std::int64_t j = 0; j < n; ++j) {
+                expected += bv[static_cast<std::size_t>(p * n + j)];
+            }
+            test::require(grad_a[static_cast<std::size_t>(i * k + p)] == expected,
+                          "gradient of a at (" + std::to_string(i) + "," + std::to_string(p) + ")");
+        }
+    }
+    for (std::int64_t p = 0; p < k; ++p) {
+        for (std::int64_t j = 0; j < n; ++j) {
+            float expected = 0.0f;
+            for (std::int64_t i = 0; i < m; ++i) {
+                expected += av[static_cast<std::size_t>(i * k + p)];
+            }
+            test::require(grad_b[static_cast<std::size_t>(p * n + j)] == expected,
+                          "gradient of b at (" + std::to_string(p) + "," + std::to_string(j) + ")");
+        }
+    }
+}
+
 void test_empty(Device device) {
     const Execution on = test::execution_on(device);
     const Tensor none_k = matmul(Tensor::empty({3, 0}, DType::F32, device),
@@ -223,6 +322,8 @@ int main() {
             test_known_values(device);
             test_sizes(device);
             test_views(device);
+            test_strided_large(device);
+            test_gradient(device);
             test_empty(device);
             test_errors(device);
         }

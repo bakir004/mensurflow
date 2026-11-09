@@ -5,6 +5,8 @@
 
 #include "core/autograd.hpp"
 #include "core/storage.hpp"
+#include "core/tensor_access.hpp"
+#include "backends/cpu/ops/movement/movement.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -192,9 +194,18 @@ Tensor Tensor::contiguous() const {
     if (is_contiguous()) {
         return *this;
     }
-    // Gather on the host, then upload. Correct on every device, but a GPU tensor makes a round
-    // trip until a device-side strided copy kernel exists.
     Tensor out = empty(shape_, dtype_, device());
+    if (device().type == DeviceType::CPU && dtype_ == DType::F32) {
+        const float* input = detail::TensorAccess::data<float>(*this);
+        float* output = detail::TensorAccess::data<float>(out);
+        if (dim() == 2 && strides_[0] == 1 && strides_[1] == shape_[0]) {
+            cpu::transpose_f32(input, output, shape_[1], shape_[0]);
+        } else {
+            cpu::strided_copy_f32(input, output, shape_.data(), strides_.data(), dim());
+        }
+        return out;
+    }
+    // Gather on the host, then upload until a device-side strided copy kernel exists.
     std::vector<std::byte> host(out.nbytes());
     copy_to_host(host.data());
     out.storage_->copy_from_host(0, host.data(), host.size());
@@ -320,6 +331,36 @@ Tensor Tensor::transpose(int d0, int d1) const {
     Strides strides = strides_;
     std::swap(shape[a], shape[b]);
     std::swap(strides[a], strides[b]);
+    return make_view(offset_, std::move(shape), std::move(strides));
+}
+
+Tensor Tensor::permute(const std::vector<int>& order) const {
+    if (order.size() != static_cast<std::size_t>(dim())) {
+        throw std::invalid_argument("permute: expected " + std::to_string(dim()) +
+                                    " dimensions, got " + std::to_string(order.size()));
+    }
+    std::vector<bool> used(static_cast<std::size_t>(dim()), false);
+    Shape shape;
+    Strides strides;
+    shape.reserve(order.size());
+    strides.reserve(order.size());
+    for (int value : order) {
+        int axis;
+        try {
+            axis = normalize_dim(value, dim());
+        } catch (const std::out_of_range&) {
+            throw std::invalid_argument("permute: dimension " + std::to_string(value) +
+                                        " is out of range for a " + std::to_string(dim()) +
+                                        "-d tensor");
+        }
+        if (used[static_cast<std::size_t>(axis)]) {
+            throw std::invalid_argument("permute: dimension " + std::to_string(value) +
+                                        " appears more than once");
+        }
+        used[static_cast<std::size_t>(axis)] = true;
+        shape.push_back(shape_[static_cast<std::size_t>(axis)]);
+        strides.push_back(strides_[static_cast<std::size_t>(axis)]);
+    }
     return make_view(offset_, std::move(shape), std::move(strides));
 }
 

@@ -99,6 +99,78 @@ inline void sigmoid(const float* x, float* out, std::int64_t n) {
     }
 }
 
+// Activation references evaluate the mathematical definitions in float64.
+inline double leaky_relu_value(double x, double slope = 0.01f) {
+    return x < 0.0 ? slope * x : x;
+}
+
+inline double gelu_value(double x, bool approximate = false) {
+    if (std::isinf(x)) {
+        return x < 0.0 ? -0.0 : x;
+    }
+    if (!approximate) {
+        return x * std::erfc(-x / std::sqrt(2.0)) / 2.0;
+    }
+    const double u = std::sqrt(2.0 / std::acos(-1.0)) * (x + 0.044715 * x * x * x);
+    // Use the tanh definition in its well-conditioned range and the equivalent tail outside it.
+    if (std::fabs(u) < 10.0) {
+        return 0.5 * x * (1.0 + std::tanh(u));
+    }
+    return u < 0.0 ? x * std::exp(2.0 * u) / (1.0 + std::exp(2.0 * u))
+                   : x / (1.0 + std::exp(-2.0 * u));
+}
+
+inline double silu_value(double x) {
+    if (std::isinf(x) && x < 0.0) {
+        return -0.0;
+    }
+    return x < 0.0 ? x * std::exp(x) / (1.0 + std::exp(x)) : x / (1.0 + std::exp(-x));
+}
+
+inline double elu_value(double x, double alpha = 1.0) {
+    return x < 0.0 ? alpha * std::expm1(x) : x;
+}
+
+inline double softplus_value(double x, double beta = 1.0, double threshold = 20.0) {
+    const double z = beta * x;
+    if (z > threshold) {
+        return x;
+    }
+    return z < 0.0 ? std::log1p(std::exp(z)) / beta
+                   : (z + std::log1p(std::exp(-z))) / beta;
+}
+
+template <typename Function>
+void activation(const float* x, float* out, std::int64_t n, Function apply) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = static_cast<float>(apply(static_cast<double>(x[i])));
+    }
+}
+
+inline void leaky_relu(const float* x, float* out, std::int64_t n) {
+    activation(x, out, n, [](double v) { return leaky_relu_value(v); });
+}
+
+inline void gelu(const float* x, float* out, std::int64_t n) {
+    activation(x, out, n, [](double v) { return gelu_value(v); });
+}
+
+inline void gelu_tanh(const float* x, float* out, std::int64_t n) {
+    activation(x, out, n, [](double v) { return gelu_value(v, true); });
+}
+
+inline void silu(const float* x, float* out, std::int64_t n) {
+    activation(x, out, n, [](double v) { return silu_value(v); });
+}
+
+inline void elu(const float* x, float* out, std::int64_t n) {
+    activation(x, out, n, [](double v) { return elu_value(v); });
+}
+
+inline void softplus(const float* x, float* out, std::int64_t n) {
+    activation(x, out, n, [](double v) { return softplus_value(v); });
+}
+
 } // namespace reference
 
 // Broadcasting binary op written from scratch, so tests do not rely on the library's own

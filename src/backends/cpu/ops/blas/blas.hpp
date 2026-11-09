@@ -34,6 +34,11 @@ void matvec_f32(const float* a, const float* x, float* y, std::int64_t m, std::i
 void gemv_f32(const float* a, const float* x, float* y, std::int64_t rows, std::int64_t cols,
               float alpha, float beta, const float* initial, bool transpose);
 
+// Rank-1 update: out[i,j] = alpha * x[i] * y[j] + a[i,j], where out and a are row-major [m, n]. a may
+// be nullptr (treated as zeros) or equal to out (an in-place update).
+void ger_f32(float alpha, const float* x, const float* y, const float* a, float* out,
+             std::int64_t m, std::int64_t n);
+
 // Row-major C[m,n] = A[m,k] * B[k,n]. C is overwritten and must not overlap A or B. k == 0 fills
 // C with zeros. Every C[i,j] adds its products in increasing p in both versions, so they agree.
 // The parallel version also works through B in cache-sized blocks.

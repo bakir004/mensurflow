@@ -82,6 +82,27 @@ void test_composed_views() {
     test::require(v.to_vector<float>() == Values{3, 15, 7, 19, 11, 23}, "composed values");
 }
 
+void test_permute_and_parallel_contiguous() {
+    Values values(2 * 3 * 4);
+    for (int i = 0; i < 24; ++i) {
+        values[static_cast<std::size_t>(i)] = static_cast<float>(i);
+    }
+    const Tensor x = Tensor::from_vector(values, {2, 3, 4});
+    const Tensor p = x.permute({2, 0, 1});
+    test::require(p.shape() == Shape{4, 2, 3}, "permute shape");
+    test::require(p.strides() == Strides{1, 12, 4}, "permute strides");
+    test::require(p.contiguous().to_vector<float>() ==
+                      Values{0, 4, 8, 12, 16, 20, 1, 5, 9, 13, 17, 21,
+                             2, 6, 10, 14, 18, 22, 3, 7, 11, 15, 19, 23},
+                  "permute values");
+    test::require_throws<std::invalid_argument>([&] { x.permute({0, 0, 1}); },
+                                                "duplicate permutation axis");
+    test::require_throws<std::invalid_argument>([&] { x.permute({0, 1}); },
+                                                "wrong permutation rank");
+    test::require_throws<std::invalid_argument>([&] { x.permute({0, 1, 3}); },
+                                                "out of range permutation axis");
+}
+
 } // namespace
 
 int main() {
@@ -91,5 +112,6 @@ int main() {
         test_expand_and_unsqueeze();
         test_view();
         test_composed_views();
+        test_permute_and_parallel_contiguous();
     });
 }
