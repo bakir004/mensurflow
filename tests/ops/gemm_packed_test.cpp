@@ -241,24 +241,40 @@ int main() {
         // count below and one above the number of cores. Two larger shapes are included because
         // pinning is only done for products of at least 8 million multiply-adds.
         const std::int64_t large[][3] = {{300, 300, 300}, {97, 257, 901}};
-        for (int strategy = 0; strategy < 6; ++strategy) {
+        for (int strategy = 0; strategy < 12; ++strategy) { // 6, 7: strategies 4, 5 on the thread pool;
+            // 8, 9: 4, 5 with B packed privately per thread; 10, 11: both
             for (int pin : {0, 1}) {
                 for (int loop : {0, 1}) {
                     for (int tiny = 0; tiny < 2; ++tiny) {
                         cpu::PackedGemmBlocking blocking = original;
-                        blocking.parallel = strategy;
+                        blocking.parallel = strategy < 6 ? strategy : 4 + (strategy & 1);
+                        blocking.pool = strategy == 6 || strategy == 7 || strategy >= 10 ? 1 : 0;
+                        blocking.private_b = strategy >= 8 ? 1 : 0;
                         blocking.pin = pin;
                         blocking.loop_order = loop;
                         if (tiny != 0) {
                             blocking.mc = 24;
                             blocking.kc = 20;
                             blocking.nc = 48;
+                            blocking.b_chunk = 2;
                         }
                         cpu::set_packed_gemm_blocking(blocking);
                         const std::string name = "packed parallel strategy " +
                                                  std::to_string(strategy) + " pin " +
                                                  std::to_string(pin) + " loop " +
                                                  std::to_string(loop) + (tiny != 0 ? " tiny" : "");
+                        if (strategy >= 8 && strategy < 10 && pin == 0) {
+                            // The single-thread kernel has the same private-B path.
+                            for (const auto& s : big) {
+                                check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                            }
+                            for (const auto& s : extra) {
+                                check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                            }
+                            for (const auto& s : large) {
+                                check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                            }
+                        }
                         for (int threads : {3, 24}) {
                             cpu::set_max_threads(threads);
                             for (const auto& s : big) {
@@ -314,9 +330,12 @@ int main() {
         // One product big enough to be pinned (at least 8 million multiply-adds) in the layouts that
         // matter: transposed A, transposed B, both, and a padded view.
         // Every parallel strategy, so each one honours the row stride of C.
-        for (int strategy = 0; strategy < 6; ++strategy) {
+        for (int strategy = 0; strategy < 12; ++strategy) { // 6, 7: strategies 4, 5 on the thread pool;
+            // 8, 9: 4, 5 with B packed privately per thread; 10, 11: both
             cpu::PackedGemmBlocking blocking = original;
-            blocking.parallel = strategy;
+            blocking.parallel = strategy < 6 ? strategy : 4 + (strategy & 1);
+            blocking.pool = strategy == 6 || strategy == 7 || strategy >= 10 ? 1 : 0;
+            blocking.private_b = strategy >= 8 ? 1 : 0;
             cpu::set_packed_gemm_blocking(blocking);
             for (int kinds : {0, 1, 2, 3}) {
                 cpu::set_max_threads(12);

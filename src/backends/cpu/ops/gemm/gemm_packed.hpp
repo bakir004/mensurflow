@@ -52,6 +52,14 @@ struct PackedGemmBlocking {
                                  // (either SMT half), 2 to one hardware thread of it, 3 only a preference
                                  // for that core (the OS may still move the thread). See affinity.hpp
     std::int64_t profile = 0;    // 1 = record where the threads spend their time (packed_gemm_profile)
+    std::int64_t pool = 0;       // strategies 4 and 5: 0 run the team in an OpenMP region, 1 on the
+                                 // library's own thread pool (thread_pool.hpp)
+    std::int64_t private_b = 0;  // strategies 4 and 5: 0 B is packed into the shared KC x NC buffer,
+                                 // 1 each thread packs the few B panels of its tile into its own
+                                 // L2-sized buffer right before multiplying them (only A is shared),
+                                 // 2 choose by the shape: 1 for products with few rows, where the
+                                 // shared buffer makes packing a memory-bandwidth problem
+    std::int64_t b_chunk = 0;    // private_b: B panels per tile (0 = as many as fit in half the L2)
 };
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.

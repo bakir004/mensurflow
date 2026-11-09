@@ -46,6 +46,7 @@ add_library(mensurflow
     src/ops/reduction.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/affinity.cpp
+    src/backends/cpu/thread_pool.cpp
     src/backends/cpu/ops/blas/blas.cpp
     src/backends/cpu/ops/gemm/gemm_batched.cpp
     src/backends/cpu/ops/gemm/gemm_packed.cpp
@@ -140,6 +141,7 @@ mensurflow_add_test(cast_test tests/ops/cast_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
 mensurflow_add_test(affinity_test tests/core/affinity_test.cpp)
+mensurflow_add_test(thread_pool_test tests/core/thread_pool_test.cpp)
 mensurflow_add_test(gemm_packed_test tests/ops/gemm_packed_test.cpp)
 mensurflow_add_test(gemm_pack_test tests/ops/gemm_pack_test.cpp)
 mensurflow_add_test(matvec_test tests/ops/matvec_test.cpp)
@@ -202,6 +204,10 @@ if(NOT MENSURFLOW_OPENBLAS STREQUAL "OFF")
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MENSURFLOW_OPENBLAS_DLL}"
                         "$<TARGET_FILE_DIR:matmul_openblas_benchmark>")
         endif()
+        # The DLL is copied next to matmul_openblas_benchmark, which is in the same directory.
+        mensurflow_add_benchmark(gemm_shapes_openblas_benchmark
+                                 benchmarks/blas/gemm_shapes_openblas_benchmark.cpp)
+        target_link_libraries(gemm_shapes_openblas_benchmark PRIVATE ${MENSURFLOW_OPENBLAS_TARGET})
         message(STATUS "OpenBLAS benchmark: enabled")
     elseif(MENSURFLOW_OPENBLAS STREQUAL "ON")
         message(FATAL_ERROR "MENSURFLOW_OPENBLAS=ON but OpenBLAS was not found (set OPENBLAS_ROOT)")

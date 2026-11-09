@@ -25,9 +25,12 @@
 //     kc= mc=    block sizes                           (default: the current default)
 //     rounds=    passes over all combinations          (default 5)
 //     sleep=     idle time in ms before each "slept" call (default 5)
+//     pool=      strategies 4, 5: 0 OpenMP region, 1 the library's thread pool (default 0)
+//     spin=      pool only: microseconds an idle worker spins before sleeping (default 2000)
 #include "bench.hpp"
 
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
+#include "backends/cpu/thread_pool.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>
@@ -59,6 +62,7 @@ std::vector<std::int64_t> parse_list(const std::string& text) {
 
 struct Variant {
     cpu::PackedGemmBlocking blocking;
+    std::int64_t spin = 2000; // pool spin time, microseconds
     std::vector<double> median;
     std::vector<double> burst;
     std::vector<double> slept;
@@ -86,6 +90,8 @@ int main(int argc, char** argv) {
         {"threads", {4, max / 2, max}},
         {"parallel", {0, 1, 2, 3}},
         {"pin", {0}},
+        {"pool", {0}},
+        {"spin", {2000}},
         {"loop", {0}},
         {"tiles", {original.tiles_per_thread}},
         {"kc", {original.kc}},
@@ -132,6 +138,8 @@ int main(int argc, char** argv) {
             std::vector<Variant> variants;
             for (std::int64_t parallel : options["parallel"]) {
                 for (std::int64_t pin : options["pin"]) {
+                for (std::int64_t pool : options["pool"]) {
+                for (std::int64_t spin : options["spin"]) {
                     for (std::int64_t loop : options["loop"]) {
                         for (std::int64_t tiles : options["tiles"]) {
                             if (parallel == 2 && tiles != options["tiles"].front()) {
@@ -143,6 +151,8 @@ int main(int argc, char** argv) {
                                     v.blocking = original;
                                     v.blocking.parallel = parallel;
                                     v.blocking.pin = pin;
+                                    v.blocking.pool = pool;
+                                    v.spin = spin;
                                     v.blocking.loop_order = loop;
                                     v.blocking.tiles_per_thread = tiles;
                                     v.blocking.kc = kc;
@@ -152,6 +162,8 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
+                }
+                }
                 }
             }
 
@@ -166,6 +178,7 @@ int main(int argc, char** argv) {
                 for (Variant& v : variants) {
                     // 1. bench::measure, with a checksum of C between the calls.
                     cpu::set_packed_gemm_blocking(v.blocking);
+                    cpu::set_pool_spin_us(v.spin);
                     const bench::Sample sample =
                         bench::measure(config, run, [&] { return bench::checksum(c, len); });
                     v.median.push_back(flops / sample.median_s / 1e9);
@@ -200,9 +213,9 @@ int main(int argc, char** argv) {
 
             std::printf("\n== n=%lld, %lld threads ==\n", static_cast<long long>(n),
                         static_cast<long long>(threads));
-            std::printf("%-8s %-8s %5s %5s %5s | %8s %8s %8s | warm: %7s %7s %6s | cold: %7s %7s "
+            std::printf("%-12s %-8s %-8s %5s %5s %5s | %8s %8s %8s | warm: %7s %7s %6s | cold: %7s %7s "
                         "%6s\n",
-                        "strategy", "loop/pin", "tiles", "kc", "mc", "median", "burst", "slept",
+                        "pool/spin", "strategy", "loop/pin", "tiles", "kc", "mc", "median", "burst", "slept",
                         "comp", "pack", "wait%", "comp", "pack", "wait%");
             double best = 0.0;
             for (const Variant& v : variants) {
@@ -210,8 +223,9 @@ int main(int argc, char** argv) {
             }
             for (const Variant& v : variants) {
                 std::printf(
-                    "%-8lld %3lld/%-4lld %5lld %5lld %5lld | %8.1f %8.1f %8.1f | "
+                    "%lld/%-10lld %-8lld %3lld/%-4lld %5lld %5lld %5lld | %8.1f %8.1f %8.1f | "
                     "      %5.1fms %5.1fms %5.1f%% |       %5.1fms %5.1fms %5.1f%%%s\n",
+                    static_cast<long long>(v.blocking.pool), static_cast<long long>(v.spin),
                     static_cast<long long>(v.blocking.parallel),
                     static_cast<long long>(v.blocking.loop_order),
                     static_cast<long long>(v.blocking.pin),
