@@ -109,7 +109,7 @@ constexpr double min_macs_per_thread = 512.0 * 1024.0;
 
 // Pinning costs a few system calls per thread, so it is only done for products with at least this many
 // multiply-adds (about n = 200).
-constexpr double min_macs_to_pin = 8.0 * 1024.0 * 1024.0;
+constexpr double min_macs_to_pin = 4.0 * 1024.0 * 1024.0;
 
 // Products with fewer multiply-adds than this use at most one thread per physical core (about n = 1024).
 constexpr double min_macs_for_smt = 1024.0 * 1024.0 * 1024.0;
@@ -1048,6 +1048,76 @@ inline void make_grid(std::int64_t team, std::int64_t m, std::int64_t& ic_ways,
     jr_ways = team / ic_ways;
 }
 
+// One row times a matrix: c[0..n) = sum over p of a[p * csa] * B[p, :], with the rows of B contiguous
+// (rsb floats apart). This is a network evaluated on a single sample. The packed kernel would fill
+// one of its six rows and copy all of B first; here B is read once, in place, four rows per pass over
+// a block of C that stays in L1. The products are added in increasing p, as the packed kernel does.
+MENSURFLOW_TARGET_AVX2 void row_times_matrix(const float* a, std::int64_t csa, const float* b,
+                                             std::int64_t rsb, float* c, std::int64_t n,
+                                             std::int64_t k) {
+    constexpr std::int64_t block = 2048; // 8 KB of C
+    for (std::int64_t j0 = 0; j0 < n; j0 += block) {
+        const std::int64_t cols = std::min(block, n - j0);
+        float* const out = c + j0;
+        std::fill(out, out + cols, 0.0f);
+        std::int64_t p = 0;
+        for (; p + 4 <= k; p += 4) {
+            const __m256 a0 = _mm256_broadcast_ss(a + p * csa);
+            const __m256 a1 = _mm256_broadcast_ss(a + (p + 1) * csa);
+            const __m256 a2 = _mm256_broadcast_ss(a + (p + 2) * csa);
+            const __m256 a3 = _mm256_broadcast_ss(a + (p + 3) * csa);
+            const float* const b0 = b + p * rsb + j0;
+            const float* const b1 = b0 + rsb;
+            const float* const b2 = b1 + rsb;
+            const float* const b3 = b2 + rsb;
+            std::int64_t j = 0;
+            for (; j + 16 <= cols; j += 16) {
+                __m256 x = _mm256_loadu_ps(out + j);
+                __m256 y = _mm256_loadu_ps(out + j + 8);
+                x = _mm256_fmadd_ps(a0, _mm256_loadu_ps(b0 + j), x);
+                y = _mm256_fmadd_ps(a0, _mm256_loadu_ps(b0 + j + 8), y);
+                x = _mm256_fmadd_ps(a1, _mm256_loadu_ps(b1 + j), x);
+                y = _mm256_fmadd_ps(a1, _mm256_loadu_ps(b1 + j + 8), y);
+                x = _mm256_fmadd_ps(a2, _mm256_loadu_ps(b2 + j), x);
+                y = _mm256_fmadd_ps(a2, _mm256_loadu_ps(b2 + j + 8), y);
+                x = _mm256_fmadd_ps(a3, _mm256_loadu_ps(b3 + j), x);
+                y = _mm256_fmadd_ps(a3, _mm256_loadu_ps(b3 + j + 8), y);
+                _mm256_storeu_ps(out + j, x);
+                _mm256_storeu_ps(out + j + 8, y);
+            }
+            for (; j + 8 <= cols; j += 8) {
+                __m256 x = _mm256_loadu_ps(out + j);
+                x = _mm256_fmadd_ps(a0, _mm256_loadu_ps(b0 + j), x);
+                x = _mm256_fmadd_ps(a1, _mm256_loadu_ps(b1 + j), x);
+                x = _mm256_fmadd_ps(a2, _mm256_loadu_ps(b2 + j), x);
+                x = _mm256_fmadd_ps(a3, _mm256_loadu_ps(b3 + j), x);
+                _mm256_storeu_ps(out + j, x);
+            }
+            for (; j < cols; ++j) {
+                __m128 x = _mm_load_ss(out + j);
+                x = _mm_fmadd_ss(_mm256_castps256_ps128(a0), _mm_load_ss(b0 + j), x);
+                x = _mm_fmadd_ss(_mm256_castps256_ps128(a1), _mm_load_ss(b1 + j), x);
+                x = _mm_fmadd_ss(_mm256_castps256_ps128(a2), _mm_load_ss(b2 + j), x);
+                x = _mm_fmadd_ss(_mm256_castps256_ps128(a3), _mm_load_ss(b3 + j), x);
+                _mm_store_ss(out + j, x);
+            }
+        }
+        for (; p < k; ++p) {
+            const __m256 a0 = _mm256_broadcast_ss(a + p * csa);
+            const float* const b0 = b + p * rsb + j0;
+            std::int64_t j = 0;
+            for (; j + 8 <= cols; j += 8) {
+                _mm256_storeu_ps(out + j, _mm256_fmadd_ps(a0, _mm256_loadu_ps(b0 + j),
+                                                          _mm256_loadu_ps(out + j)));
+            }
+            for (; j < cols; ++j) {
+                _mm_store_ss(out + j, _mm_fmadd_ss(_mm256_castps256_ps128(a0), _mm_load_ss(b0 + j),
+                                                   _mm_load_ss(out + j)));
+            }
+        }
+    }
+}
+
 } // namespace
 
 void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
@@ -1064,6 +1134,10 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
     }
     if (!packed_gemm_supported()) {
         matmul_strided_fallback(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, false);
+        return;
+    }
+    if (m == 1 && csb == 1) {
+        row_times_matrix(a, csa, b, rsb, c, n, k);
         return;
     }
 
@@ -1172,6 +1246,23 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         matmul_f32_packed_strided(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k);
         return;
     }
+    if (m == 1 && csb == 1) {
+        // One row (see row_times_matrix): each thread computes its own run of columns. At least 256
+        // columns per thread; on the pool, or on this thread alone when the pool is taken.
+        const std::int64_t team = std::min<std::int64_t>(threads, n / 256);
+        if (team > 1 && blocking_state().pool != 0) {
+            auto body = [&](int tid) {
+                const std::int64_t j0 = n * tid / team / 16 * 16;
+                const std::int64_t j1 = tid + 1 == team ? n : n * (tid + 1) / team / 16 * 16;
+                row_times_matrix(a, csa, b + j0, rsb, c + j0, j1 - j0, k);
+            };
+            if (pool_run(static_cast<int>(team), body)) {
+                return;
+            }
+        }
+        row_times_matrix(a, csa, b, rsb, c, n, k);
+        return;
+    }
 
     const PackedGemmBlocking settings = blocking_state();
     const Shape shape = select_shape(settings);
@@ -1224,7 +1315,9 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     const bool private_b =
         strategy >= 4 && (settings.private_b == 1 ||
                           (settings.private_b == 2 && m <= private_b_max_rows &&
-                           ceil_div(std::min(n, NC), NR) >= 4 * threads));
+                           // One MC block of rows: a tile is a run of B panels either way.
+                           (m <= MC ||
+                           ceil_div(std::min(n, NC), NR) >= 4 * threads)));
     std::int64_t chunk_panels = settings.b_chunk;
     if (private_b && chunk_panels == 0) {
         const std::int64_t l2 = cache_bytes(2) > 0 ? cache_bytes(2) : 256 * 1024;

@@ -297,6 +297,19 @@ int main() {
         }
         cpu::set_packed_gemm_blocking(original);
 
+        // One row times a matrix has its own kernel (no packing), also split over threads by columns:
+        // depths that are not multiples of 4, widths that are not multiples of 8 or 16.
+        const std::int64_t rows1[][3] = {{1, 1000, 37}, {1, 37, 1000}, {1, 2049, 515},
+                                         {1, 5003, 301}, {1, 7, 3},     {1, 4096, 4}};
+        for (const auto& s : rows1) {
+            check_shape(cpu::matmul_f32_packed, "one row", s[0], s[1], s[2]);
+            for (int threads : {3, 24}) {
+                cpu::set_max_threads(threads);
+                check_shape(cpu::matmul_f32_packed_parallel, "one row parallel", s[0], s[1], s[2]);
+            }
+            cpu::set_max_threads(saved_threads);
+        }
+
         // Strided operands (transposed, padded, interleaved) and a padded C, with the single-thread
         // and the threaded kernel, with default and tiny block sizes.
         const std::int64_t strided_shapes[][3] = {{1, 1, 1},      {5, 15, 7},     {13, 33, 255},
