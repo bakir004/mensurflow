@@ -255,6 +255,7 @@ PackedGemmBlocking initial_blocking() {
     blocking.static_items = 1;
     blocking.private_a = 1;
     blocking.fine_rows = 1;
+    blocking.split_rows = 1;
     return blocking;
 }
 
@@ -896,7 +897,7 @@ void set_packed_gemm_blocking(PackedGemmBlocking blocking) {
         blocking.profile < 0 || blocking.profile > 1 || blocking.pool < 0 || blocking.pool > 1 ||
         blocking.private_b < 0 || blocking.private_b > 2 || blocking.static_items < 0 ||
         blocking.static_items > 1 || blocking.private_a < 0 || blocking.private_a > 1 || blocking.fine_rows < 0 ||
-        blocking.fine_rows > 1 || blocking.b_chunk < 0 || blocking.pin < 0 || blocking.pin > 3) {
+        blocking.fine_rows > 1 || blocking.split_rows < 0 || blocking.split_rows > 1 || blocking.b_chunk < 0 || blocking.pin < 0 || blocking.pin > 3) {
         throw std::invalid_argument("packed gemm blocking: mc, kc, nc and tiles_per_thread must be "
                                     "positive, prefetch 0-6, prefetch_block 0-4, shape 0-11, scalar_pack 0-1, parallel "
                                     "0-5, loop_order 0-1, profile 0-1, pin 0-3");
@@ -1401,8 +1402,16 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         chunk_panels = std::max<std::int64_t>(1, l2 / 2 / (kc_max * NR * 4));
     }
     ScratchBuffer& packed_b = scratch_b();
+    // Row split: with few B panels (a convolution as im2col with 64 output channels has 4) the
+    // chiplet groups cannot usefully share out the columns, and each would pack its own copy of all
+    // of A for a panel or two. The groups then divide the rows instead: each packs only its own rows
+    // of A, once, into the one shared buffer, and its own copy of the (small) packed B.
+    const bool row_split = settings.split_rows != 0 && strategy >= 4 && groups > 1 && !private_b &&
+                           ceil_div(std::min(n, NC), NR) < 2 * threads &&
+                           m_padded / MR >= 4 * threads;
+    const std::int64_t b_copies = row_split ? groups : 1;
     packed_b.reserve(static_cast<std::size_t>(
-        private_b ? chunk_panels * NR * kc_max : copies * kc_max * nc_max));
+        private_b ? chunk_panels * NR * kc_max : copies * b_copies * kc_max * nc_max));
     float* const pb_base = packed_b.data;
     float* pa_base = nullptr; // the shared packed A of strategies 0, 1, 4 and 5
     if (strategy <= 1 || strategy >= 4) {
@@ -1604,14 +1613,27 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         struct Part {
             std::int64_t p0, p1, panels_per_tile, tiles, packs;
             std::int64_t row_blocks, rows_per_tile; // shared B: a tile is rows_per_tile rows of C
+            std::int64_t a0, a1;                    // its A panels (all of them unless row_split)
+            std::int64_t row0, rows;                // the rows of C those are
         };
         const auto part_of = [&](std::int64_t s, std::int64_t g) {
             const Step& st = steps[static_cast<std::size_t>(s)];
             Part part{};
-            part.p0 = st.b_panels * first_thread[static_cast<std::size_t>(g)] / threads;
-            part.p1 = st.b_panels * first_thread[static_cast<std::size_t>(g) + 1] / threads;
+            const std::int64_t before = first_thread[static_cast<std::size_t>(g)];
+            const std::int64_t through = first_thread[static_cast<std::size_t>(g) + 1];
+            if (row_split) { // every B panel, its share of the rows
+                part.p1 = st.b_panels;
+                part.a0 = a_panels * before / threads;
+                part.a1 = a_panels * through / threads;
+            } else { // its share of the B panels, every row
+                part.p0 = st.b_panels * before / threads;
+                part.p1 = st.b_panels * through / threads;
+                part.a1 = a_panels;
+            }
+            part.row0 = part.a0 * MR;
+            part.rows = std::min(part.a1 * MR, m) - part.row0;
             const std::int64_t panels = part.p1 - part.p0;
-            if (panels > 0) {
+            if (panels > 0 && part.rows > 0) {
                 const std::int64_t members = first_thread[static_cast<std::size_t>(g) + 1] -
                                              first_thread[static_cast<std::size_t>(g)];
                 if (private_b) {
@@ -1629,20 +1651,22 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                 // that no other thread can take over, so the rows are split further (down to
                 // min_rows_per_tile) until there are tiles_per_thread tiles per thread.
                 const std::int64_t wanted_tiles = settings.tiles_per_thread * members;
-                std::int64_t row_blocks = ic_blocks;
+                std::int64_t row_blocks = ceil_div(part.rows, MC);
                 if (settings.fine_rows != 0 && panels * row_blocks < wanted_tiles) {
                     row_blocks = std::max(
-                        row_blocks, std::min(ceil_div(wanted_tiles, panels),
-                                             std::max<std::int64_t>(1, m / min_rows_per_tile)));
+                        row_blocks,
+                        std::min(ceil_div(wanted_tiles, panels),
+                                 std::max<std::int64_t>(1, part.rows / min_rows_per_tile)));
                 }
                 part.rows_per_tile =
-                    settings.fine_rows != 0 ? round_up(ceil_div(m, row_blocks), MR) : MC;
-                part.row_blocks = ceil_div(m, part.rows_per_tile);
+                    settings.fine_rows != 0 ? round_up(ceil_div(part.rows, row_blocks), MR) : MC;
+                part.row_blocks = ceil_div(part.rows, part.rows_per_tile);
                 const std::int64_t wanted = ceil_div(wanted_tiles, part.row_blocks);
                 part.panels_per_tile =
                     ceil_div(panels, std::min(std::max<std::int64_t>(wanted, 1), panels));
                 part.tiles = part.row_blocks * ceil_div(panels, part.panels_per_tile);
-                part.packs = b_items_of(panels) + a_panels; // its B panels and its own copy of A
+                // Its B panels, and its copy of A (row_split: its rows of the one shared A).
+                part.packs = b_items_of(panels) + (part.a1 - part.a0);
             }
             return part;
         };
@@ -1652,9 +1676,11 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             }
         }
         const auto packed_a_of = [&](std::int64_t s, std::int64_t g) {
-            return pa_base + ((s & 1) * groups + g) * m_padded * kc_max;
+            return pa_base + ((s & 1) * groups + (row_split ? 0 : g)) * m_padded * kc_max;
         };
-        const auto packed_b_of = [&](std::int64_t s) { return pb_base + (s & 1) * kc_max * nc_max; };
+        const auto packed_b_of = [&](std::int64_t s, std::int64_t g) {
+            return pb_base + ((s & 1) * b_copies + (row_split ? g : 0)) * kc_max * nc_max;
+        };
 
         // Pack item t of group g for step s: a run of its B panels, then the panels of its copy of A.
         const auto pack_part = [&](std::int64_t s, std::int64_t g, const Part& part, std::int64_t t) {
@@ -1663,9 +1689,9 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             if (t < b_items) {
                 const std::int64_t first = part.p0 + t * b_run;
                 pack_b_range(first, std::min(first + b_run, part.p1), st.jc, st.pc, st.kc, st.nc,
-                             packed_b_of(s));
+                             packed_b_of(s, g));
             } else {
-                pack_a_panel(t - b_items, st.pc, st.kc, packed_a_of(s, g));
+                pack_a_panel(part.a0 + (t - b_items), st.pc, st.kc, packed_a_of(s, g));
             }
         };
         // Tile t of group g for step s.
@@ -1697,14 +1723,14 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                 return;
             }
             const double t0 = profile ? wall_seconds() : 0.0;
-            const std::int64_t ic = (t % part.row_blocks) * part.rows_per_tile;
-            const std::int64_t mc = std::min(part.rows_per_tile, m - ic);
+            const std::int64_t ic = part.row0 + (t % part.row_blocks) * part.rows_per_tile;
+            const std::int64_t mc = std::min(part.rows_per_tile, part.row0 + part.rows - ic);
             const std::int64_t first_panel = part.p0 + (t / part.row_blocks) * part.panels_per_tile;
             const std::int64_t last_panel = std::min(first_panel + part.panels_per_tile, part.p1);
             const std::int64_t cols =
                 std::min((last_panel - first_panel) * NR, st.nc - first_panel * NR);
             compute_block(shape, st.kc, pa + (ic / MR) * st.kc * MR, mc,
-                          packed_b_of(s) + first_panel * st.kc * NR, cols,
+                          packed_b_of(s, g) + first_panel * st.kc * NR, cols,
                           c + ic * ldc + st.jc + first_panel * NR, ldc, st.pc > 0, loop_order,
                           prefetch_block);
             if (profile) {

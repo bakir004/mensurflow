@@ -14,7 +14,7 @@
 //     only=      1-based numbers of the shapes to run (default: all)
 //     shape=     m,n,k: time this one product instead of the list (several: m,n,k,m,n,k,...)
 //     pool=      PackedGemmBlocking::pool values to compare (default: the current default)
-//     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea= finerows=   one value each: overrides of the blocking settings
+//     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea= finerows= splitrows=   one value each: overrides of the blocking settings
 //
 // Needs OpenBLAS at build time: see docs/BENCHMARKING.md ("Comparing against OpenBLAS").
 #include "bench.hpp"
@@ -118,6 +118,7 @@ int main(int argc, char** argv) {
         {"static", {original.static_items}},
         {"privatea", {original.private_a}},
         {"finerows", {original.fine_rows}},
+        {"splitrows", {original.split_rows}},
     };
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -228,6 +229,7 @@ int main(int argc, char** argv) {
             blocking.static_items = options["static"][0];
             blocking.private_a = options["privatea"][0];
             blocking.fine_rows = options["finerows"][0];
+            blocking.split_rows = options["splitrows"][0];
             cpu::set_packed_gemm_blocking(blocking);
 
             std::printf("%-34s %6lld %6lld %6lld %4lld |", shape.what, static_cast<long long>(m),

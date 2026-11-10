@@ -69,6 +69,8 @@ struct PackedGemmBlocking {
     std::int64_t fine_rows = 0;  // shared B: 0 a tile is MC rows (the last block what is left), 1 the
                                  // rows are split into equal blocks, and into more of them when
                                  // there are too few B panels for tiles_per_thread tiles per thread
+    std::int64_t split_rows = 0; // chiplet split with few B panels: 1 = the groups divide the rows of C
+                                 // (each packs its own rows of A once) instead of the columns
 };
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.

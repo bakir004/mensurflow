@@ -28,7 +28,8 @@
 //     pool=      strategies 4, 5: 0 OpenMP region, 1 the library's thread pool (default 0)
 //     spin=      pool only: microseconds an idle worker spins before sleeping (default 2000)
 //     m= k=      rows of A and depth, for a rectangular product (default: both equal to the size)
-//     static= finerows= private=   one value each: PackedGemmBlocking static_items, fine_rows, private_b
+//     static= finerows= private= splitrows=   one value each: PackedGemmBlocking static_items,
+//                fine_rows, private_b, split_rows
 #include "bench.hpp"
 
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
         {"k", {0}},
         {"static", {original.static_items}},
         {"finerows", {original.fine_rows}},
+        {"splitrows", {original.split_rows}},
         {"private", {original.private_b}},
     };
     for (int i = 1; i < argc; ++i) {
@@ -170,6 +172,7 @@ int main(int argc, char** argv) {
                                     v.blocking.mc = mc;
                                     v.blocking.static_items = options["static"][0];
                                     v.blocking.fine_rows = options["finerows"][0];
+                                    v.blocking.split_rows = options["splitrows"][0];
                                     v.blocking.private_b = options["private"][0];
                                     variants.push_back(v);
                                 }

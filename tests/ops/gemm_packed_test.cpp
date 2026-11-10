@@ -240,7 +240,8 @@ int main() {
         // to cores, in both loop orders, with the default block sizes and with tiny ones, on a thread
         // count below and one above the number of cores. Two larger shapes are included because
         // pinning is only done for products of at least 8 million multiply-adds.
-        const std::int64_t large[][3] = {{300, 300, 300}, {97, 257, 901}};
+        // The third has many rows and few B panels, which makes the chiplet groups divide the rows.
+        const std::int64_t large[][3] = {{300, 300, 300}, {97, 257, 901}, {600, 100, 80}};
         for (int strategy = 0; strategy < 12; ++strategy) { // 6, 7: strategies 4, 5 on the thread pool;
             // 8, 9: 4, 5 with B packed privately per thread; 10, 11: both
             for (int pin : {0, 1}) {
@@ -253,6 +254,7 @@ int main() {
                         blocking.static_items = tiny != 0 ? 0 : 1; // both ways of handing out work
                         blocking.private_a = loop;                 // with and without a private A
                         blocking.fine_rows = pin;                  // both row layouts of the tiles
+                        blocking.split_rows = strategy & 1;       // chiplets divide columns or rows
                         blocking.pin = pin;
                         blocking.loop_order = loop;
                         if (tiny != 0) {
