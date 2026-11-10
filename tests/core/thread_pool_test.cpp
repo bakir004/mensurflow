@@ -94,6 +94,37 @@ int main() {
         test::require(cpu::pool_run(3, outer), "outer team runs");
         test::require(nested_accepted.load() == 0, "pool_run from inside a body is refused");
 
+        // A team with one worker left out: every tid except that one runs once, the barrier counts
+        // only the members, and the left-out worker is back in the next ordinary team.
+        for (int skip : {1, 2, 4}) {
+            for (int repeat = 0; repeat < 200; ++repeat) {
+                std::vector<std::atomic<int>> runs(6);
+                for (auto& r : runs) {
+                    r.store(0);
+                }
+                std::atomic<int> before{0};
+                std::atomic<bool> early{false};
+                auto body = [&](int tid) {
+                    runs[static_cast<std::size_t>(tid)].fetch_add(1);
+                    before.fetch_add(1);
+                    cpu::pool_barrier();
+                    if (before.load() != 5) {
+                        early = true;
+                    }
+                };
+                test::require(cpu::pool_run(6, body, skip), "a team with a worker left out runs");
+                for (int t = 0; t < 6; ++t) {
+                    test::require(runs[static_cast<std::size_t>(t)].load() == (t == skip ? 0 : 1),
+                                  "every member but the left-out worker runs once");
+                }
+                test::require(!early, "the barrier waits for the five members");
+            }
+            check_team(6, 3);
+        }
+        auto nothing = [](int) {};
+        test::require(!cpu::pool_run(4, nothing, 4) && !cpu::pool_run(4, nothing, -1),
+                      "a skip outside the team is refused");
+
         // Concurrent callers: each call either runs on the pool or is refused, never both teams at
         // once, and every accepted call completes.
         std::atomic<int> inside{0};
