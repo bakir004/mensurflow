@@ -252,6 +252,7 @@ int main() {
                         blocking.private_b = strategy >= 8 ? 1 : 0;
                         blocking.static_items = tiny != 0 ? 0 : 1; // both ways of handing out work
                         blocking.private_a = loop;                 // with and without a private A
+                        blocking.fine_rows = pin;                  // both row layouts of the tiles
                         blocking.pin = pin;
                         blocking.loop_order = loop;
                         if (tiny != 0) {

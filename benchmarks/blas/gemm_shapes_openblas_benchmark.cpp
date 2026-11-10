@@ -14,7 +14,7 @@
 //     only=      1-based numbers of the shapes to run (default: all)
 //     shape=     m,n,k: time this one product instead of the list (several: m,n,k,m,n,k,...)
 //     pool=      PackedGemmBlocking::pool values to compare (default: the current default)
-//     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea=   one value each: overrides of the blocking settings
+//     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea= finerows=   one value each: overrides of the blocking settings
 //
 // Needs OpenBLAS at build time: see docs/BENCHMARKING.md ("Comparing against OpenBLAS").
 #include "bench.hpp"
@@ -44,7 +44,8 @@ namespace {
 struct Shape {
     const char* what;
     std::int64_t m, n, k;
-    bool a_transposed; // A is stored as its transpose [k, m] (the weight-gradient product)
+    int layout; // 0 plain; 1 A stored as its transpose [k, m] (the weight gradient); 2 B stored as
+                // its transpose [n, k] (the gradient of the input: delta times the weights transposed)
 };
 
 // Rows are batch (or batch * tokens, or output pixels); B is the weight matrix [inputs, outputs].
@@ -70,6 +71,10 @@ const Shape shapes[] = {
     {"weight grad 768x3072, batch 64", 768, 3072, 64, true},
     {"weight grad 4096x4096, batch 256", 4096, 4096, 256, true},
     {"weight grad 784x512, batch 16", 784, 512, 16, true},
+    {"input grad 784<-512, batch 64", 64, 784, 512, 2},
+    {"input grad 4096<-4096, batch 256", 256, 4096, 4096, 2},
+    {"input grad 768<-3072, 512 tok", 512, 768, 3072, 2},
+    {"input grad 3072<-768, 512 tok", 512, 3072, 768, 2},
 };
 
 std::vector<std::int64_t> parse_list(const std::string& text) {
@@ -112,6 +117,7 @@ int main(int argc, char** argv) {
         {"chunk", {original.b_chunk}},
         {"static", {original.static_items}},
         {"privatea", {original.private_a}},
+        {"finerows", {original.fine_rows}},
     };
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -153,7 +159,7 @@ int main(int argc, char** argv) {
         list.clear();
         for (std::size_t i = 0; i + 2 < options["shape"].size(); i += 3) {
             list.push_back({"custom", options["shape"][i], options["shape"][i + 1],
-                            options["shape"][i + 2], false});
+                            options["shape"][i + 2], 0});
         }
     }
     for (const Shape& shape : list) {
@@ -182,8 +188,11 @@ int main(int argc, char** argv) {
         const int ki = static_cast<int>(k);
 
         const auto run_openblas_into = [&](float* out) {
-            if (shape.a_transposed) {
+            if (shape.layout == 1) {
                 cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, mi, ni, ki, 1.0f, a, mi, b, ni,
+                            0.0f, out, ni);
+            } else if (shape.layout == 2) {
+                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, mi, ni, ki, 1.0f, a, ki, b, ki,
                             0.0f, out, ni);
             } else {
                 cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, mi, ni, ki, 1.0f, a, ki, b,
@@ -191,8 +200,10 @@ int main(int argc, char** argv) {
             }
         };
         const auto run_ours = [&] {
-            if (shape.a_transposed) {
+            if (shape.layout == 1) {
                 cpu::matmul_f32_packed_parallel_strided(a, 1, m, b, n, 1, c, n, m, n, k);
+            } else if (shape.layout == 2) {
+                cpu::matmul_f32_packed_parallel_strided(a, k, 1, b, 1, k, c, n, m, n, k);
             } else {
                 cpu::matmul_f32_packed_parallel(a, b, c, m, n, k);
             }
@@ -216,6 +227,7 @@ int main(int argc, char** argv) {
             blocking.b_chunk = options["chunk"][0];
             blocking.static_items = options["static"][0];
             blocking.private_a = options["privatea"][0];
+            blocking.fine_rows = options["finerows"][0];
             cpu::set_packed_gemm_blocking(blocking);
 
             std::printf("%-34s %6lld %6lld %6lld %4lld |", shape.what, static_cast<long long>(m),

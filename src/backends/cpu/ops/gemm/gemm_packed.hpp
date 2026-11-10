@@ -66,6 +66,9 @@ struct PackedGemmBlocking {
                                  // columns of B and writes the same part of C on every call)
     std::int64_t private_a = 0;  // private B, one depth step and a small A: 1 = each thread also packs
                                  // its own copy of A, and the team runs without any barrier
+    std::int64_t fine_rows = 0;  // shared B: 0 a tile is MC rows (the last block what is left), 1 the
+                                 // rows are split into equal blocks, and into more of them when
+                                 // there are too few B panels for tiles_per_thread tiles per thread
 };
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.

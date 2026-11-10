@@ -105,8 +105,11 @@ namespace {
 constexpr std::int64_t MR6 = 6;
 constexpr std::int64_t NR6 = 16;
 
-// Multiply-adds a thread needs before it is worth waking (see matmul_f32_packed_parallel).
-constexpr double min_macs_per_thread = 512.0 * 1024.0;
+// Multiply-adds a thread needs before it is worth using (see matmul_f32_packed_parallel). 512K with
+// OpenMP; on the thread pool a team of 12 costs 1.6 microseconds to start, and 256K is better for
+// small products (128 x 128 x 64: 130 -> 204 GFLOP/s, 128 x 128 x 128: 206 -> 276; 128K and 64K are
+// no better).
+constexpr double min_macs_per_thread = 256.0 * 1024.0;
 
 // Pinning costs a few system calls per thread, so it is only done for products with at least this many
 // multiply-adds (about n = 200).
@@ -121,6 +124,8 @@ constexpr double min_macs_to_pin_caller = 12.0 * 1024.0 * 1024.0;
 constexpr double min_macs_for_smt = 1024.0 * 1024.0 * 1024.0;
 // PackedGemmBlocking::private_b == 2: products with at most this many rows pack B privately.
 constexpr std::int64_t private_b_max_rows = 512;
+// Shared B with few panels: the rows of C are split into tiles of at least this many rows.
+constexpr std::int64_t min_rows_per_tile = 24;
 // Private B packs whole runs of panels row by row; the rows are n floats apart, which the hardware
 // prefetcher does not follow, so the packer prefetches this many rows ahead (measured 0 to 12:
 // m = 32, n = k = 4096 on 12 threads 368, 396, 418, 419, 435, 437 GFLOP/s for 0, 2, 4, 6, 8, 12).
@@ -249,6 +254,7 @@ PackedGemmBlocking initial_blocking() {
     // gradients, +8% at n = 1024 (section 25).
     blocking.static_items = 1;
     blocking.private_a = 1;
+    blocking.fine_rows = 1;
     return blocking;
 }
 
@@ -889,7 +895,8 @@ void set_packed_gemm_blocking(PackedGemmBlocking blocking) {
         blocking.parallel > 5 || blocking.loop_order < 0 || blocking.loop_order > 1 ||
         blocking.profile < 0 || blocking.profile > 1 || blocking.pool < 0 || blocking.pool > 1 ||
         blocking.private_b < 0 || blocking.private_b > 2 || blocking.static_items < 0 ||
-        blocking.static_items > 1 || blocking.private_a < 0 || blocking.private_a > 1 || blocking.b_chunk < 0 || blocking.pin < 0 || blocking.pin > 3) {
+        blocking.static_items > 1 || blocking.private_a < 0 || blocking.private_a > 1 || blocking.fine_rows < 0 ||
+        blocking.fine_rows > 1 || blocking.b_chunk < 0 || blocking.pin < 0 || blocking.pin > 3) {
         throw std::invalid_argument("packed gemm blocking: mc, kc, nc and tiles_per_thread must be "
                                     "positive, prefetch 0-6, prefetch_block 0-4, shape 0-11, scalar_pack 0-1, parallel "
                                     "0-5, loop_order 0-1, profile 0-1, pin 0-3");
@@ -1339,8 +1346,11 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     const bool private_b =
         strategy >= 4 && (settings.private_b == 1 ||
                           (settings.private_b == 2 && m <= private_b_max_rows &&
-                           // One MC block of rows: a tile is a run of B panels either way.
-                           (m <= MC ||
+                           // Enough B panels to give every thread several tiles, or too few
+                           // rows to split into tiles the other way (shared B, fine rows):
+                           // 196 x 256 x 2304 616-680 private, 892-949 shared; 64 x 256 x 128
+                           // 322-345 private, 222-235 shared.
+                           (m < 4 * min_rows_per_tile ||
                            ceil_div(std::min(n, NC), NR) >= 4 * threads)));
     std::int64_t chunk_panels = settings.b_chunk;
     if (private_b && chunk_panels == 0) {
@@ -1550,6 +1560,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         // Group g's part of step s: B panels [p0, p1), split into tiles like tile_layout does.
         struct Part {
             std::int64_t p0, p1, panels_per_tile, tiles, packs;
+            std::int64_t row_blocks, rows_per_tile; // shared B: a tile is rows_per_tile rows of C
         };
         const auto part_of = [&](std::int64_t s, std::int64_t g) {
             const Step& st = steps[static_cast<std::size_t>(s)];
@@ -1569,10 +1580,25 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                     part.packs = a_panels; // only its own copy of A
                     return part;
                 }
-                const std::int64_t wanted = ceil_div(settings.tiles_per_thread * members, ic_blocks);
+                // Rows: the fewest blocks of at most MC rows, all about the same size (m = 256 is
+                // 132 + 124 rows, not 240 + 16). With few B panels that would leave a thread only
+                // two or three large tiles, and one tile more or less is then a large difference
+                // that no other thread can take over, so the rows are split further (down to
+                // min_rows_per_tile) until there are tiles_per_thread tiles per thread.
+                const std::int64_t wanted_tiles = settings.tiles_per_thread * members;
+                std::int64_t row_blocks = ic_blocks;
+                if (settings.fine_rows != 0 && panels * row_blocks < wanted_tiles) {
+                    row_blocks = std::max(
+                        row_blocks, std::min(ceil_div(wanted_tiles, panels),
+                                             std::max<std::int64_t>(1, m / min_rows_per_tile)));
+                }
+                part.rows_per_tile =
+                    settings.fine_rows != 0 ? round_up(ceil_div(m, row_blocks), MR) : MC;
+                part.row_blocks = ceil_div(m, part.rows_per_tile);
+                const std::int64_t wanted = ceil_div(wanted_tiles, part.row_blocks);
                 part.panels_per_tile =
                     ceil_div(panels, std::min(std::max<std::int64_t>(wanted, 1), panels));
-                part.tiles = ic_blocks * ceil_div(panels, part.panels_per_tile);
+                part.tiles = part.row_blocks * ceil_div(panels, part.panels_per_tile);
                 part.packs = b_items_of(panels) + a_panels; // its B panels and its own copy of A
             }
             return part;
@@ -1628,9 +1654,9 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                 return;
             }
             const double t0 = profile ? wall_seconds() : 0.0;
-            const std::int64_t ic = (t % ic_blocks) * MC;
-            const std::int64_t mc = std::min(MC, m - ic);
-            const std::int64_t first_panel = part.p0 + (t / ic_blocks) * part.panels_per_tile;
+            const std::int64_t ic = (t % part.row_blocks) * part.rows_per_tile;
+            const std::int64_t mc = std::min(part.rows_per_tile, m - ic);
+            const std::int64_t first_panel = part.p0 + (t / part.row_blocks) * part.panels_per_tile;
             const std::int64_t last_panel = std::min(first_panel + part.panels_per_tile, part.p1);
             const std::int64_t cols =
                 std::min((last_panel - first_panel) * NR, st.nc - first_panel * NR);
@@ -1650,7 +1676,10 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         // owns a fixed run of the group's items and takes from other threads of its group only when
         // its own run is done. The same thread then handles the same columns on every call of the
         // same shape, so the part of B it reads (the weights of a layer) and the part of C it writes
-        // stay in its own L2 from call to call instead of moving between cores.
+        // stay in its own L2 from call to call instead of moving between cores. List 0 (the packing
+        // of the first step) stays first come, first served: owning a fixed run of A panels to pack
+        // made 3136 x 64 x 576 about a third slower (packing 0.08-0.25 ms -> 0.26-0.45 ms per
+        // thread), with no gain elsewhere.
         struct alignas(64) Counter {
             std::atomic<std::int64_t> next{0};
             std::int64_t end = 0;
@@ -1681,9 +1710,14 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             }
         }
         // The next item of `list` for group g, or a number past the end when there is none left.
+        std::vector<Counter> first_list(static_cast<std::size_t>(groups)); // list 0, per group
         const auto take = [&](std::int64_t list, std::int64_t g, std::int64_t tid) {
             if (!static_items) {
                 return counters[static_cast<std::size_t>(list * groups + g)].next.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            if (list == 0) {
+                return first_list[static_cast<std::size_t>(g)].next.fetch_add(
                     1, std::memory_order_relaxed);
             }
             Counter* const row = &counters[static_cast<std::size_t>(list * threads)];
