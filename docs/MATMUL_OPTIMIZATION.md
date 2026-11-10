@@ -38,6 +38,7 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 23 | Neural-network shapes: benchmark and private B packing | `gemm_shapes_openblas_benchmark` (21 products a network makes); for products with few rows each thread packs a few B panels into its own L2-sized buffer and uses them at once, instead of writing all of packed B through L3 or memory; the packer prefetches 8 rows ahead | m = 32, n = k = 4096: 173 -> 430 GFLOP/s (OpenBLAS 389); logits 64x32000x768: 255 -> 629; one thread 64 -> 86. The three shapes that lost to OpenBLAS (0.43x, 0.69x, 0.85x) now win |
 | 24 | One row (batch 1) without packing; pinning from 4M multiply-adds | `row_times_matrix`: B read in place, four rows per pass, threads split the columns | mlp 784->512 at batch 1: 8 -> 38 GFLOP/s (12x OpenBLAS); 784x512x16 on 12 threads 124 -> 271. All 21 shapes ahead of OpenBLAS, geometric mean 1.88x; square sizes 42 of 42 |
 | 25 | Balance: equal column blocks, static tiles, finer row tiles, more threads for small products, a caller that shares a worker's core | `balanced_nc`; `static_items` (each thread owns a fixed run of the tiles); `fine_rows`; `min_macs_per_thread` 256K; `pool_run` can leave out the worker on the caller's core; `thread_pool_benchmark`; first run at n = 8192; 4 input-gradient shapes | n = 8192 on one thread 87 -> 107 GFLOP/s (was 0.83x OpenBLAS). 32x4096x4096 430 -> 455-540; weight gradients 872 -> 1052 and 271 -> 478; attention scores 145 -> 241; conv 196 px 702 -> 952; n = 256 on 12 threads 593 -> 746. 25 of 25 shapes ahead (geometric mean 1.94x), squares 49 of 49 up to n = 8192 |
+| 26 | Chiplets divide the rows for narrow outputs; B packed once and reused | `split_rows`: with few B panels each chiplet packs only its rows of A instead of a copy of all of it. `pack_b_f32` / `matmul_f32_prepacked` / `PackedB`: the weights of a layer in inference are packed once | Convolutions as im2col: 3136 px 667-816 -> 945-960 GFLOP/s, 12544 px 574-600 -> 811-886, and stable. 25 shapes: geometric mean 2.01x. Prepacked: batch 16 405 -> 548, 32x4096x4096 527 -> 812, logits 672 -> 915; none slower |
 
 ## The improvements, explained
 
@@ -1052,6 +1053,72 @@ its place. Four runs after the fix: n = 128 on 2 threads 162, 161, 161, 161; n =
 threads as panels (a tile cannot be narrower than a panel). n = 128 (8 panels): 235 GFLOP/s on 8
 threads, 275 on 4.
 
+### 26. Chiplets divide the rows for narrow outputs; B packed once
+
+**Row split** (`PackedGemmBlocking::split_rows`, default 1). The chiplet split of section 17 gives
+each chiplet its share of the columns of C, its own B panels and its own copy of A. A convolution
+done as im2col with 64 output channels has 4 B panels: each chiplet then got 2 panels and packed all
+of A for them (7 MB at 3136 x 64 x 576, twice). Packing was 30-60% of such a call, and the results
+varied between runs by a factor of two. With fewer than 2 B panels per thread (and at least 4 A
+panels per thread) the groups now divide the rows instead: each packs only its own rows of A, once,
+into the one shared buffer, and its own copy of the small packed B.
+
+| shape, 12 threads, GFLOP/s (3 alternating runs each) | columns | rows |
+|---|---|---|
+| 3136 x 64 x 576 | 667, 816, 763 | 954, 960, 945 |
+| 12544 x 64 x 147 | 579, 600, 574 | 811, 886, 825 |
+| 6272 x 32 x 288 | 535, 533, 589 | 737, 796, 745 |
+| 1024 x 128 x 128 | 700, 669, 691 | 766, 755, 758 |
+| 784 x 128 x 1152 | 926, 913, 926 | 952, 1015, 999 |
+| 2048 x 256 x 512 | 1070, 1060, 1034 | 1071, 1075, 1064 |
+
+A wider limit (4 or 8 B panels per thread) gains nothing on 512 to 1024 columns and costs
+784 x 512 x 16 (436-456 -> 340-350), so it stays at 2.
+
+**The 25 shapes with the row split** (defaults, each library at its best of 1, 12, 24 threads):
+ahead on 25 of 25, geometric mean 2.01x (section 25: 1.94x). The convolutions: 3136 px 832 -> 977
+GFLOP/s, 784 px 924 -> 1008, 196 px 952 -> 957, 12544 px 582 -> 900.
+
+**B packed once** (`pack_b_f32`, `matmul_f32_prepacked`, class `PackedB`). A layer that is only
+evaluated multiplies by the same weights on every call, and every call packed them again: 41% of
+the threads' busy time at 16 x 512 x 784, 23% at 64 rows, and 58% at 32 x 4096 x 4096. `pack_b_f32`
+packs B once into the layout the micro-kernel reads (for each depth block of KC rows, the 16-column
+panels one after the other; k x n floats with n rounded up to 16). `matmul_f32_prepacked` then
+runs the usual threaded paths without the B packing: with few rows the tiles of private B (section
+23) read their panels straight from the object, with many rows the row tiles of section 25 do, and
+one row has its own kernel over the packed panels (`row_times_packed`, four partial sums per panel
+so the additions do not wait for each other). The object owns its copy and is move-only. It keeps
+the depth block it was packed with, and the product throws if the kernel tile has been changed
+since.
+
+A first version sent every prepacked product down the few-rows path. That made the shapes with many
+rows much slower (3136 x 64 x 576 fell to 0.60x of OpenBLAS), because those tiles cannot be split
+by rows; the layout is now chosen by the same rule as without prepacking.
+
+`gemm_shapes_openblas_benchmark prepack=1` (B packed outside the timing), GFLOP/s:
+
+| shape | m x n x k | 1 thread | prepacked | 12 threads | prepacked |
+|---|---|---|---|---|---|
+| mlp 784->512, batch 1 | 1 x 512 x 784 | 39 | 39 | 39 | 39 |
+| mlp 784->512, batch 16 | 16 x 512 x 784 | 66 | 92 | 405 | 548 |
+| mlp 784->512, batch 64 | 64 x 512 x 784 | 93 | 103 | 709 | 797 |
+| mlp 784->512, batch 256 | 256 x 512 x 784 | 103 | 106 | 981 | 1021 |
+| mlp 512->10, batch 64 | 64 x 10 x 512 | 37 | 47 | 37 | 47 |
+| mlp 4096->4096, batch 32 | 32 x 4096 x 4096 | 69 | 86 | 527 | 812 |
+| mlp 4096->4096, batch 256 | 256 x 4096 x 4096 | 101 | 105 | 916 | 1016 |
+| transformer 768->768, 128 tokens | 128 x 768 x 768 | 99 | 105 | 965 | 1060 |
+| transformer 768->3072, 512 tokens | 512 x 3072 x 768 | 105 | 108 | 977 | 1198 |
+| logits 768->32000, batch 64 | 64 x 32000 x 768 | 86 | 98 | 672 | 915 |
+| conv im2col 196 px, 2304->256 | 196 x 256 x 2304 | 101 | 105 | 951 | 1012 |
+| input grad 784<-512, batch 64 | 64 x 784 x 512 | 96 | 103 | 765 | 802 |
+
+No shape is slower with prepacking; with thousands of rows it makes no difference (packing B was
+already a small part). Against OpenBLAS, which has no such call, the prepacked batch-16 layer is
+7.5x on 12 threads and 32 x 4096 x 4096 is 2.1x.
+
+The tensor-level `matmul` does not use it yet: a layer has to own the `PackedB` and remake it when
+its weights change (open item).
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
 `matmul_openblas_benchmark 128 256 512 1024 2048 4096 8192`, OpenBLAS 0.3.34, after section 25
@@ -1164,8 +1231,7 @@ n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchma
 | Strategy 5 at n = 1024 | Much faster back to back (1054-1088) but erratic in the other modes; if the slowdown above is fixed, the chiplet split may pay off at larger sizes too |
 | Linux timings and the i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) compiles and passes `affinity_test` and `gemm_packed_test` on the GitHub Ubuntu runner, but nothing has been timed on Linux; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
-| Weights packed once and reused (not started) | A network multiplies by the same weight matrix on every call (in inference; in training the weights change every step), and we pack it every time. Measured share of packing in the threads' busy time on 12 threads: 41% at 16 x 512 x 784, 23% at 64 rows, 16% at 128 x 768 x 768, 11% at 256 rows; 58% at 32 x 4096 x 4096 (where the limit is reading B at all). It needs an API: a packed-weights object owned by the layer, invalidated when the weights change, and a kernel entry that takes it (the private-B path already computes from a per-thread packed buffer, so the kernel side is small) |
-| Narrow outputs with many rows (convolutions as im2col with 64 output channels: 4 B panels) | The chiplet split divides the columns, so each chiplet packs its own copy of all of A (7 MB at 3136 x 64 x 576) for 2 panels; packing is 30-60% of the call there and the results vary between runs (12544 x 64 x 147: 300 to 730 GFLOP/s). Splitting the rows between the chiplets instead (each packs only its half of A, B is small) should remove the duplicate packing |
+| Use the prepacked B from the layers | `pack_b_f32` / `matmul_f32_prepacked` exist at the kernel level (section 26) but the tensor-level `matmul` does not use them. A dense layer in inference mode should own a `PackedB` of its weights and remake it when they change; in training the weights change every step, so there is nothing to gain |
 | Narrow outputs and 2 to 5 rows | n below 16 (mlp 512->10: 38 GFLOP/s) fills only part of the 16-wide tile, and 2 to 5 rows fill only part of the 6 rows (4 x 512 x 784: 31 on one thread). A transposed tile or a multi-row version of `row_times_matrix` would help; both products are tiny in absolute time |
 | Thread count for small products | Now 256K multiply-adds per thread, at most half the B panels below 4M, one chiplet split from 4M, caller pinned from 12M. These limits were set on a handful of shapes each; cubes of 96-200 and depths of 8-32 are still uneven (160 x 160 x 160: 286-378 on 12 threads, 315 on 4) |
 | Fuse alpha and beta into the kernel (probably another time) | `gemm` applies alpha and beta as separate elementwise passes over C (`mul`, `scal`, `add`, each a full read and write plus a temporary). Fusing them into the micro-kernel's C update (scale the accumulators by alpha, add beta times the old C when storing) would remove those passes and temporaries. Estimated cost of the passes at n = 2048 (not measured): about 4 ms on top of a 16 ms product with both alpha and beta, about 1 ms with alpha only, and several times the product when k is small. It only matters for `gemm` calls with alpha other than 1 or beta other than 0; `matmul` and the backward pass are unaffected. Decided to postpone until such calls are on a hot path; measure `gemm` against `matmul` first |
@@ -1192,7 +1258,7 @@ n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchma
 | `tests/core/affinity_test.cpp` | Pinning restricts, wraps, and restores the original affinity |
 | `src/backends/cpu/thread_pool.hpp`, `.cpp` | The thread pool of strategies 4 and 5: spinning then sleeping workers, a spin barrier |
 | `tests/core/thread_pool_test.cpp` | Teams of every size, barriers, sleeping workers, nested and concurrent callers |
-| `benchmarks/blas/gemm_shapes_openblas_benchmark.cpp` | 25 neural-network shaped products against OpenBLAS; `shape=m,n,k` for any other, and every blocking setting as an option |
+| `benchmarks/blas/gemm_shapes_openblas_benchmark.cpp` | 25 neural-network shaped products against OpenBLAS; `shape=m,n,k` for any other, `prepack=1` for B packed once, and every blocking setting as an option |
 | `benchmarks/blas/thread_pool_benchmark.cpp` | What a pool team costs: an empty call, a barrier, a call with fixed work, per team size |
 | `CMakeLists.txt`, `docs/BENCHMARKING.md` | Build options and how to run the comparison |
 
