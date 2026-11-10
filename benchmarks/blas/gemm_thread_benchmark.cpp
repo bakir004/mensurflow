@@ -231,8 +231,7 @@ int main(int argc, char** argv) {
             for (const Variant& v : variants) {
                 std::printf(
                     "%lld/%-10lld %-8lld %3lld/%-4lld %5lld %5lld %5lld | %8.1f %8.1f %8.1f | "
-                    "    %8.3fms %7.3fms %5.1f%% |     %8.3fms %7.3fms %5.1f%%%s
-",
+                    "    %8.3fms %7.3fms %5.1f%% |     %8.3fms %7.3fms %5.1f%%%s\n",
                     static_cast<long long>(v.blocking.pool), static_cast<long long>(v.spin),
                     static_cast<long long>(v.blocking.parallel),
                     static_cast<long long>(v.blocking.loop_order),
