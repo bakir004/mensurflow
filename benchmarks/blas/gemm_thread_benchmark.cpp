@@ -231,7 +231,8 @@ int main(int argc, char** argv) {
             for (const Variant& v : variants) {
                 std::printf(
                     "%lld/%-10lld %-8lld %3lld/%-4lld %5lld %5lld %5lld | %8.1f %8.1f %8.1f | "
-                    "      %5.1fms %5.1fms %5.1f%% |       %5.1fms %5.1fms %5.1f%%%s\n",
+                    "    %8.3fms %7.3fms %5.1f%% |     %8.3fms %7.3fms %5.1f%%%s
+",
                     static_cast<long long>(v.blocking.pool), static_cast<long long>(v.spin),
                     static_cast<long long>(v.blocking.parallel),
                     static_cast<long long>(v.blocking.loop_order),
@@ -239,8 +240,8 @@ int main(int argc, char** argv) {
                     static_cast<long long>(v.blocking.tiles_per_thread),
                     static_cast<long long>(v.blocking.kc), static_cast<long long>(v.blocking.mc),
                     median_of(v.median), median_of(v.burst), median_of(v.slept),
-                    v.warm.compute_mean_s * 1e6, v.warm.pack_mean_s * 1e6, wait_percent(v.warm),
-                    v.cold.compute_mean_s * 1e6, v.cold.pack_mean_s * 1e6, wait_percent(v.cold),
+                    v.warm.compute_mean_s * 1e3, v.warm.pack_mean_s * 1e3, wait_percent(v.warm),
+                    v.cold.compute_mean_s * 1e3, v.cold.pack_mean_s * 1e3, wait_percent(v.cold),
                     median_of(v.median) == best ? "   <- best median" : "");
             }
             std::fflush(stdout);
