@@ -20,10 +20,17 @@ namespace mensurflow::cpu {
 
 namespace {
 
-// The job word: a job counter in the high bits and the team size in the low 16, so a worker reads both
-// with one load and never pairs a new counter with an old team size.
+// The job word: a job counter in the high bits, the worker left out of the team in the next 16 and
+// the team size in the low 16, so a worker reads all three
+// with one load and never pairs a new counter with an old team.
 constexpr std::uint64_t team_bits = 16;
 constexpr std::uint64_t team_mask = (std::uint64_t{1} << team_bits) - 1;
+
+// Whether worker w takes part in the job `word`: inside the team size and not the one left out.
+inline bool is_member(int w, std::uint64_t word) {
+    return w < static_cast<int>(word & team_mask) &&
+           w != static_cast<int>((word >> team_bits) & team_mask);
+}
 
 // What a sleeping worker waits on. One per worker, so waking the team wakes exactly its members and
 // they do not queue up behind one mutex.
@@ -80,7 +87,7 @@ void worker_loop(int w, std::uint64_t seen, Sleeper* self) {
                     // Woken only for a job it is a member of; other jobs pass it by.
                     self->wake.wait(lock, [&] {
                         const std::uint64_t j = p.job.load(std::memory_order_seq_cst);
-                        return j != seen && w < static_cast<int>(j & team_mask);
+                        return j != seen && is_member(w, j);
                     });
                     self->asleep.store(false, std::memory_order_relaxed);
                 } else {
@@ -89,7 +96,7 @@ void worker_loop(int w, std::uint64_t seen, Sleeper* self) {
             }
         }
         seen = now;
-        member = w < static_cast<int>(now & team_mask);
+        member = is_member(w, now);
         if (member) {
             t_tid = w;
             p.body.call(p.body.object, w);
@@ -117,9 +124,9 @@ int pool_thread_index() {
     return t_tid;
 }
 
-bool pool_run(int team, PoolBody body) {
+bool pool_run(int team, PoolBody body, int skip) {
     Pool& p = pool();
-    if (team < 1 || team > static_cast<int>(team_mask) || t_tid >= 0 ||
+    if (team < 1 || team > static_cast<int>(team_mask) || skip < 0 || skip >= team || t_tid >= 0 ||
         p.busy.exchange(true, std::memory_order_acquire)) {
         return false;
     }
@@ -132,15 +139,21 @@ bool pool_run(int team, PoolBody body) {
         p.started.store(w, std::memory_order_relaxed);
     }
     p.body = body;
-    p.team = team;
+    const int members = team - (skip != 0 ? 1 : 0);
+    p.team = members;
     p.arrived.store(0, std::memory_order_relaxed);
-    p.remaining.store(team - 1, std::memory_order_relaxed);
-    const std::uint64_t counter = (p.job.load(std::memory_order_relaxed) >> team_bits) + 1;
-    p.job.store((counter << team_bits) | static_cast<std::uint64_t>(team), std::memory_order_seq_cst);
+    p.remaining.store(members - 1, std::memory_order_relaxed);
+    const std::uint64_t counter = (p.job.load(std::memory_order_relaxed) >> (2 * team_bits)) + 1;
+    p.job.store((counter << (2 * team_bits)) | (static_cast<std::uint64_t>(skip) << team_bits) |
+                    static_cast<std::uint64_t>(team),
+                std::memory_order_seq_cst);
     // Wake the members that are asleep. A worker sets `asleep` before it checks the job word and we
     // publish the job word before we check `asleep` (both sequentially consistent), so one of the two
     // sees the other.
     for (int w = 1; w < team; ++w) {
+        if (w == skip) {
+            continue;
+        }
         Sleeper& sleeper = *p.sleepers[static_cast<std::size_t>(w) - 1];
         if (sleeper.asleep.load(std::memory_order_seq_cst)) {
             std::lock_guard<std::mutex> lock(sleeper.mutex);

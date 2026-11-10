@@ -910,9 +910,32 @@ PackedGemmProfile g_profile;
 
 // This thread's number in the running team: the pool's index when it runs on the thread pool, else
 // OpenMP's.
+// The team index a pool thread works as, when that is not its worker index (see
+// worker_on_callers_core); -1 otherwise.
+thread_local int t_role = -1;
+
 inline int team_index() {
+    if (t_role >= 0) {
+        return t_role;
+    }
     const int tid = pool_thread_index();
     return tid >= 0 ? tid : thread_index();
+}
+
+// Pool workers stay pinned from call to call: worker w to core w (modulo the number of cores). A
+// caller that is not pinned may be running on one of those cores, and it then shares the core with
+// that worker for the whole call: a 2-thread product ran at the speed of one thread whenever that
+// happened (n = 128: 86-92 GFLOP/s instead of 160). Returns the worker (1 .. threads - 1) on the
+// caller's core, to be left out of the team with the next worker (index `threads`, on a core the
+// team does not use) standing in for it; 0 when there is none or the team already uses every core
+// twice.
+inline int worker_on_callers_core(std::int64_t threads, bool workers_pinned) {
+    const int cores = physical_core_count();
+    if (!workers_pinned || pool_thread_index() >= 0 || threads > cores) {
+        return 0;
+    }
+    const int here = current_core_index();
+    return here >= 1 && here < threads ? here : 0;
 }
 std::atomic<bool> g_workers_pinned{false}; // some worker threads were pinned by an earlier call
 std::atomic<bool> g_pin_busy{false};       // a call is pinning the threads right now
@@ -1271,6 +1294,12 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     if (physical_cores > 0 && macs < min_macs_for_smt) {
         threads = std::min<std::int64_t>(threads, physical_cores);
     }
+    // A small product (not pinned, not split by chiplet) with few B panels: more threads than half
+    // the panels only add waiting, because a tile cannot be narrower than a panel (n = 128, 8 panels:
+    // 275 GFLOP/s on 4 threads, 235 on 8).
+    if (macs < min_macs_to_pin) {
+        threads = std::min<std::int64_t>(threads, std::max<std::int64_t>(2, (n + NR6 - 1) / NR6 / 2));
+    }
     const bool worth = threads > 1 && macs > static_cast<double>(parallel_work_threshold);
     if (!worth || !packed_gemm_supported()) {
         // Also handles m, n or k == 0, and a CPU without AVX2.
@@ -1282,12 +1311,14 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         // columns per thread; on the pool, or on this thread alone when the pool is taken.
         const std::int64_t team = std::min<std::int64_t>(threads, n / 256);
         if (team > 1 && blocking_state().pool != 0) {
-            auto body = [&](int tid) {
+            const int skip = worker_on_callers_core(team, blocking_state().pin != 0);
+            auto body = [&](int worker) {
+                const std::int64_t tid = worker == team ? skip : worker;
                 const std::int64_t j0 = n * tid / team / 16 * 16;
                 const std::int64_t j1 = tid + 1 == team ? n : n * (tid + 1) / team / 16 * 16;
                 row_times_matrix(a, csa, b + j0, rsb, c + j0, j1 - j0, k);
             };
-            if (pool_run(static_cast<int>(team), body)) {
+            if (pool_run(static_cast<int>(team) + (skip != 0 ? 1 : 0), body, skip)) {
                 return;
             }
         }
@@ -1323,10 +1354,22 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     std::vector<int> group_of(static_cast<std::size_t>(threads), 0);
     std::int64_t groups = 1;
     const bool split = strategy == 5 || (strategy == 4 && macs < max_macs_for_groups);
+    // A small product on the pool does not pin the calling thread (see min_macs_to_pin_caller), so
+    // it may be running on the core one of the workers is pinned to. That worker is then left out
+    // and the next one takes its place in the team (see worker_on_callers_core).
+    const bool caller_floats = strategy >= 4 && settings.pool != 0 && settings.pin != 0 &&
+                               macs < min_macs_to_pin_caller && !in_parallel_region();
+    const int skip = caller_floats ? worker_on_callers_core(threads, true) : 0;
     if (split && (settings.pin == 1 || settings.pin == 2) && macs >= min_macs_to_pin) {
         std::vector<int> seen;
+        const int here = caller_floats ? current_core_index() : -1;
         for (std::int64_t t = 0; t < threads; ++t) {
-            const int domain = core_cache_domain(static_cast<int>(t));
+            // The core thread t of the team runs on: its own, except for the caller when it is not
+            // pinned and for the thread that stands in for a left-out worker.
+            const int core = t == 0 && here >= 0 ? here
+                             : skip != 0 && t == skip ? static_cast<int>(threads)
+                                                      : static_cast<int>(t);
+            const int domain = core_cache_domain(core);
             const auto found = std::find(seen.begin(), seen.end(), domain);
             group_of[static_cast<std::size_t>(t)] = static_cast<int>(found - seen.begin());
             if (found == seen.end()) {
@@ -1753,14 +1796,15 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
 
         // The work of one thread of the team. `barrier` makes the team wait for each other: OpenMP's
         // barrier inside an OpenMP region, the pool's on the thread pool.
-        const auto team_body = [&](std::int64_t tid, std::int64_t team, bool on_pool,
+        const auto team_body = [&](std::int64_t tid, std::int64_t worker, std::int64_t team,
+                                   bool on_pool,
                                    const auto& barrier) {
             if (do_pin) {
-                set_thread_pin(static_cast<int>(tid), pin);
+                set_thread_pin(static_cast<int>(worker), pin);
             } else if (on_pool && tid != 0 && pin != 0) {
                 // Pool workers are dedicated threads: pin them even for small products (once; it
                 // costs nothing while the placement stays the same).
-                set_thread_pin(static_cast<int>(tid), pin);
+                set_thread_pin(static_cast<int>(worker), pin);
             }
             const std::int64_t mine = tid < threads ? group_of[static_cast<std::size_t>(tid)] : 0;
             // If the runtime gave us fewer threads than asked, a group may have nobody: then every
@@ -1824,14 +1868,20 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         bool ran = false;
         if (settings.pool != 0) {
             const auto pool_barrier_fn = [] { pool_barrier(); };
-            auto on_pool = [&](int tid) { team_body(tid, threads, true, pool_barrier_fn); };
-            ran = pool_run(static_cast<int>(threads), on_pool);
+            auto on_pool = [&](int worker) {
+                // The stand-in for a left-out worker works as that worker's team index.
+                const std::int64_t tid = skip != 0 && worker == threads ? skip : worker;
+                t_role = static_cast<int>(tid);
+                team_body(tid, worker, threads, true, pool_barrier_fn);
+                t_role = -1;
+            };
+            ran = pool_run(static_cast<int>(threads) + (skip != 0 ? 1 : 0), on_pool, skip);
         }
         if (!ran) {
             const auto omp_barrier_fn = [] { MENSURFLOW_BARRIER() };
             MENSURFLOW_PARALLEL_REGION(num_threads(static_cast<int>(threads)))
             {
-                team_body(thread_index(), team_size(), false, omp_barrier_fn);
+                team_body(thread_index(), thread_index(), team_size(), false, omp_barrier_fn);
             }
         }
     } else if (strategy == 2) {

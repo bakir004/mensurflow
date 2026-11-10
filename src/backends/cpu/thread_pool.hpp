@@ -29,12 +29,16 @@ struct PoolBody {
     void* object;
 };
 
-bool pool_run(int team, PoolBody body);
+// `skip` (1 .. team - 1, or 0 for nobody) leaves that worker out: the team is then the other
+// team - 1 threads, with the tids 0 .. team - 1 except skip. For a caller that is running on the core
+// worker `skip` is pinned to: the two would share the core.
+bool pool_run(int team, PoolBody body, int skip = 0);
 
 template <typename F>
-bool pool_run(int team, F& body) {
+bool pool_run(int team, F& body, int skip = 0) {
     return pool_run(team, PoolBody{[](void* object, int tid) { (*static_cast<F*>(object))(tid); },
-                                   static_cast<void*>(&body)});
+                                   static_cast<void*>(&body)},
+                    skip);
 }
 
 void pool_barrier();

@@ -17,6 +17,11 @@ int physical_core_count();
 // are domain 0 and the rest domain 1. 0 when the topology or the caches cannot be read.
 int core_cache_domain(int index);
 
+// The pin index (0 .. physical_core_count() - 1) of the physical core the calling thread is running
+// on right now, or -1 when unknown. A cheap read (no system call on Windows and Linux); the thread
+// may of course move right after, unless it is pinned.
+int current_core_index();
+
 // Number of distinct level-3 cache domains among the cores (1 when unknown).
 int cache_domain_count();
 
