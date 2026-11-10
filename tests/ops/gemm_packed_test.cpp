@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace cpu = mensurflow::cpu;
@@ -53,6 +54,33 @@ void check_shape(Kernel kernel, const char* name, std::int64_t m, std::int64_t n
                               std::to_string(expected));
         }
     }
+}
+
+// B packed once (pack_b_f32), then multiplied: the same product as the other kernels.
+void prepacked_kernel(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
+                      std::int64_t k) {
+    const cpu::PackedB packed = cpu::pack_b_f32(b, n, 1, k, n);
+    test::require(packed.depth() == k && packed.cols() == n, "PackedB keeps the shape of B");
+    cpu::matmul_f32_prepacked(a, k, 1, packed, c, n, m);
+}
+
+// The same with B handed to pack_b_f32 as its transpose (the weights stored [outputs, inputs]), the
+// source freed before the product, and the object moved once.
+void prepacked_transposed_kernel(const float* a, const float* b, float* c, std::int64_t m,
+                                 std::int64_t n, std::int64_t k) {
+    cpu::PackedB packed;
+    {
+        std::vector<float> bt(static_cast<std::size_t>(n * k));
+        for (std::int64_t p = 0; p < k; ++p) {
+            for (std::int64_t j = 0; j < n; ++j) {
+                bt[static_cast<std::size_t>(j * k + p)] = b[p * n + j];
+            }
+        }
+        cpu::PackedB first = cpu::pack_b_f32(bt.data(), 1, k, k, n);
+        packed = std::move(first);
+        test::require(first.empty(), "a moved-from PackedB is empty");
+    }
+    cpu::matmul_f32_prepacked(a, k, 1, packed, c, n, m);
 }
 
 // ---- Strided operands ----------------------------------------------------------------------------
@@ -302,6 +330,48 @@ int main() {
         }
         cpu::set_packed_gemm_blocking(original);
 
+
+        // B packed once and reused: one row, few rows, many rows, widths that are not whole tiles,
+        // depths of several blocks (tiny blocking), on one thread and on teams, on the pool and in
+        // an OpenMP region.
+        const std::int64_t packed_shapes[][3] = {{1, 1, 1},     {1, 37, 50},   {1, 1000, 37},
+                                                 {1, 2049, 515}, {3, 17, 9},    {16, 512, 100},
+                                                 {64, 100, 300}, {97, 257, 901}, {300, 300, 300},
+                                                 {600, 100, 80}, {7, 5000, 33}};
+        for (int tiny = 0; tiny < 2; ++tiny) {
+            for (int pool = 0; pool < 2; ++pool) {
+                cpu::PackedGemmBlocking blocking = original;
+                blocking.pool = pool;
+                if (tiny != 0) {
+                    blocking.mc = 24;
+                    blocking.kc = 20;
+                    blocking.nc = 48;
+                }
+                cpu::set_packed_gemm_blocking(blocking);
+                const std::string name = std::string("prepacked") + (tiny != 0 ? " tiny" : "") +
+                                         (pool != 0 ? " pool" : " openmp");
+                for (int threads : {1, 3, 24}) {
+                    cpu::set_max_threads(threads);
+                    for (const auto& s : packed_shapes) {
+                        check_shape(prepacked_kernel, name.c_str(), s[0], s[1], s[2]);
+                        check_shape(prepacked_transposed_kernel, (name + " transposed").c_str(), s[0],
+                                    s[1], s[2]);
+                    }
+                }
+                cpu::set_max_threads(saved_threads);
+            }
+        }
+        cpu::set_packed_gemm_blocking(original);
+        {
+            // An empty B (k == 0) gives zeros, and an empty object is harmless.
+            const cpu::PackedB none = cpu::pack_b_f32(nullptr, 1, 1, 0, 4);
+            std::vector<float> a(1, 1.0f);
+            std::vector<float> c(8, 5.0f);
+            cpu::matmul_f32_prepacked(a.data(), 0, 1, none, c.data(), 4, 2);
+            for (float x : c) {
+                test::require(x == 0.0f, "a prepacked product of depth 0 is zero");
+            }
+        }
         // One row times a matrix has its own kernel (no packing), also split over threads by columns:
         // depths that are not multiples of 4, widths that are not multiples of 8 or 16.
         const std::int64_t rows1[][3] = {{1, 1000, 37}, {1, 37, 1000}, {1, 2049, 515},

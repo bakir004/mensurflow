@@ -1173,11 +1173,67 @@ MENSURFLOW_TARGET_AVX2 void row_times_matrix(const float* a, std::int64_t csa, c
     }
 }
 
+// One row times a prepacked B (16-column panels, see prepack_b_impl): panels [p0, p1) of C. Per
+// panel the depth loop has only two results to accumulate, so a single pair of registers would wait
+// for each addition before the next (4 cycles per step); four pairs take every fourth depth step
+// each and are added up at the end.
+MENSURFLOW_TARGET_AVX2 void row_times_packed(const float* a, std::int64_t csa, const float* pre,
+                                             std::int64_t KC, std::int64_t n_padded, std::int64_t p0,
+                                             std::int64_t p1, float* c, std::int64_t n,
+                                             std::int64_t k) {
+    for (std::int64_t panel = p0; panel < p1; ++panel) {
+        __m256 lo = _mm256_setzero_ps();
+        __m256 hi = _mm256_setzero_ps();
+        for (std::int64_t pc = 0; pc < k; pc += KC) {
+            const std::int64_t kc = std::min(KC, k - pc);
+            const float* const pb = pre + (pc / KC) * KC * n_padded + panel * kc * 16;
+            const float* const row = a + pc * csa;
+            __m256 x0 = _mm256_setzero_ps(), x1 = x0, x2 = x0, x3 = x0;
+            __m256 y0 = x0, y1 = x0, y2 = x0, y3 = x0;
+            std::int64_t p = 0;
+            for (; p + 4 <= kc; p += 4) {
+                const __m256 a0 = _mm256_broadcast_ss(row + p * csa);
+                const __m256 a1 = _mm256_broadcast_ss(row + (p + 1) * csa);
+                const __m256 a2 = _mm256_broadcast_ss(row + (p + 2) * csa);
+                const __m256 a3 = _mm256_broadcast_ss(row + (p + 3) * csa);
+                x0 = _mm256_fmadd_ps(a0, _mm256_loadu_ps(pb + p * 16), x0);
+                y0 = _mm256_fmadd_ps(a0, _mm256_loadu_ps(pb + p * 16 + 8), y0);
+                x1 = _mm256_fmadd_ps(a1, _mm256_loadu_ps(pb + p * 16 + 16), x1);
+                y1 = _mm256_fmadd_ps(a1, _mm256_loadu_ps(pb + p * 16 + 24), y1);
+                x2 = _mm256_fmadd_ps(a2, _mm256_loadu_ps(pb + p * 16 + 32), x2);
+                y2 = _mm256_fmadd_ps(a2, _mm256_loadu_ps(pb + p * 16 + 40), y2);
+                x3 = _mm256_fmadd_ps(a3, _mm256_loadu_ps(pb + p * 16 + 48), x3);
+                y3 = _mm256_fmadd_ps(a3, _mm256_loadu_ps(pb + p * 16 + 56), y3);
+            }
+            for (; p < kc; ++p) {
+                const __m256 a0 = _mm256_broadcast_ss(row + p * csa);
+                x0 = _mm256_fmadd_ps(a0, _mm256_loadu_ps(pb + p * 16), x0);
+                y0 = _mm256_fmadd_ps(a0, _mm256_loadu_ps(pb + p * 16 + 8), y0);
+            }
+            lo = _mm256_add_ps(lo, _mm256_add_ps(_mm256_add_ps(x0, x1), _mm256_add_ps(x2, x3)));
+            hi = _mm256_add_ps(hi, _mm256_add_ps(_mm256_add_ps(y0, y1), _mm256_add_ps(y2, y3)));
+        }
+        const std::int64_t j = panel * 16;
+        if (j + 16 <= n) {
+            _mm256_storeu_ps(c + j, lo);
+            _mm256_storeu_ps(c + j + 8, hi);
+        } else { // the last panel is padded past n
+            alignas(32) float last[16];
+            _mm256_store_ps(last, lo);
+            _mm256_store_ps(last + 8, hi);
+            std::copy(last, last + (n - j), c + j);
+        }
+    }
+}
+
 } // namespace
 
-void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
+// The single-thread product. `pre` (optional) is B already packed by pack_b_f32 with depth blocks
+// of pre_kc; b, rsb and csb are then not used.
+static void gemm_single(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
                                std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
-                               std::int64_t m, std::int64_t n, std::int64_t k) {
+                               std::int64_t m, std::int64_t n, std::int64_t k, const float* pre,
+                               std::int64_t pre_kc) {
     if (m == 0 || n == 0) {
         return;
     }
@@ -1191,7 +1247,7 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
         matmul_strided_fallback(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, false);
         return;
     }
-    if (m == 1 && csb == 1) {
+    if (pre == nullptr && m == 1 && csb == 1) {
         row_times_matrix(a, csa, b, rsb, c, n, k);
         return;
     }
@@ -1204,7 +1260,7 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
     const std::int64_t prefetch_block = blocking_state().prefetch_block;
     // Block sizes are rounded down to whole tiles (at least one).
     const std::int64_t MC = std::max(MR, blocking_state().mc / MR * MR);
-    const std::int64_t KC = blocking_state().kc;
+    const std::int64_t KC = pre != nullptr ? pre_kc : blocking_state().kc;
     const std::int64_t NC = balanced_nc(n, std::max(NR, blocking_state().nc / NR * NR), NR);
     const auto round_up = [](std::int64_t value, std::int64_t multiple) {
         return (value + multiple - 1) / multiple * multiple;
@@ -1212,6 +1268,11 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
     const std::int64_t kc_max = std::min(KC, k);
     const std::int64_t mc_max = std::min(MC, round_up(m, MR));
     const std::int64_t nc_max = std::min(NC, round_up(n, NR));
+    const std::int64_t n_padded = round_up(n, NR);
+    if (pre != nullptr && m == 1 && NR == 16) {
+        row_times_packed(a, csa, pre, KC, n_padded, 0, n_padded / NR, c, n, k);
+        return;
+    }
     ScratchBuffer& packed_a = scratch_a();
     ScratchBuffer& packed_b = scratch_b();
 
@@ -1224,7 +1285,8 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
         const std::int64_t l2 = cache_bytes(2) > 0 ? cache_bytes(2) : 256 * 1024;
         chunk = std::max<std::int64_t>(1, l2 / 2 / (kc_max * NR * 4));
     }
-    if ((private_b == 1 || (private_b == 2 && m <= private_b_max_rows)) && n > chunk * NR) {
+    if (pre != nullptr ||
+        ((private_b == 1 || (private_b == 2 && m <= private_b_max_rows)) && n > chunk * NR)) {
         const std::int64_t cols_max = chunk * NR;
         packed_a.reserve(static_cast<std::size_t>(round_up(m, MR) * kc_max));
         packed_b.reserve(static_cast<std::size_t>(kc_max * cols_max));
@@ -1233,11 +1295,16 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
             pack_a(scalar_pack, MR, a + pc * csa, rsa, csa, m, kc, packed_a.data);
             for (std::int64_t jc = 0; jc < n; jc += cols_max) {
                 const std::int64_t cols = std::min(cols_max, n - jc);
-                pack_b(scalar_pack, NR, b + pc * rsb + jc * csb, rsb, csb, kc, cols, packed_b.data,
-                       chunk, private_b_pack_ahead);
+                const float* pb = packed_b.data;
+                if (pre != nullptr) { // the panels of this depth step, already packed
+                    pb = pre + (pc / KC) * KC * n_padded + (jc / NR) * kc * NR;
+                } else {
+                    pack_b(scalar_pack, NR, b + pc * rsb + jc * csb, rsb, csb, kc, cols,
+                           packed_b.data, chunk, private_b_pack_ahead);
+                }
                 for (std::int64_t ic = 0; ic < m; ic += MC) {
                     compute_block(shape, kc, packed_a.data + (ic / MR) * kc * MR,
-                                  std::min(MC, m - ic), packed_b.data, cols, c + ic * ldc + jc, ldc,
+                                  std::min(MC, m - ic), pb, cols, c + ic * ldc + jc, ldc,
                                   pc > 0, loop_order, prefetch_block);
                 }
             }
@@ -1277,10 +1344,12 @@ PackedGemmProfile packed_gemm_profile() {
 // Strategy 1 is the same work inside one parallel region for the whole call (the team is woken once,
 // with a barrier between the steps). Strategy 2 also runs in one region, but each thread packs the
 // rows of A it will multiply into its own buffer, so A is written and read by the same core.
-void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
+// The threaded product. `pre` (optional) is B already packed by pack_b_f32 with depth blocks of
+// pre_kc; b, rsb and csb are then not used.
+static void gemm_parallel(const float* a, std::int64_t rsa, std::int64_t csa,
                                         const float* b, std::int64_t rsb, std::int64_t csb, float* c,
                                         std::int64_t ldc, std::int64_t m, std::int64_t n,
-                                        std::int64_t k) {
+                                        std::int64_t k, const float* pre, std::int64_t pre_kc) {
     // Small products get fewer threads: each thread should have at least min_macs_per_thread
     // multiply-adds, or waking and joining it costs more than it saves (measured: n = 128 is
     // fastest on 4 of 24 threads).
@@ -1304,10 +1373,10 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     const bool worth = threads > 1 && macs > static_cast<double>(parallel_work_threshold);
     if (!worth || !packed_gemm_supported()) {
         // Also handles m, n or k == 0, and a CPU without AVX2.
-        matmul_f32_packed_strided(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k);
+        gemm_single(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, pre, pre_kc);
         return;
     }
-    if (m == 1 && csb == 1) {
+    if (pre == nullptr && m == 1 && csb == 1) {
         // One row (see row_times_matrix): each thread computes its own run of columns. At least 256
         // columns per thread; on the pool, or on this thread alone when the pool is taken.
         const std::int64_t team = std::min<std::int64_t>(threads, n / 256);
@@ -1332,13 +1401,16 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     const std::int64_t MR = shape.mr;
     const std::int64_t NR = shape.nr;
     const bool scalar_pack = settings.scalar_pack != 0;
-    const std::int64_t strategy = settings.parallel;
+    // A prepacked B is multiplied by strategies 4 and 5: as the tiles of private B with few rows,
+    // as those of the shared packed B otherwise, in both cases without the packing.
+    const std::int64_t strategy =
+        pre != nullptr ? std::max<std::int64_t>(4, settings.parallel) : settings.parallel;
     const std::int64_t loop_order = settings.loop_order;
     const std::int64_t prefetch_block = settings.prefetch_block;
     const bool profile = settings.profile != 0;
     // Block sizes are rounded down to whole tiles (at least one).
     const std::int64_t MC = std::max(MR, settings.mc / MR * MR);
-    const std::int64_t KC = settings.kc;
+    const std::int64_t KC = pre != nullptr ? pre_kc : settings.kc;
     const std::int64_t NC = balanced_nc(n, std::max(NR, settings.nc / NR * NR), NR);
     const auto round_up = [](std::int64_t value, std::int64_t multiple) {
         return (value + multiple - 1) / multiple * multiple;
@@ -1349,6 +1421,25 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     const std::int64_t m_padded = round_up(m, MR);
     const std::int64_t kc_max = std::min(KC, k);
     const std::int64_t nc_max = std::min(NC, round_up(n, NR));
+    const std::int64_t n_padded = round_up(n, NR);
+    if (pre != nullptr && m == 1 && NR == 16) {
+        // One row times a prepacked B (see row_times_packed): the threads share out the panels.
+        const std::int64_t panels = n_padded / NR;
+        const std::int64_t team = std::min<std::int64_t>(threads, panels / 16);
+        if (team > 1 && settings.pool != 0) {
+            const int skip = worker_on_callers_core(team, settings.pin != 0);
+            auto body = [&](int worker) {
+                const std::int64_t tid = worker == team ? skip : worker;
+                row_times_packed(a, csa, pre, KC, n_padded, panels * tid / team,
+                                 panels * (tid + 1) / team, c, n, k);
+            };
+            if (pool_run(static_cast<int>(team) + (skip != 0 ? 1 : 0), body, skip)) {
+                return;
+            }
+        }
+        row_times_packed(a, csa, pre, KC, n_padded, 0, panels, c, n, k);
+        return;
+    }
     // Strategy 5 splits the team by level-3 cache: thread t runs on core t (when pinned), so its group
     // is that core's cache domain, numbered 0, 1, ... in order of appearance. Unpinned threads can be
     // anywhere, so then there is a single group.
@@ -1666,7 +1757,8 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                     ceil_div(panels, std::min(std::max<std::int64_t>(wanted, 1), panels));
                 part.tiles = part.row_blocks * ceil_div(panels, part.panels_per_tile);
                 // Its B panels, and its copy of A (row_split: its rows of the one shared A).
-                part.packs = b_items_of(panels) + (part.a1 - part.a0);
+                // A prepacked B needs no packing.
+                part.packs = (pre != nullptr ? 0 : b_items_of(panels)) + (part.a1 - part.a0);
             }
             return part;
         };
@@ -1685,7 +1777,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
         // Pack item t of group g for step s: a run of its B panels, then the panels of its copy of A.
         const auto pack_part = [&](std::int64_t s, std::int64_t g, const Part& part, std::int64_t t) {
             const Step& st = steps[static_cast<std::size_t>(s)];
-            const std::int64_t b_items = private_b ? 0 : b_items_of(part.p1 - part.p0);
+            const std::int64_t b_items = private_b || pre != nullptr ? 0 : b_items_of(part.p1 - part.p0);
             if (t < b_items) {
                 const std::int64_t first = part.p0 + t * b_run;
                 pack_b_range(first, std::min(first + b_run, part.p1), st.jc, st.pc, st.kc, st.nc,
@@ -1704,14 +1796,21 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                 const std::int64_t last_panel = std::min(first_panel + part.panels_per_tile, part.p1);
                 const std::int64_t cols =
                     std::min((last_panel - first_panel) * NR, st.nc - first_panel * NR);
-                ScratchBuffer& mine = scratch_b();
-                mine.reserve(static_cast<std::size_t>(chunk_panels * NR * kc_max));
-                pack_b(scalar_pack, NR, b + st.pc * rsb + (st.jc + first_panel * NR) * csb, rsb, csb,
-                       st.kc, cols, mine.data, chunk_panels, private_b_pack_ahead);
+                const float* pb = nullptr;
+                if (pre != nullptr) { // the panels of this depth step, already packed
+                    pb = pre + (st.pc / KC) * KC * n_padded +
+                         (st.jc / NR + first_panel) * st.kc * NR;
+                } else {
+                    ScratchBuffer& mine = scratch_b();
+                    mine.reserve(static_cast<std::size_t>(chunk_panels * NR * kc_max));
+                    pack_b(scalar_pack, NR, b + st.pc * rsb + (st.jc + first_panel * NR) * csb, rsb,
+                           csb, st.kc, cols, mine.data, chunk_panels, private_b_pack_ahead);
+                    pb = mine.data;
+                }
                 const double t1 = profile ? wall_seconds() : 0.0;
                 for (std::int64_t ic = 0; ic < m; ic += MC) {
                     compute_block(shape, st.kc, pa + (ic / MR) * st.kc * MR,
-                                  std::min(MC, m - ic), mine.data, cols,
+                                  std::min(MC, m - ic), pb, cols,
                                   c + ic * ldc + st.jc + first_panel * NR, ldc, st.pc > 0, loop_order,
                                   prefetch_block);
                 }
@@ -1730,7 +1829,11 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             const std::int64_t cols =
                 std::min((last_panel - first_panel) * NR, st.nc - first_panel * NR);
             compute_block(shape, st.kc, pa + (ic / MR) * st.kc * MR, mc,
-                          packed_b_of(s, g) + first_panel * st.kc * NR, cols,
+                          pre != nullptr
+                              ? pre + (st.pc / KC) * KC * n_padded +
+                                    (st.jc / NR + first_panel) * st.kc * NR
+                              : packed_b_of(s, g) + first_panel * st.kc * NR,
+                          cols,
                           c + ic * ldc + st.jc + first_panel * NR, ldc, st.pc > 0, loop_order,
                           prefetch_block);
             if (profile) {
@@ -2084,6 +2187,58 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     }
 }
 
+void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t csa, const float* b,
+                               std::int64_t rsb, std::int64_t csb, float* c, std::int64_t ldc,
+                               std::int64_t m, std::int64_t n, std::int64_t k) {
+    gemm_single(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, nullptr, 0);
+}
+
+void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::int64_t csa,
+                                        const float* b, std::int64_t rsb, std::int64_t csb, float* c,
+                                        std::int64_t ldc, std::int64_t m, std::int64_t n,
+                                        std::int64_t k) {
+    gemm_parallel(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, nullptr, 0);
+}
+
+// B packed for pack_b_f32: for each depth step of KC rows, the panels of all n columns one after
+// the other (the layout the micro-kernel reads). Returns nullptr on a CPU without the packed kernel;
+// the caller then keeps a plain copy.
+static float* prepack_b_impl(const float* b, std::int64_t rsb, std::int64_t csb, std::int64_t k,
+                             std::int64_t n, std::int64_t& kc_out, std::int64_t& nr_out) {
+    if (!packed_gemm_supported()) {
+        return nullptr;
+    }
+    const std::int64_t NR = select_shape(blocking_state()).nr;
+    const std::int64_t KC = blocking_state().kc;
+    const std::int64_t n_padded = (n + NR - 1) / NR * NR;
+    const std::size_t bytes = static_cast<std::size_t>(k * n_padded) * sizeof(float);
+#if defined(_MSC_VER)
+    float* const data = static_cast<float*>(_aligned_malloc(bytes, 64));
+#else
+    float* const data = static_cast<float*>(std::aligned_alloc(64, (bytes + 63) / 64 * 64));
+#endif
+    if (data == nullptr) {
+        throw std::bad_alloc();
+    }
+    for (std::int64_t pc = 0; pc < k; pc += KC) {
+        pack_b(false, NR, b + pc * rsb, rsb, csb, std::min(KC, k - pc), n,
+               data + (pc / KC) * KC * n_padded);
+    }
+    kc_out = KC;
+    nr_out = NR;
+    return data;
+}
+
+static void gemm_prepacked_impl(const float* a, std::int64_t rsa, std::int64_t csa, const float* pre,
+                                std::int64_t kc, std::int64_t nr, float* c, std::int64_t ldc,
+                                std::int64_t m, std::int64_t n, std::int64_t k) {
+    if (select_shape(blocking_state()).nr != nr) {
+        throw std::invalid_argument("matmul_f32_prepacked: B was packed for a different kernel tile "
+                                    "(PackedGemmBlocking::shape changed since pack_b_f32)");
+    }
+    gemm_parallel(a, rsa, csa, nullptr, 0, 0, c, ldc, m, n, k, pre, kc);
+}
+
 #else // not x86-64: no AVX2 kernel, use the plain loop
 
 bool packed_gemm_supported() {
@@ -2142,6 +2297,15 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     matmul_strided_fallback(a, rsa, csa, b, rsb, csb, c, ldc, m, n, k, true);
 }
 
+
+static float* prepack_b_impl(const float*, std::int64_t, std::int64_t, std::int64_t, std::int64_t,
+                             std::int64_t&, std::int64_t&) {
+    return nullptr; // no packed kernel: pack_b_f32 keeps a plain copy
+}
+
+static void gemm_prepacked_impl(const float*, std::int64_t, std::int64_t, const float*, std::int64_t,
+                                std::int64_t, float*, std::int64_t, std::int64_t, std::int64_t,
+                                std::int64_t) {}
 #endif
 
 // Contiguous row-major operands: the layout most callers have.
@@ -2155,4 +2319,101 @@ void matmul_f32_packed_parallel(const float* a, const float* b, float* c, std::i
     matmul_f32_packed_parallel_strided(a, k, 1, b, n, 1, c, n, m, n, k);
 }
 
+
+// ---- B packed once ------------------------------------------------------------------------------
+
+namespace {
+
+float* allocate_floats(std::int64_t count) {
+    const std::size_t bytes = static_cast<std::size_t>(std::max<std::int64_t>(count, 1)) * sizeof(float);
+#if defined(_MSC_VER)
+    float* const data = static_cast<float*>(_aligned_malloc(bytes, 64));
+#else
+    float* const data = static_cast<float*>(std::aligned_alloc(64, (bytes + 63) / 64 * 64));
+#endif
+    if (data == nullptr) {
+        throw std::bad_alloc();
+    }
+    return data;
+}
+
+void free_floats(float* data) {
+#if defined(_MSC_VER)
+    _aligned_free(data);
+#else
+    std::free(data);
+#endif
+}
+
+} // namespace
+
+PackedB::~PackedB() {
+    if (data_ != nullptr) {
+        free_floats(data_);
+    }
+}
+
+PackedB::PackedB(PackedB&& other) noexcept
+    : data_(other.data_), k_(other.k_), n_(other.n_), kc_(other.kc_), nr_(other.nr_) {
+    other.data_ = nullptr;
+    other.k_ = other.n_ = other.kc_ = other.nr_ = 0;
+}
+
+PackedB& PackedB::operator=(PackedB&& other) noexcept {
+    if (this != &other) {
+        if (data_ != nullptr) {
+            free_floats(data_);
+        }
+        data_ = other.data_;
+        k_ = other.k_;
+        n_ = other.n_;
+        kc_ = other.kc_;
+        nr_ = other.nr_;
+        other.data_ = nullptr;
+        other.k_ = other.n_ = other.kc_ = other.nr_ = 0;
+    }
+    return *this;
+}
+
+PackedB pack_b_f32(const float* b, std::int64_t rsb, std::int64_t csb, std::int64_t k,
+                   std::int64_t n) {
+    PackedB packed;
+    packed.k_ = k;
+    packed.n_ = n;
+    if (k <= 0 || n <= 0) {
+        return packed;
+    }
+    packed.data_ = prepack_b_impl(b, rsb, csb, k, n, packed.kc_, packed.nr_);
+    if (packed.data_ == nullptr) {
+        // No packed kernel on this CPU: keep B as a contiguous row-major copy for the plain loops.
+        packed.data_ = allocate_floats(k * n);
+        packed.kc_ = 0;
+        for (std::int64_t p = 0; p < k; ++p) {
+            for (std::int64_t j = 0; j < n; ++j) {
+                packed.data_[p * n + j] = b[p * rsb + j * csb];
+            }
+        }
+    }
+    return packed;
+}
+
+void matmul_f32_prepacked(const float* a, std::int64_t rsa, std::int64_t csa, const PackedB& b,
+                          float* c, std::int64_t ldc, std::int64_t m) {
+    const std::int64_t n = b.cols();
+    const std::int64_t k = b.depth();
+    if (m <= 0 || n <= 0) {
+        return;
+    }
+    if (k <= 0) {
+        for (std::int64_t i = 0; i < m; ++i) {
+            std::fill(c + i * ldc, c + i * ldc + n, 0.0f);
+        }
+        return;
+    }
+    if (b.kc_ == 0) {
+        matmul_strided_fallback(a, rsa, csa, b.data_, n, 1, c, ldc, m, n, k, true);
+        return;
+    }
+    gemm_prepacked_impl(a, rsa, csa, b.data_, b.kc_, b.nr_, c, ldc, m, n, k);
+}
 } // namespace mensurflow::cpu

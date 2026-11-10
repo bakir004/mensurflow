@@ -13,6 +13,8 @@
 //     rounds=    passes over both libraries   (default 3)
 //     only=      1-based numbers of the shapes to run (default: all)
 //     shape=     m,n,k: time this one product instead of the list (several: m,n,k,m,n,k,...)
+//     prepack=   1: our side multiplies by a B packed once with pack_b_f32 (not timed), as a layer
+//                in inference would; OpenBLAS has no such call and is timed as usual
 //     pool=      PackedGemmBlocking::pool values to compare (default: the current default)
 //     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea= finerows= splitrows=   one value each: overrides of the blocking settings
 //
@@ -119,6 +121,7 @@ int main(int argc, char** argv) {
         {"privatea", {original.private_a}},
         {"finerows", {original.fine_rows}},
         {"splitrows", {original.split_rows}},
+        {"prepack", {0}},
     };
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -200,8 +203,20 @@ int main(int argc, char** argv) {
                             ni, 0.0f, out, ni);
             }
         };
+        // prepack=1: B is packed once, outside the timing (the weights of a layer in inference).
+        const bool prepack = options["prepack"][0] != 0;
+        cpu::PackedB packed;
+        if (prepack) {
+            packed = shape.layout == 2 ? cpu::pack_b_f32(b, 1, k, k, n) : cpu::pack_b_f32(b, n, 1, k, n);
+        }
         const auto run_ours = [&] {
-            if (shape.layout == 1) {
+            if (prepack) {
+                if (shape.layout == 1) {
+                    cpu::matmul_f32_prepacked(a, 1, m, packed, c, n, m);
+                } else {
+                    cpu::matmul_f32_prepacked(a, k, 1, packed, c, n, m);
+                }
+            } else if (shape.layout == 1) {
                 cpu::matmul_f32_packed_parallel_strided(a, 1, m, b, n, 1, c, n, m, n, k);
             } else if (shape.layout == 2) {
                 cpu::matmul_f32_packed_parallel_strided(a, k, 1, b, 1, k, c, n, m, n, k);

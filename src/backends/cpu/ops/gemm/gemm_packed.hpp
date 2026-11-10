@@ -134,4 +134,50 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                                         std::int64_t ldc, std::int64_t m, std::int64_t n,
                                         std::int64_t k);
 
+
+// B packed once, for many products with the same B: the weights of a layer that is only evaluated
+// (in training the weights change every step, and packing again each time gains nothing). Every
+// product otherwise copies B into the layout the micro-kernel reads; with few rows that copy is a
+// large part of the call (41% of the threads' time at 16 x 512 x 784, 11% at 256 rows).
+//
+//   PackedB weights = pack_b_f32(w, n, 1, k, n);          // once; w can be freed or changed after
+//   matmul_f32_prepacked(x, k, 1, weights, y, n, batch);   // any number of times, any batch
+//
+// The object owns its copy (k * n floats, n rounded up to the tile width) and is move-only. It is
+// tied to the kernel tile and depth block in force when it was made: matmul_f32_prepacked uses the
+// stored depth block, and throws std::invalid_argument if PackedGemmBlocking::shape has since been
+// changed to another tile width. On a CPU without the packed kernel it holds a plain copy and the
+// product runs the plain loops.
+class PackedB;
+PackedB pack_b_f32(const float* b, std::int64_t rsb, std::int64_t csb, std::int64_t k,
+                   std::int64_t n);
+// C[m,n] = A[m,k] * B, with A and C strided as in matmul_f32_packed_strided, on max_threads()
+// threads. The same results as matmul_f32_packed_parallel_strided up to rounding (one row is summed
+// in four partial sums).
+void matmul_f32_prepacked(const float* a, std::int64_t rsa, std::int64_t csa, const PackedB& b,
+                          float* c, std::int64_t ldc, std::int64_t m);
+
+class PackedB {
+public:
+    PackedB() = default;
+    ~PackedB();
+    PackedB(const PackedB&) = delete;
+    PackedB& operator=(const PackedB&) = delete;
+    PackedB(PackedB&& other) noexcept;
+    PackedB& operator=(PackedB&& other) noexcept;
+
+    bool empty() const { return data_ == nullptr; }
+    std::int64_t depth() const { return k_; } // k: rows of B
+    std::int64_t cols() const { return n_; }  // n: columns of B
+
+private:
+    friend PackedB pack_b_f32(const float*, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
+    friend void matmul_f32_prepacked(const float*, std::int64_t, std::int64_t, const PackedB&,
+                                     float*, std::int64_t, std::int64_t);
+    float* data_ = nullptr;
+    std::int64_t k_ = 0;
+    std::int64_t n_ = 0;
+    std::int64_t kc_ = 0; // depth block of the packed layout; 0 = a plain row-major copy
+    std::int64_t nr_ = 0; // tile width of the packed layout
+};
 } // namespace mensurflow::cpu
