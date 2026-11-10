@@ -39,4 +39,13 @@ std::vector<Tensor> split(const Tensor& x, const std::vector<std::int64_t>& size
 Tensor pad(const Tensor& x, const std::vector<std::int64_t>& padding, float value = 0.0f,
            Execution execution = Execution::Auto);
 
+// Select elements along `axis` using an I64 index tensor. `gather` requires indices to have the
+// same rank as x; non-axis dimensions must not exceed x. Indices must be in [0, x.size(axis)).
+Tensor gather(const Tensor& x, const Tensor& indices, int axis = 0,
+              Execution execution = Execution::Auto);
+
+// Select complete slices along `axis` using a one-dimensional I64 index tensor.
+Tensor index_select(const Tensor& x, const Tensor& indices, int axis = 0,
+                    Execution execution = Execution::Auto);
+
 } // namespace mensurflow

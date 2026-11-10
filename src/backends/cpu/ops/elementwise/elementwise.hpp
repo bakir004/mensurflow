@@ -83,6 +83,13 @@ void elu_f32(const float* x, float* out, std::int64_t n, float alpha);
 // Stable softplus; caller validates positive finite beta and finite threshold.
 void softplus_f32(const float* x, float* out, std::int64_t n, float beta, float threshold);
 
+void relu_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n);
+void sigmoid_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n);
+void tanh_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n);
+void gelu_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n,
+                       bool approximate);
+void silu_backward_f32(const float* x, const float* gradient, float* out, std::int64_t n);
+
 // out[i] = sqrt(x[i]); negatives give NaN
 void sqrt_f32(const float* x, float* out, std::int64_t n);
 

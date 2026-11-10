@@ -29,6 +29,7 @@ the threads made it faster.
 |---|---|---|
 | `cpu_parallel_benchmark` | sequential vs parallel arithmetic/activations and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
 | `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
+| `activation_movement_benchmark` | public activation-backward and tensor-movement APIs across CPU thread counts | `benchmarks/activation_movement_benchmark.cpp` |
 | `selection_benchmark` | F32 comparisons and `where`, one/many CPU threads; optional native ATen reference | `benchmarks/selection_benchmark.cpp` |
 | `cast_benchmark` | all 16 F32/I32/F16/BF16 pairs, one/many CPU threads; optional native ATen `copy_` reference | `benchmarks/cast_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |

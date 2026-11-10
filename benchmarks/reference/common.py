@@ -12,8 +12,15 @@ import platform
 import statistics
 import time
 
-import numpy as np
-import torch
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 REPEATS = 9
 MIN_SAMPLE_S = 2e-3
@@ -55,6 +62,7 @@ def measure(run):
 
 
 def header(title):
+    require_backends()
     print(f"== {title} ==")
     print(f"machine: {platform.machine()} {platform.processor()} ({os.cpu_count()} threads)")
     print(f"python {platform.python_version()}, torch {torch.__version__}, numpy {np.__version__}")
@@ -65,6 +73,16 @@ def header(title):
     print()
     print(f"{'n':>22} | {'impl':<18} | {'threads':>7} | {'median ms':>10} | {'min ms':>9} | "
           f"{'max ms':>9} | {'rate':>9}")
+
+
+def require_backends():
+    missing = []
+    if np is None:
+        missing.append("numpy")
+    if torch is None:
+        missing.append("torch")
+    if missing:
+        raise RuntimeError("missing reference package(s): " + ", ".join(missing))
 
 
 def row(n, impl, threads, timing, work, scale=1e9):

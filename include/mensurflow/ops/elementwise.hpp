@@ -53,7 +53,6 @@ Tensor abs(const Tensor& x, Execution execution = Execution::Auto);
 Tensor square(const Tensor& x, Execution execution = Execution::Auto);
 // x < 0 ? +0 : x; preserves NaNs and signed zeros
 Tensor relu(const Tensor& x, Execution execution = Execution::Auto);
-// The following five activations provide forward execution only; backward is not implemented.
 // Negative values are multiplied by negative_slope.
 Tensor leaky_relu(const Tensor& x, float negative_slope = 0.01f,
                   Execution execution = Execution::Auto);
@@ -68,6 +67,19 @@ Tensor elu(const Tensor& x, float alpha = 1.0f, Execution execution = Execution:
 // beta must be positive and finite; threshold must be finite.
 Tensor softplus(const Tensor& x, float beta = 1.0f, float threshold = 20.0f,
                 Execution execution = Execution::Auto);
+
+// Activation derivatives. `x` is the forward input and `gradient` is the upstream gradient.
+// Both tensors must have the same shape, dtype, and device. CPU float32 is supported.
+Tensor relu_backward(const Tensor& x, const Tensor& gradient,
+                     Execution execution = Execution::Auto);
+Tensor sigmoid_backward(const Tensor& x, const Tensor& gradient,
+                        Execution execution = Execution::Auto);
+Tensor tanh_backward(const Tensor& x, const Tensor& gradient,
+                     Execution execution = Execution::Auto);
+Tensor gelu_backward(const Tensor& x, const Tensor& gradient, bool approximate = false,
+                     Execution execution = Execution::Auto);
+Tensor silu_backward(const Tensor& x, const Tensor& gradient,
+                     Execution execution = Execution::Auto);
 // sqrt(x); negatives -> NaN, preserves signed zeros
 Tensor sqrt(const Tensor& x, Execution execution = Execution::Auto);
 // exp(x); overflow -> +inf, underflow may produce +0

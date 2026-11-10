@@ -61,6 +61,10 @@ class Tensor {
     // Swap two dimensions (negative dims count from the end). Result is usually non-contiguous.
     Tensor transpose(int d0, int d1) const;
 
+    // Reorder dimensions using permutation order (negative dims count from the end). The result
+    // is a view and is usually non-contiguous.
+    Tensor permute(const std::vector<int>& order) const;
+
     // Elements [start, end) of one dimension, taking every step-th. Negative start/end count
     // from the end; out-of-range bounds are clamped, like Python slicing. step must be >= 1.
     Tensor slice(int d, std::int64_t start, std::int64_t end, std::int64_t step = 1) const;

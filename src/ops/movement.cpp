@@ -19,12 +19,34 @@ int checked_axis(int axis, int ndim, const char* op) {
     if (ndim == 0) {
         throw std::invalid_argument(std::string(op) + ": a 0-d tensor has no axis");
     }
+
     const int out = axis < 0 ? axis + ndim : axis;
     if (out < 0 || out >= ndim) {
         throw std::invalid_argument(std::string(op) + ": axis " + std::to_string(axis) +
                                     " is out of range for a " + std::to_string(ndim) + "-d tensor");
     }
     return out;
+}
+
+void require_indices(const Tensor& indices, const Tensor& x, const char* op) {
+    if (!indices.defined()) {
+        throw std::invalid_argument(std::string(op) + ": undefined indices");
+    }
+    if (indices.dtype() != DType::I64) {
+        throw std::invalid_argument(std::string(op) + ": indices must have I64 dtype");
+    }
+    if (indices.device() != x.device()) {
+        throw std::invalid_argument(std::string(op) + ": tensors must be on the same device");
+    }
+}
+
+void validate_indices(const Tensor& indices, std::int64_t limit, const char* op) {
+    for (std::int64_t value : indices.to_vector<std::int64_t>()) {
+        if (value < 0 || value >= limit) {
+            throw std::invalid_argument(std::string(op) + ": index " + std::to_string(value) +
+                                        " is out of range");
+        }
+    }
 }
 
 } // namespace
@@ -168,6 +190,48 @@ Tensor pad(const Tensor& x, const std::vector<std::int64_t>& padding, float valu
     args.alpha = value;
     args.padding = std::move(per_dim);
     detail::dispatch(detail::OpId::Pad, args, execution);
+    return out;
+}
+
+Tensor gather(const Tensor& x, const Tensor& indices, int axis, Execution execution) {
+    if (!x.defined()) {
+        throw std::invalid_argument("gather: undefined input");
+    }
+    require_indices(indices, x, "gather");
+    const int dim = checked_axis(axis, x.dim(), "gather");
+    if (indices.dim() != x.dim()) {
+        throw std::invalid_argument("gather: indices must have the same rank as input");
+    }
+    for (int d = 0; d < x.dim(); ++d) {
+        if (d != dim && indices.size(d) > x.size(d)) {
+            throw std::invalid_argument("gather: indices exceed input size on dimension " +
+                                        std::to_string(d));
+        }
+    }
+    validate_indices(indices, x.size(dim), "gather");
+    Tensor out = Tensor::empty(indices.shape(), x.dtype(), x.device());
+    detail::OpArgs args{{x.contiguous(), indices.contiguous()}, {out}};
+    args.axis = dim;
+    detail::dispatch(detail::OpId::Gather, args, execution);
+    return out;
+}
+
+Tensor index_select(const Tensor& x, const Tensor& indices, int axis, Execution execution) {
+    if (!x.defined()) {
+        throw std::invalid_argument("index_select: undefined input");
+    }
+    require_indices(indices, x, "index_select");
+    const int dim = checked_axis(axis, x.dim(), "index_select");
+    if (indices.dim() != 1) {
+        throw std::invalid_argument("index_select: indices must be one-dimensional");
+    }
+    validate_indices(indices, x.size(dim), "index_select");
+    Shape output_shape = x.shape();
+    output_shape[static_cast<std::size_t>(dim)] = indices.size(0);
+    Tensor out = Tensor::empty(output_shape, x.dtype(), x.device());
+    detail::OpArgs args{{x.contiguous(), indices.contiguous()}, {out}};
+    args.axis = dim;
+    detail::dispatch(detail::OpId::IndexSelect, args, execution);
     return out;
 }
 
