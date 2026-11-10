@@ -27,6 +27,7 @@
 //     sleep=     idle time in ms before each "slept" call (default 5)
 //     pool=      strategies 4, 5: 0 OpenMP region, 1 the library's thread pool (default 0)
 //     spin=      pool only: microseconds an idle worker spins before sleeping (default 2000)
+//     m= k=      rows of A and depth, for a rectangular product (default: both equal to the size)
 #include "bench.hpp"
 
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
@@ -98,6 +99,8 @@ int main(int argc, char** argv) {
         {"mc", {original.mc}},
         {"rounds", {5}},
         {"sleep", {5}},
+        {"m", {0}},
+        {"k", {0}},
     };
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -125,15 +128,19 @@ int main(int argc, char** argv) {
         }
         cpu::set_max_threads(static_cast<int>(threads));
         for (std::int64_t n : options["sizes"]) {
-            const auto len = static_cast<std::size_t>(n * n);
+            // m= and k= make the product rectangular: C[m,n] = A[m,k] * B[k,n] (default: square).
+            const std::int64_t m = options["m"][0] > 0 ? options["m"][0] : n;
+            const std::int64_t k = options["k"][0] > 0 ? options["k"][0] : n;
+            const auto len = static_cast<std::size_t>(m * n);
+            const auto big = static_cast<std::size_t>(std::max({m * n, m * k, k * n}));
             const double flops =
-                2.0 * static_cast<double>(n) * static_cast<double>(n) * static_cast<double>(n);
-            bench::Arrays arrays(len, 3);
+                2.0 * static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k);
+            bench::Arrays arrays(big, 3);
             float* a = arrays[0];
             float* b = arrays[1];
             float* c = arrays[2];
-            bench::fill_a(a, len);
-            bench::fill_b(b, len);
+            bench::fill_a(a, big);
+            bench::fill_b(b, big);
 
             std::vector<Variant> variants;
             for (std::int64_t parallel : options["parallel"]) {
@@ -167,7 +174,7 @@ int main(int argc, char** argv) {
                 }
             }
 
-            auto run = [&] { cpu::matmul_f32_packed_parallel(a, b, c, n, n, n); };
+            auto run = [&] { cpu::matmul_f32_packed_parallel(a, b, c, m, n, k); };
             const auto seconds_of_run = [&] {
                 const auto t0 = std::chrono::steady_clock::now();
                 run();
@@ -232,8 +239,8 @@ int main(int argc, char** argv) {
                     static_cast<long long>(v.blocking.tiles_per_thread),
                     static_cast<long long>(v.blocking.kc), static_cast<long long>(v.blocking.mc),
                     median_of(v.median), median_of(v.burst), median_of(v.slept),
-                    v.warm.compute_mean_s * 1e3, v.warm.pack_mean_s * 1e3, wait_percent(v.warm),
-                    v.cold.compute_mean_s * 1e3, v.cold.pack_mean_s * 1e3, wait_percent(v.cold),
+                    v.warm.compute_mean_s * 1e6, v.warm.pack_mean_s * 1e6, wait_percent(v.warm),
+                    v.cold.compute_mean_s * 1e6, v.cold.pack_mean_s * 1e6, wait_percent(v.cold),
                     median_of(v.median) == best ? "   <- best median" : "");
             }
             std::fflush(stdout);

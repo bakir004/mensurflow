@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -110,6 +111,11 @@ constexpr double min_macs_per_thread = 512.0 * 1024.0;
 // Pinning costs a few system calls per thread, so it is only done for products with at least this many
 // multiply-adds (about n = 200).
 constexpr double min_macs_to_pin = 4.0 * 1024.0 * 1024.0;
+// On the thread pool the workers stay pinned from call to call, but the calling thread is pinned at
+// the start of every call and released at the end (two system calls, about 5 microseconds). Below
+// this many multiply-adds that costs more than a caller on the wrong core does: 16 x 512 x 784
+// (6.4M) 342 -> 400 GFLOP/s without it, 64 x 512 x 784 (25.7M) 708 -> 621.
+constexpr double min_macs_to_pin_caller = 12.0 * 1024.0 * 1024.0;
 
 // Products with fewer multiply-adds than this use at most one thread per physical core (about n = 1024).
 constexpr double min_macs_for_smt = 1024.0 * 1024.0 * 1024.0;
@@ -238,6 +244,11 @@ PackedGemmBlocking initial_blocking() {
     // Products with few rows (a batch times a wide weight matrix) pack B privately per thread: up to
     // 2.3x where the shared packed B made the call wait for memory (section 23).
     blocking.private_b = 2;
+    // Each thread owns a fixed run of the work items: the same columns on every call of a shape, so
+    // the weights it reads stay in its L2. +24% at 32 x 4096 x 4096, +21% and +53% on the weight
+    // gradients, +8% at n = 1024 (section 25).
+    blocking.static_items = 1;
+    blocking.private_a = 1;
     return blocking;
 }
 
@@ -877,7 +888,8 @@ void set_packed_gemm_blocking(PackedGemmBlocking blocking) {
         blocking.scalar_pack < 0 || blocking.scalar_pack > 1 || blocking.parallel < 0 ||
         blocking.parallel > 5 || blocking.loop_order < 0 || blocking.loop_order > 1 ||
         blocking.profile < 0 || blocking.profile > 1 || blocking.pool < 0 || blocking.pool > 1 ||
-        blocking.private_b < 0 || blocking.private_b > 2 || blocking.b_chunk < 0 || blocking.pin < 0 || blocking.pin > 3) {
+        blocking.private_b < 0 || blocking.private_b > 2 || blocking.static_items < 0 ||
+        blocking.static_items > 1 || blocking.private_a < 0 || blocking.private_a > 1 || blocking.b_chunk < 0 || blocking.pin < 0 || blocking.pin > 3) {
         throw std::invalid_argument("packed gemm blocking: mc, kc, nc and tiles_per_thread must be "
                                     "positive, prefetch 0-6, prefetch_block 0-4, shape 0-11, scalar_pack 0-1, parallel "
                                     "0-5, loop_order 0-1, profile 0-1, pin 0-3");
@@ -1048,6 +1060,18 @@ inline void make_grid(std::int64_t team, std::int64_t m, std::int64_t& ic_ways,
     jr_ways = team / ic_ways;
 }
 
+// The column block for a product of n columns: n is split into the fewest blocks of at most nc_max
+// columns, all about the same size (whole tiles). Blocks of exactly nc_max would leave n = 8192 with
+// 8160 + 32 columns, and the 32 cost a second packing of all of A (n = 8192 on one thread: 87
+// GFLOP/s, against 106 with 4096 + 4096).
+inline std::int64_t balanced_nc(std::int64_t n, std::int64_t nc_max, std::int64_t nr) {
+    const std::int64_t blocks = (n + nc_max - 1) / nc_max;
+    if (blocks <= 1) {
+        return nc_max;
+    }
+    return ((n + blocks - 1) / blocks + nr - 1) / nr * nr;
+}
+
 // One row times a matrix: c[0..n) = sum over p of a[p * csa] * B[p, :], with the rows of B contiguous
 // (rsb floats apart). This is a network evaluated on a single sample. The packed kernel would fill
 // one of its six rows and copy all of B first; here B is read once, in place, four rows per pass over
@@ -1150,7 +1174,7 @@ void matmul_f32_packed_strided(const float* a, std::int64_t rsa, std::int64_t cs
     // Block sizes are rounded down to whole tiles (at least one).
     const std::int64_t MC = std::max(MR, blocking_state().mc / MR * MR);
     const std::int64_t KC = blocking_state().kc;
-    const std::int64_t NC = std::max(NR, blocking_state().nc / NR * NR);
+    const std::int64_t NC = balanced_nc(n, std::max(NR, blocking_state().nc / NR * NR), NR);
     const auto round_up = [](std::int64_t value, std::int64_t multiple) {
         return (value + multiple - 1) / multiple * multiple;
     };
@@ -1276,7 +1300,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     // Block sizes are rounded down to whole tiles (at least one).
     const std::int64_t MC = std::max(MR, settings.mc / MR * MR);
     const std::int64_t KC = settings.kc;
-    const std::int64_t NC = std::max(NR, settings.nc / NR * NR);
+    const std::int64_t NC = balanced_nc(n, std::max(NR, settings.nc / NR * NR), NR);
     const auto round_up = [](std::int64_t value, std::int64_t multiple) {
         return (value + multiple - 1) / multiple * multiple;
     };
@@ -1412,6 +1436,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
     // Only one call pins at a time (threads that call matmul concurrently would otherwise all pin
     // their calling thread to core 0), and never from inside another parallel region.
     const bool want_pin = pin != 0 && macs >= min_macs_to_pin && !in_parallel_region() &&
+                          !(settings.pool != 0 && macs < min_macs_to_pin_caller) &&
                           pool_thread_index() < 0;
     const bool do_pin = want_pin && !g_pin_busy.exchange(true);
     if (do_pin) {
@@ -1575,7 +1600,8 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             }
         };
         // Tile t of group g for step s.
-        const auto tile_part = [&](std::int64_t s, std::int64_t g, const Part& part, std::int64_t t) {
+        const auto tile_part = [&](std::int64_t s, std::int64_t g, const Part& part, std::int64_t t,
+                                   const float* pa) {
             const Step& st = steps[static_cast<std::size_t>(s)];
             if (private_b) {
                 const double t0 = profile ? wall_seconds() : 0.0;
@@ -1589,7 +1615,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                        st.kc, cols, mine.data, chunk_panels, private_b_pack_ahead);
                 const double t1 = profile ? wall_seconds() : 0.0;
                 for (std::int64_t ic = 0; ic < m; ic += MC) {
-                    compute_block(shape, st.kc, packed_a_of(s, g) + (ic / MR) * st.kc * MR,
+                    compute_block(shape, st.kc, pa + (ic / MR) * st.kc * MR,
                                   std::min(MC, m - ic), mine.data, cols,
                                   c + ic * ldc + st.jc + first_panel * NR, ldc, st.pc > 0, loop_order,
                                   prefetch_block);
@@ -1608,7 +1634,7 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             const std::int64_t last_panel = std::min(first_panel + part.panels_per_tile, part.p1);
             const std::int64_t cols =
                 std::min((last_panel - first_panel) * NR, st.nc - first_panel * NR);
-            compute_block(shape, st.kc, packed_a_of(s, g) + (ic / MR) * st.kc * MR, mc,
+            compute_block(shape, st.kc, pa + (ic / MR) * st.kc * MR, mc,
                           packed_b_of(s) + first_panel * st.kc * NR, cols,
                           c + ic * ldc + st.jc + first_panel * NR, ldc, st.pc > 0, loop_order,
                           prefetch_block);
@@ -1619,14 +1645,77 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
 
         // One work counter per list and group: list 0 packs step 0, list s + 1 multiplies step s
         // (and packs step s + 1). Each on its own cache line.
+        //
+        // PackedGemmBlocking::static_items: one counter per list and thread instead. Each thread
+        // owns a fixed run of the group's items and takes from other threads of its group only when
+        // its own run is done. The same thread then handles the same columns on every call of the
+        // same shape, so the part of B it reads (the weights of a layer) and the part of C it writes
+        // stay in its own L2 from call to call instead of moving between cores.
         struct alignas(64) Counter {
             std::atomic<std::int64_t> next{0};
+            std::int64_t end = 0;
         };
-        std::vector<Counter> counters(static_cast<std::size_t>((step_count + 1) * groups));
-        const auto take = [&](std::int64_t list, std::int64_t g) {
-            return counters[static_cast<std::size_t>(list * groups + g)].next.fetch_add(
-                1, std::memory_order_relaxed);
+        const bool static_items = settings.static_items != 0;
+        std::vector<Counter> counters(
+            static_cast<std::size_t>((step_count + 1) * (static_items ? threads : groups)));
+        if (static_items) {
+            std::vector<std::int64_t> rank(static_cast<std::size_t>(threads), 0);
+            std::vector<std::int64_t> members(static_cast<std::size_t>(groups), 0);
+            for (std::int64_t t = 0; t < threads; ++t) {
+                rank[static_cast<std::size_t>(t)] =
+                    members[static_cast<std::size_t>(group_of[static_cast<std::size_t>(t)])]++;
+            }
+            for (std::int64_t list = 0; list <= step_count; ++list) {
+                for (std::int64_t t = 0; t < threads; ++t) {
+                    const std::int64_t g = group_of[static_cast<std::size_t>(t)];
+                    const std::int64_t items =
+                        list == 0 ? part_of(0, g).packs
+                                  : part_of(list - 1, g).tiles +
+                                        (list < step_count ? part_of(list, g).packs : 0);
+                    Counter& counter = counters[static_cast<std::size_t>(list * threads + t)];
+                    const std::int64_t r = rank[static_cast<std::size_t>(t)];
+                    const std::int64_t count = members[static_cast<std::size_t>(g)];
+                    counter.next.store(items * r / count, std::memory_order_relaxed);
+                    counter.end = items * (r + 1) / count;
+                }
+            }
+        }
+        // The next item of `list` for group g, or a number past the end when there is none left.
+        const auto take = [&](std::int64_t list, std::int64_t g, std::int64_t tid) {
+            if (!static_items) {
+                return counters[static_cast<std::size_t>(list * groups + g)].next.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            Counter* const row = &counters[static_cast<std::size_t>(list * threads)];
+            if (tid < threads && group_of[static_cast<std::size_t>(tid)] == g) {
+                Counter& own = row[tid];
+                const std::int64_t t = own.next.fetch_add(1, std::memory_order_relaxed);
+                if (t < own.end) {
+                    return t;
+                }
+            }
+            for (std::int64_t i = 1; i <= threads; ++i) {
+                const std::int64_t u = (tid + i) % threads;
+                if (group_of[static_cast<std::size_t>(u)] != g) {
+                    continue;
+                }
+                Counter& other = row[u];
+                if (other.next.load(std::memory_order_relaxed) < other.end) {
+                    const std::int64_t t = other.next.fetch_add(1, std::memory_order_relaxed);
+                    if (t < other.end) {
+                        return t;
+                    }
+                }
+            }
+            return std::numeric_limits<std::int64_t>::max();
         };
+
+        // Private A (PackedGemmBlocking::private_a): a product of a single step whose B is private and
+        // whose packed A is small (a quarter of the L2) shares nothing between the threads, so each
+        // packs its own copy of A and the team needs no barrier.
+        const bool private_a =
+            settings.private_a != 0 && private_b && step_count == 1 &&
+            m_padded * kc_max * 4 <= (cache_bytes(2) > 0 ? cache_bytes(2) : 256 * 1024) / 4;
 
         // The work of one thread of the team. `barrier` makes the team wait for each other: OpenMP's
         // barrier inside an OpenMP region, the pool's on the thread pool.
@@ -1644,10 +1733,30 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
             // thread works through every group's list, so all the work is still done.
             const std::int64_t visit = team == threads ? 1 : groups;
 
+            if (private_a) {
+                // Nothing is shared: this thread packs its own copy of A and multiplies its tiles.
+                // No barrier at all, so a thread that starts late holds nobody up (the others take
+                // its tiles).
+                ScratchBuffer& own = scratch_a();
+                own.reserve(static_cast<std::size_t>(m_padded * kc_max));
+                const Step& st = steps[0];
+                for (std::int64_t panel = 0; panel < a_panels; ++panel) {
+                    pack_a_panel(panel, st.pc, st.kc, own.data);
+                }
+                for (std::int64_t v = 0; v < visit; ++v) {
+                    const std::int64_t g = (mine + v) % groups;
+                    const Part part = part_of(0, g);
+                    for (std::int64_t t = take(1, g, tid); t < part.tiles; t = take(1, g, tid)) {
+                        tile_part(0, g, part, t, own.data);
+                    }
+                }
+                return;
+            }
+
             for (std::int64_t v = 0; v < visit; ++v) {
                 const std::int64_t g = (mine + v) % groups;
                 const Part part = part_of(0, g);
-                for (std::int64_t t = take(0, g); t < part.packs; t = take(0, g)) {
+                for (std::int64_t t = take(0, g, tid); t < part.packs; t = take(0, g, tid)) {
                     pack_part(0, g, part, t);
                 }
             }
@@ -1659,17 +1768,20 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                     const Part next = s + 1 < step_count ? part_of(s + 1, g) : Part{};
                     const std::int64_t items = part.tiles + next.packs;
                     // Item t is a pack item when the count of packs among items 0..t steps up at t.
-                    for (std::int64_t t = take(s + 1, g); t < items; t = take(s + 1, g)) {
+                    for (std::int64_t t = take(s + 1, g, tid); t < items;
+                         t = take(s + 1, g, tid)) {
                         const std::int64_t before = t * next.packs / items;
                         const std::int64_t through = (t + 1) * next.packs / items;
                         if (through != before) {
                             pack_part(s + 1, g, next, before);
                         } else {
-                            tile_part(s, g, part, t - before);
+                            tile_part(s, g, part, t - before, packed_a_of(s, g));
                         }
                     }
                 }
-                barrier();
+                if (s + 1 < step_count) { // after the last step the end of the team is the barrier
+                    barrier();
+                }
             }
         };
 

@@ -60,6 +60,12 @@ struct PackedGemmBlocking {
                                  // 2 choose by the shape: 1 for products with few rows, where the
                                  // shared buffer makes packing a memory-bandwidth problem
     std::int64_t b_chunk = 0;    // private_b: B panels per tile (0 = as many as fit in half the L2)
+    std::int64_t static_items = 0; // strategies 4 and 5: 0 work items are handed out first come first
+                                 // served, 1 each thread owns a fixed run of them and takes from the
+                                 // others only when it is done (the same thread then reads the same
+                                 // columns of B and writes the same part of C on every call)
+    std::int64_t private_a = 0;  // private B, one depth step and a small A: 1 = each thread also packs
+                                 // its own copy of A, and the team runs without any barrier
 };
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.
