@@ -216,7 +216,31 @@ if(NOT MENSURFLOW_OPENBLAS STREQUAL "OFF")
         # The DLL is copied next to matmul_openblas_benchmark, which is in the same directory.
         mensurflow_add_benchmark(gemm_shapes_openblas_benchmark
                                  benchmarks/blas/gemm_shapes_openblas_benchmark.cpp)
-        target_link_libraries(gemm_shapes_openblas_benchmark PRIVATE ${MENSURFLOW_OPENBLAS_TARGET})
+        target_link_libraries(gemm_shapes_openblas_benchmark PRIVATE ${MENSURFLOW_OPENBLAS_TARGET}
+                              ${CMAKE_DL_LIBS})
+        # MKL and AOCL-BLIS are loaded at run time by gemm_shapes_openblas_benchmark (they export
+        # the same names as OpenBLAS, so they cannot be linked next to it). Only the path of each
+        # DLL is recorded here; a library that is not found is left out of the table. The
+        # environment variables MENSURFLOW_MKL_DLL and MENSURFLOW_AOCL_BLIS_DLL override the paths.
+        set(MKL_ROOT "" CACHE PATH "MKL folder with bin/mkl_rt.*.dll (or lib/libmkl_rt.so)")
+        set(AOCL_BLIS_ROOT "" CACHE PATH "AOCL-BLIS folder with bin/AOCL-LibBlis-Win-MT-dll.dll (or lib/libblis-mt.so)")
+        find_file(MENSURFLOW_MKL_DLL_FILE NAMES mkl_rt.3.dll mkl_rt.2.dll libmkl_rt.so
+                  HINTS ${MKL_ROOT} ENV MKL_ROOT ENV MKLROOT
+                  PATH_SUFFIXES bin lib lib/intel64 redist/intel64)
+        find_file(MENSURFLOW_AOCL_BLIS_DLL_FILE
+                  NAMES AOCL-LibBlis-Win-MT-dll.dll libblis-mt.so
+                  HINTS ${AOCL_BLIS_ROOT} ENV AOCL_BLIS_ROOT
+                  PATH_SUFFIXES bin lib lib_LP64 lib/LP64 amd-blis/lib/LP64)
+        foreach(reference MKL AOCL_BLIS)
+            if(MENSURFLOW_${reference}_DLL_FILE)
+                file(TO_CMAKE_PATH "${MENSURFLOW_${reference}_DLL_FILE}" reference_path)
+                target_compile_definitions(gemm_shapes_openblas_benchmark PRIVATE
+                                           MENSURFLOW_${reference}_DLL_DEFAULT="${reference_path}")
+                message(STATUS "Shapes benchmark reference ${reference}: ${reference_path}")
+            else()
+                message(STATUS "Shapes benchmark reference ${reference}: not found")
+            endif()
+        endforeach()
         message(STATUS "OpenBLAS benchmark: enabled")
     elseif(MENSURFLOW_OPENBLAS STREQUAL "ON")
         message(FATAL_ERROR "MENSURFLOW_OPENBLAS=ON but OpenBLAS was not found (set OPENBLAS_ROOT)")

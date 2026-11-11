@@ -39,6 +39,7 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 24 | One row (batch 1) without packing; pinning from 4M multiply-adds | `row_times_matrix`: B read in place, four rows per pass, threads split the columns | mlp 784->512 at batch 1: 8 -> 38 GFLOP/s (12x OpenBLAS); 784x512x16 on 12 threads 124 -> 271. All 21 shapes ahead of OpenBLAS, geometric mean 1.88x; square sizes 42 of 42 |
 | 25 | Balance: equal column blocks, static tiles, finer row tiles, more threads for small products, a caller that shares a worker's core | `balanced_nc`; `static_items` (each thread owns a fixed run of the tiles); `fine_rows`; `min_macs_per_thread` 256K; `pool_run` can leave out the worker on the caller's core; `thread_pool_benchmark`; first run at n = 8192; 4 input-gradient shapes | n = 8192 on one thread 87 -> 107 GFLOP/s (was 0.83x OpenBLAS). 32x4096x4096 430 -> 455-540; weight gradients 872 -> 1052 and 271 -> 478; attention scores 145 -> 241; conv 196 px 702 -> 952; n = 256 on 12 threads 593 -> 746. 25 of 25 shapes ahead (geometric mean 1.94x), squares 49 of 49 up to n = 8192 |
 | 26 | Chiplets divide the rows for narrow outputs; B packed once and reused | `split_rows`: with few B panels each chiplet packs only its rows of A instead of a copy of all of it. `pack_b_f32` / `matmul_f32_prepacked` / `PackedB`: the weights of a layer in inference are packed once | Convolutions as im2col: 3136 px 667-816 -> 945-960 GFLOP/s, 12544 px 574-600 -> 811-886, and stable. 25 shapes: geometric mean 2.01x. Prepacked: batch 16 405 -> 548, 32x4096x4096 527 -> 812, logits 672 -> 915; none slower |
+| 27 | MKL and AOCL-BLIS added to the shapes benchmark (a measurement, no kernel change) | `gemm_shapes_openblas_benchmark` loads MKL 2026.2 and AOCL-BLAS 5.2 at run time and times them next to OpenBLAS, each at its best of 7 thread counts, with and without their threads bound to cores | Ahead of MKL on 25 of 25 shapes (geometric mean 1.76x) and of OpenBLAS on 25 of 25 (1.86x). Against AOCL-BLIS: 1.29x, ahead on 19, level on 2, behind on 4 (512->10 0.63x, logits 0.83x, conv 12544 px 0.88x, weight gradient 4096x4096 0.94x) |
 
 ## The improvements, explained
 
@@ -1119,6 +1120,102 @@ already a small part). Against OpenBLAS, which has no such call, the prepacked b
 The tensor-level `matmul` does not use it yet: a layer has to own the `PackedB` and remake it when
 its weights change (open item).
 
+### 27. MKL and AOCL-BLIS in the shapes benchmark
+
+Until here every comparison was with OpenBLAS. For the shapes a network multiplies, the libraries
+to beat are Intel MKL and, on this processor, AMD's own AOCL-BLIS. Both are now in
+`gemm_shapes_openblas_benchmark`. No kernel changed in this section.
+
+**How they are called.** The three libraries export the same BLAS names, so they cannot be linked
+into one program. OpenBLAS stays linked; MKL (`mkl_rt`, `cblas_sgemm`) and AOCL-BLIS (`sgemm_`,
+the entry point with AMD's small-matrix and thread-count decisions) are opened from their DLLs at
+run time (`benchmarks/blas/reference_blas.hpp`). All libraries are timed in one process, alternating,
+three rounds, as before. Setup: [BENCHMARKING.md](BENCHMARKING.md#comparing-against-mkl-and-aocl-blis).
+
+**What was done to be fair to them.**
+
+- Seven thread counts (1, 2, 4, 6, 8, 12, 24); each library is taken at its own best.
+- Two runs: the libraries' defaults, and `OMP_PLACES=cores OMP_PROC_BIND=close`, which binds the
+  threads of MKL and AOCL-BLIS to cores as ours are. The table takes the better of the two runs for
+  every library, ours included. Binding helped MKL on large products (4096 x 4096 with batch 256:
+  582 -> 789) and AOCL-BLIS on some (32 x 4096 x 4096: 173 -> 540), and made no difference to us.
+- A 300 ms pause before each library: the OpenMP workers of MKL and AOCL-BLIS spin for 200 ms after
+  a call and would take cores from the next library.
+- The calling thread, which our matmul may leave pinned to a core, is released before each of them.
+- MKL keeps its default dynamic mode, in which the thread count is an upper limit.
+- Each OpenMP runtime is started from a thread that may run anywhere. Without this, the first
+  runtime bound the main thread to one core and the second one took that core for the whole
+  machine (AOCL-BLIS dropped to 0-3 GFLOP/s in a first trial).
+- Leaving a library out (`mkl=0`, `aocl=0`) did not change the numbers of the others beyond noise
+  on the two shapes where this was checked.
+
+MKL on this AMD processor loads `mkl_def`, which has an AVX2 kernel for Zen (about 100 GFLOP/s on
+one thread, the same as ours): that is what MKL gives an AMD user without tricks. AOCL-BLAS 5.2.0 is
+the conda-forge build and selects its zen3 configuration.
+
+**Result** (Ryzen 9 5900X, GFLOP/s, each library at its best thread count, better of the two runs;
+the last three columns are ours divided by theirs):
+
+| shape | m x n x k | ours | OpenBLAS | MKL | AOCL | / OpenBLAS | / MKL | / AOCL |
+|---|---|---|---|---|---|---|---|---|
+| mlp 784->512, batch 1 | 1 x 512 x 784 | 40 | 3 | 26 | 37 | 13.33 | 1.54 | 1.08 |
+| mlp 784->512, batch 16 | 16 x 512 x 784 | 419 | 116 | 135 | 231 | 3.61 | 3.10 | 1.81 |
+| mlp 784->512, batch 64 | 64 x 512 x 784 | 702 | 284 | 321 | 367 | 2.47 | 2.19 | 1.91 |
+| mlp 784->512, batch 256 | 256 x 512 x 784 | 987 | 553 | 682 | 444 | 1.78 | 1.45 | 2.22 |
+| mlp 512->10, batch 64 | 64 x 10 x 512 | 38 | 32 | 16 | 60 | 1.19 | 2.38 | 0.63 |
+| mlp 4096->4096, batch 32 | 32 x 4096 x 4096 | 529 | 391 | 249 | 540 | 1.35 | 2.12 | 0.98 |
+| mlp 4096->4096, batch 256 | 256 x 4096 x 4096 | 1020 | 937 | 789 | 617 | 1.09 | 1.29 | 1.65 |
+| transformer 768->768, 128 tok | 128 x 768 x 768 | 969 | 449 | 576 | 615 | 2.16 | 1.68 | 1.58 |
+| transformer 768->768, 2048 tok | 2048 x 768 x 768 | 1100 | 779 | 720 | 760 | 1.41 | 1.53 | 1.45 |
+| transformer 768->3072, 512 tok | 512 x 3072 x 768 | 1148 | 828 | 732 | 840 | 1.39 | 1.57 | 1.37 |
+| transformer 3072->768, 512 tok | 512 x 768 x 3072 | 1072 | 947 | 1028 | 1004 | 1.13 | 1.04 | 1.07 |
+| transformer 768->3072, 8192 tok | 8192 x 3072 x 768 | 1183 | 1033 | 832 | 1137 | 1.15 | 1.42 | 1.04 |
+| attention scores 128x128, d 64 | 128 x 128 x 64 | 242 | 67 | 95 | 128 | 3.61 | 2.55 | 1.89 |
+| logits 768->32000, batch 64 | 64 x 32000 x 768 | 670 | 472 | 224 | 812 | 1.42 | 2.99 | 0.83 |
+| conv im2col 3136 px, 576->64 | 3136 x 64 x 576 | 986 | 594 | 584 | 992 | 1.66 | 1.69 | 0.99 |
+| conv im2col 784 px, 1152->128 | 784 x 128 x 1152 | 1019 | 530 | 741 | 954 | 1.92 | 1.38 | 1.07 |
+| conv im2col 196 px, 2304->256 | 196 x 256 x 2304 | 959 | 500 | 717 | 598 | 1.92 | 1.34 | 1.60 |
+| conv im2col 12544 px, 147->64 | 12544 x 64 x 147 | 905 | 583 | 507 | 1034 | 1.55 | 1.79 | 0.88 |
+| weight grad 768x3072, batch 64 | 768 x 3072 x 64 | 934 | 414 | 468 | 753 | 2.26 | 2.00 | 1.24 |
+| weight grad 4096x4096, batch 256 | 4096 x 4096 x 256 | 1056 | 787 | 713 | 1128 | 1.34 | 1.48 | 0.94 |
+| weight grad 784x512, batch 16 | 784 x 512 x 16 | 482 | 117 | 131 | 238 | 4.12 | 3.68 | 2.03 |
+| input grad 784<-512, batch 64 | 64 x 784 x 512 | 769 | 298 | 335 | 560 | 2.58 | 2.30 | 1.37 |
+| input grad 4096<-4096, batch 256 | 256 x 4096 x 4096 | 1063 | 962 | 864 | 580 | 1.10 | 1.23 | 1.83 |
+| input grad 768<-3072, 512 tok | 512 x 768 x 3072 | 1099 | 953 | 998 | 1007 | 1.15 | 1.10 | 1.09 |
+| input grad 3072<-768, 512 tok | 512 x 3072 x 768 | 1213 | 908 | 700 | 903 | 1.34 | 1.73 | 1.34 |
+
+| against | geometric mean | we are faster on |
+|---|---|---|
+| OpenBLAS 0.3.34 | 1.86x | 25 of 25 |
+| MKL 2026.2 | 1.76x | 25 of 25 |
+| AOCL-BLAS 5.2.0 | 1.29x | 19 of 25 (2 more within 2%) |
+| the fastest of the three on each shape | 1.21x | 19 of 25 |
+
+In the two runs separately the geometric means against AOCL-BLIS were 1.42x (defaults) and 1.31x
+(bound), with 20 of 25 shapes ahead in each. The raw tables of both runs are in
+[benchmarks/asja-ryzen9-5900x-2026-11-11.md](benchmarks/asja-ryzen9-5900x-2026-11-11.md).
+
+**Where AOCL-BLIS is ahead.**
+
+| shape | ours | AOCL | what it shows |
+|---|---|---|---|
+| mlp 512->10, batch 64 (64 x 10 x 512) | 38 | 60 | The narrow output that fills 10 of the 16 columns of our tile (already an open item). AOCL does it on one thread at 59 |
+| logits 768->32000, batch 64 | 670 | 812 | Few rows, a very wide B. At 8 threads we are level (536 vs 568); AOCL keeps gaining to 12 threads and we do not |
+| conv im2col 12544 px, 147->64 | 905 | 1034 | Thousands of rows, short depth, narrow output; AOCL was ahead only in the bound run (936 vs 895 by default) |
+| weight grad 4096x4096, batch 256 | 1056 | 1128 | Large and square in m and n, depth 256; AOCL is ahead at 12 threads in both runs |
+
+Two more are level within noise (conv 3136 px 0.99x, 32 x 4096 x 4096 0.98x). On one thread the gap
+is small: MKL or AOCL-BLIS is level with us or ahead on 10 of the 25 shapes (the batch-16 layer: 78
+and 72 against our 66). The advantage we have is in the threaded runs of small and medium products, where the
+other libraries scale poorly (batch 16: 419 against 231, 135 and 116; attention scores: 242 against
+128, 95 and 67).
+
+**How far to trust it.** One run of each table on a machine that was not quiet (our own numbers were
+about 10-15% below those of section 26 in the first run), 3 rounds, medians. Differences under about
+5% are noise. One processor with two chiplets; nothing here says how the comparison goes on an EPYC
+or on Intel hardware, where MKL uses its own AVX2 or AVX-512 kernels. The prepacked path
+(section 26) was not part of this comparison.
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
 `matmul_openblas_benchmark 128 256 512 1024 2048 4096 8192`, OpenBLAS 0.3.34, after section 25
@@ -1232,6 +1329,8 @@ n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchma
 | Linux timings and the i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) compiles and passes `affinity_test` and `gemm_packed_test` on the GitHub Ubuntu runner, but nothing has been timed on Linux; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
 | Use the prepacked B from the layers | `pack_b_f32` / `matmul_f32_prepacked` exist at the kernel level (section 26) but the tensor-level `matmul` does not use them. A dense layer in inference mode should own a `PackedB` of its weights and remake it when they change; in training the weights change every step, so there is nothing to gain |
+| The four shapes where AOCL-BLIS is ahead (section 27) | 64 x 10 x 512 (0.63x), logits 64 x 32000 x 768 (0.83x: we stop scaling after 8 threads), conv 12544 x 64 x 147 (0.88x) and the weight gradient 4096 x 4096 x 256 (0.94x). The first is the narrow-output item below; the other three are threaded efficiency on large products |
+| Repeat the reference comparison on a quiet machine, on other hardware, and with oneDNN, BLIS and LIBXSMM | Section 27 is one noisy run on one two-chiplet processor. Before any claim outside this machine: repeat runs, an EPYC and an Intel machine, the square-matrix table with MKL and AOCL-BLIS, and the libraries a framework actually calls for these shapes (oneDNN) |
 | Narrow outputs and 2 to 5 rows | n below 16 (mlp 512->10: 38 GFLOP/s) fills only part of the 16-wide tile, and 2 to 5 rows fill only part of the 6 rows (4 x 512 x 784: 31 on one thread). A transposed tile or a multi-row version of `row_times_matrix` would help; both products are tiny in absolute time |
 | Thread count for small products | Now 256K multiply-adds per thread, at most half the B panels below 4M, one chiplet split from 4M, caller pinned from 12M. These limits were set on a handful of shapes each; cubes of 96-200 and depths of 8-32 are still uneven (160 x 160 x 160: 286-378 on 12 threads, 315 on 4) |
 | Fuse alpha and beta into the kernel (probably another time) | `gemm` applies alpha and beta as separate elementwise passes over C (`mul`, `scal`, `add`, each a full read and write plus a temporary). Fusing them into the micro-kernel's C update (scale the accumulators by alpha, add beta times the old C when storing) would remove those passes and temporaries. Estimated cost of the passes at n = 2048 (not measured): about 4 ms on top of a 16 ms product with both alpha and beta, about 1 ms with alpha only, and several times the product when k is small. It only matters for `gemm` calls with alpha other than 1 or beta other than 0; `matmul` and the backward pass are unaffected. Decided to postpone until such calls are on a hot path; measure `gemm` against `matmul` first |
@@ -1258,7 +1357,8 @@ n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchma
 | `tests/core/affinity_test.cpp` | Pinning restricts, wraps, and restores the original affinity |
 | `src/backends/cpu/thread_pool.hpp`, `.cpp` | The thread pool of strategies 4 and 5: spinning then sleeping workers, a spin barrier |
 | `tests/core/thread_pool_test.cpp` | Teams of every size, barriers, sleeping workers, nested and concurrent callers |
-| `benchmarks/blas/gemm_shapes_openblas_benchmark.cpp` | 25 neural-network shaped products against OpenBLAS; `shape=m,n,k` for any other, `prepack=1` for B packed once, and every blocking setting as an option |
+| `benchmarks/blas/reference_blas.hpp` | Loads MKL and AOCL-BLIS at run time for the shapes benchmark (they cannot be linked next to OpenBLAS) |
+| `benchmarks/blas/gemm_shapes_openblas_benchmark.cpp` | 25 neural-network shaped products against OpenBLAS, MKL and AOCL-BLIS; `shape=m,n,k` for any other, `prepack=1` for B packed once, and every blocking setting as an option |
 | `benchmarks/blas/thread_pool_benchmark.cpp` | What a pool team costs: an empty call, a barrier, a call with fixed work, per team size |
 | `CMakeLists.txt`, `docs/BENCHMARKING.md` | Build options and how to run the comparison |
 

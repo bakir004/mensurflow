@@ -1,26 +1,35 @@
-// The matrix products a neural network makes, against OpenBLAS. Square matrices (see
+// The matrix products a neural network makes, against OpenBLAS, MKL and AOCL-BLIS. Square matrices (see
 // matmul_openblas_benchmark) are the easy case for a GEMM; a network multiplies mostly rectangular
 // ones: a few rows (the batch) by a wide weight matrix, a short depth (the weight gradient, whose
 // depth is the batch), or thousands of rows by a narrow output (a convolution done as im2col).
 //
-// C[m,n] = A[m,k] * B[k,n], float32. Each shape is timed with both libraries at the same thread
-// counts, alternating, in several rounds; the table shows the median GFLOP/s (2*m*n*k per call) and
-// ours / OpenBLAS (above 1.00 = we are faster). "best" compares each library at its own best thread
-// count, which is what a user who tunes the thread count would get.
+// C[m,n] = A[m,k] * B[k,n], float32. Each shape is timed with every library at the same thread
+// counts, alternating, in several rounds; the table shows the median GFLOP/s (2*m*n*k per call).
+// The columns marked * are each library at its own best thread count, which is what a user who
+// tunes the thread count would get, and the last columns are ours* / theirs* (above 1.00 = we are
+// faster).
+//
+// OpenBLAS is linked. MKL and AOCL-BLIS are loaded at run time when they are installed (see
+// reference_blas.hpp for where they are looked for); without them the table has OpenBLAS only.
 //
 //   gemm_shapes_openblas_benchmark [key=v1,v2,...] ...
 //     threads=   thread counts                (default 1, physical cores, all hardware threads)
-//     rounds=    passes over both libraries   (default 3)
+//     rounds=    passes over all libraries    (default 3)
+//     mkl= aocl= 0: leave that library out    (default 1: used when found)
+//     settle=    pause in ms before each library is timed (default 300: the OpenMP workers of MKL
+//                and AOCL-BLIS spin for 200 ms after a call and would take cores from the next)
 //     only=      1-based numbers of the shapes to run (default: all)
 //     shape=     m,n,k: time this one product instead of the list (several: m,n,k,m,n,k,...)
 //     prepack=   1: our side multiplies by a B packed once with pack_b_f32 (not timed), as a layer
-//                in inference would; OpenBLAS has no such call and is timed as usual
+//                in inference would; the other libraries have no such call and are timed as usual
 //     pool=      PackedGemmBlocking::pool values to compare (default: the current default)
 //     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea= finerows= splitrows=   one value each: overrides of the blocking settings
 //
 // Needs OpenBLAS at build time: see docs/BENCHMARKING.md ("Comparing against OpenBLAS").
 #include "bench.hpp"
+#include "reference_blas.hpp"
 
+#include "backends/cpu/affinity.hpp"
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/threads.hpp"
 
@@ -96,7 +105,15 @@ double median_of(std::vector<double> values) {
     return values[values.size() / 2];
 }
 
-void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
+void settle(std::int64_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+
+double geomean_of(const std::vector<double>& values) {
+    double sum = 0.0;
+    for (double v : values) {
+        sum += std::log(v);
+    }
+    return std::exp(sum / static_cast<double>(values.size()));
+}
 
 } // namespace
 
@@ -122,6 +139,10 @@ int main(int argc, char** argv) {
         {"finerows", {original.fine_rows}},
         {"splitrows", {original.split_rows}},
         {"prepack", {0}},
+        {"mkl", {1}},
+        {"aocl", {1}},
+        {"settle", {300}},
+        {"unpin", {1}},
     };
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -140,23 +161,67 @@ int main(int argc, char** argv) {
     threads.erase(std::unique(threads.begin(), threads.end()), threads.end());
     const std::int64_t rounds = std::max<std::int64_t>(1, options["rounds"][0]);
     const std::vector<std::int64_t> pools = options["pool"];
+    const std::int64_t settle_ms = std::max<std::int64_t>(0, options["settle"][0]);
+
+    // The libraries we are compared with: OpenBLAS (linked), then the ones found at run time.
+    std::vector<reference_blas::Library> libraries;
+    {
+        reference_blas::Library openblas;
+        openblas.name = "obl";
+        openblas.detail = std::string("OpenBLAS: ") + openblas_get_config() + ", core " +
+                          openblas_get_corename();
+        openblas.set_threads = [](int t) { openblas_set_num_threads(t); };
+        openblas.sgemm = [](bool ta, bool tb, int m, int n, int k, const float* a, int lda,
+                            const float* b, int ldb, float* c, int ldc) {
+            cblas_sgemm(CblasRowMajor, ta ? CblasTrans : CblasNoTrans,
+                        tb ? CblasTrans : CblasNoTrans, m, n, k, 1.0f, a, lda, b, ldb, 0.0f, c, ldc);
+        };
+        libraries.push_back(openblas);
+        reference_blas::Library found;
+        if (options["mkl"][0] != 0 && reference_blas::load_mkl(found)) {
+            libraries.push_back(found);
+        }
+        found = {};
+        if (options["aocl"][0] != 0 && reference_blas::load_aocl_blis(found)) {
+            libraries.push_back(found);
+        }
+    }
+    const std::size_t library_count = libraries.size();
 
     bench::Config config;
     config.repeats = 7;
+    std::vector<std::string> notes;
+    for (const auto& library : libraries) {
+        notes.push_back(library.detail);
+    }
+    notes.push_back("GFLOP/s are medians over " + std::to_string(rounds) +
+                    " rounds; * = best thread count of that library; /name = ours* / theirs* "
+                    "(above 1.00: we are faster)");
     bench::print_header(
-        "Neural-network shaped products C[m,n] = A[m,k] * B[k,n] vs OpenBLAS, float32", config,
-        {std::string("OpenBLAS: ") + openblas_get_config() + ", core " + openblas_get_corename(),
-         "GFLOP/s are medians over " + std::to_string(rounds) +
-             " rounds; ratio = ours / OpenBLAS (above 1.00: we are faster)"});
+        "Neural-network shaped products C[m,n] = A[m,k] * B[k,n] vs reference BLAS, float32",
+        config, notes);
 
     std::printf("\n%-34s %6s %6s %6s %4s |", "shape", "m", "n", "k", "pool");
     for (std::int64_t t : threads) {
-        std::printf(" %5s %5s %5s |", ("our" + std::to_string(t)).c_str(),
-                    ("obl" + std::to_string(t)).c_str(), "ratio");
+        std::printf(" %6s", ("our" + std::to_string(t)).c_str());
+        for (const auto& library : libraries) {
+            std::printf(" %6s", (library.name + std::to_string(t)).c_str());
+        }
+        std::printf(" |");
     }
-    std::printf(" %5s %5s %5s\n", "our*", "obl*", "best");
+    std::printf(" %6s", "our*");
+    for (const auto& library : libraries) {
+        std::printf(" %6s", (library.name + "*").c_str());
+    }
+    std::printf(" |");
+    for (const auto& library : libraries) {
+        std::printf(" %6s", ("/" + library.name).c_str());
+    }
+    std::printf("\n");
 
-    std::vector<double> best_ratios;
+    // best_ratios[i]: ours* / library i*, one entry per shape; the last one is against the fastest
+    // of the libraries on that shape.
+    std::vector<std::vector<double>> best_ratios(library_count + 1);
     int number = 0;
     std::vector<Shape> list(std::begin(shapes), std::end(shapes));
     if (options["shape"].size() >= 3) {
@@ -191,16 +256,13 @@ int main(int argc, char** argv) {
         const int ni = static_cast<int>(n);
         const int ki = static_cast<int>(k);
 
-        const auto run_openblas_into = [&](float* out) {
+        const auto run_library_into = [&](const reference_blas::Library& library, float* out) {
             if (shape.layout == 1) {
-                cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, mi, ni, ki, 1.0f, a, mi, b, ni,
-                            0.0f, out, ni);
+                library.sgemm(true, false, mi, ni, ki, a, mi, b, ni, out, ni);
             } else if (shape.layout == 2) {
-                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, mi, ni, ki, 1.0f, a, ki, b, ki,
-                            0.0f, out, ni);
+                library.sgemm(false, true, mi, ni, ki, a, ki, b, ki, out, ni);
             } else {
-                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, mi, ni, ki, 1.0f, a, ki, b,
-                            ni, 0.0f, out, ni);
+                library.sgemm(false, false, mi, ni, ki, a, ki, b, ni, out, ni);
             }
         };
         // prepack=1: B is packed once, outside the timing (the weights of a layer in inference).
@@ -224,11 +286,17 @@ int main(int argc, char** argv) {
                 cpu::matmul_f32_packed_parallel(a, b, c, m, n, k);
             }
         };
-        const auto run_openblas = [&] { run_openblas_into(c); };
         const auto observe = [&] { return bench::checksum(c, c_len); };
 
-        openblas_set_num_threads(max);
-        run_openblas_into(reference);
+        // OpenBLAS gives the reference result; the other libraries are checked against it too.
+        for (std::size_t i = 0; i < library_count; ++i) {
+            libraries[i].set_threads(max);
+            run_library_into(libraries[i], i == 0 ? reference : c);
+            if (i > 0) {
+                bench::check_close(reference, c, c_len, 1e-3,
+                                   std::string(shape.what) + " " + libraries[i].name);
+            }
+        }
 
         for (std::int64_t pool : pools) {
             cpu::PackedGemmBlocking blocking = original;
@@ -251,51 +319,78 @@ int main(int argc, char** argv) {
                         static_cast<long long>(n), static_cast<long long>(k),
                         static_cast<long long>(pool));
             double best_ours = 0.0;
-            double best_openblas = 0.0;
+            std::vector<double> best_theirs(library_count, 0.0);
             for (std::int64_t t : threads) {
                 cpu::set_max_threads(static_cast<int>(t));
-                openblas_set_num_threads(static_cast<int>(t));
+                for (const auto& library : libraries) {
+                    library.set_threads(static_cast<int>(t));
+                }
                 run_ours();
                 bench::check_close(reference, c, c_len, 1e-3,
                                    std::string(shape.what) + " threads=" + std::to_string(t));
                 std::vector<double> ours;
-                std::vector<double> theirs;
+                std::vector<std::vector<double>> theirs(library_count);
                 for (std::int64_t round = 0; round < rounds; ++round) {
-                    settle();
-                    run_openblas();
-                    theirs.push_back(flops / bench::measure(config, run_openblas, observe).median_s /
-                                     1e9);
-                    settle();
+                    for (std::size_t i = 0; i < library_count; ++i) {
+                        const auto run_library = [&] { run_library_into(libraries[i], c); };
+                        // Our matmul may leave the calling thread pinned to a core; the other
+                        // libraries get the thread back as the program started it.
+                        if (options["unpin"][0] != 0) {
+                            cpu::set_thread_pin(0, 0);
+                        }
+                        settle(settle_ms);
+                        run_library();
+                        theirs[i].push_back(
+                            flops / bench::measure(config, run_library, observe).median_s / 1e9);
+                    }
+                    settle(settle_ms);
                     run_ours();
                     ours.push_back(flops / bench::measure(config, run_ours, observe).median_s / 1e9);
                 }
                 const double o = median_of(ours);
-                const double x = median_of(theirs);
                 best_ours = std::max(best_ours, o);
-                best_openblas = std::max(best_openblas, x);
-                std::printf(" %5.0f %5.0f %5.2f |", o, x, o / x);
+                std::printf(" %6.0f", o);
+                for (std::size_t i = 0; i < library_count; ++i) {
+                    const double x = median_of(theirs[i]);
+                    best_theirs[i] = std::max(best_theirs[i], x);
+                    std::printf(" %6.0f", x);
+                }
+                std::printf(" |");
                 std::fflush(stdout);
             }
-            std::printf(" %5.0f %5.0f %5.2f\n", best_ours, best_openblas, best_ours / best_openblas);
+            std::printf(" %6.0f", best_ours);
+            for (double x : best_theirs) {
+                std::printf(" %6.0f", x);
+            }
+            std::printf(" |");
+            for (double x : best_theirs) {
+                std::printf(" %6.2f", best_ours / x);
+            }
+            std::printf("\n");
             std::fflush(stdout);
             if (pool == pools.back()) {
-                best_ratios.push_back(best_ours / best_openblas);
+                for (std::size_t i = 0; i < library_count; ++i) {
+                    best_ratios[i].push_back(best_ours / best_theirs[i]);
+                }
+                best_ratios[library_count].push_back(
+                    best_ours / *std::max_element(best_theirs.begin(), best_theirs.end()));
             }
         }
     }
-    if (!best_ratios.empty()) {
-        double product = 1.0;
-        int wins = 0;
-        for (double r : best_ratios) {
-            product *= r;
-            wins += r >= 1.0 ? 1 : 0;
+    if (!best_ratios[0].empty()) {
+        std::printf("\nbest-vs-best (ours* / theirs*):\n");
+        for (std::size_t i = 0; i <= library_count; ++i) {
+            if (i == library_count && library_count == 1) {
+                break;
+            }
+            const std::vector<double>& ratios = best_ratios[i];
+            const auto wins = std::count_if(ratios.begin(), ratios.end(),
+                                            [](double r) { return r >= 1.0; });
+            std::printf("  %-22s geometric mean %.3f, lowest %.2f, we are faster on %d of %d shapes\n",
+                        i < library_count ? libraries[i].name.c_str() : "fastest of the above",
+                        geomean_of(ratios), *std::min_element(ratios.begin(), ratios.end()),
+                        static_cast<int>(wins), static_cast<int>(ratios.size()));
         }
-        double geomean = 1.0;
-        // n-th root by repeated square roots is overkill: use exp/log through pow.
-        geomean = std::exp(std::log(product) / static_cast<double>(best_ratios.size()));
-        std::printf("\nbest-vs-best: geometric mean ratio %.3f, faster than OpenBLAS on %d of %d "
-                    "shapes\n",
-                    geomean, wins, static_cast<int>(best_ratios.size()));
     }
     cpu::set_packed_gemm_blocking(original);
     cpu::set_max_threads(max);
