@@ -71,6 +71,15 @@ struct PackedGemmBlocking {
                                  // there are too few B panels for tiles_per_thread tiles per thread
     std::int64_t split_rows = 0; // chiplet split with few B panels: 1 = the groups divide the rows of C
                                  // (each packs its own rows of A once) instead of the columns
+    std::int64_t independent_rows = 0; // many rows, few B panels, one depth step and a B that fits
+                                 // in half the L2: 1 = each thread packs its own copy of B and its
+                                 // own rows of A, block by block; nothing is shared and the team
+                                 // has no barrier
+    std::int64_t tile_fit = 0;   // shared B, short depth: 1 = a tile is no wider than the B panels
+                                 // that fit in the L2 together with its rows of A
+    std::int64_t narrow = 0;     // outputs narrower than the 16-column tile: 1 = computed as the
+                                 // transposed product C^T = B^T * A^T, so the n columns lie along
+                                 // the 6-row side of the tile and the m rows fill its 16 columns
 };
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.

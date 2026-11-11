@@ -23,7 +23,7 @@
 //     prepack=   1: our side multiplies by a B packed once with pack_b_f32 (not timed), as a layer
 //                in inference would; the other libraries have no such call and are timed as usual
 //     pool=      PackedGemmBlocking::pool values to compare (default: the current default)
-//     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea= finerows= splitrows=   one value each: overrides of the blocking settings
+//     kc= mc= nc= tiles= parallel= pin= private= chunk= static= privatea= finerows= splitrows= indep= narrow= tilefit=   one value each: overrides of the blocking settings
 //
 // Needs OpenBLAS at build time: see docs/BENCHMARKING.md ("Comparing against OpenBLAS").
 #include "bench.hpp"
@@ -138,6 +138,9 @@ int main(int argc, char** argv) {
         {"privatea", {original.private_a}},
         {"finerows", {original.fine_rows}},
         {"splitrows", {original.split_rows}},
+        {"indep", {original.independent_rows}},
+        {"narrow", {original.narrow}},
+        {"tilefit", {original.tile_fit}},
         {"prepack", {0}},
         {"mkl", {1}},
         {"aocl", {1}},
@@ -313,6 +316,9 @@ int main(int argc, char** argv) {
             blocking.private_a = options["privatea"][0];
             blocking.fine_rows = options["finerows"][0];
             blocking.split_rows = options["splitrows"][0];
+            blocking.independent_rows = options["indep"][0];
+            blocking.narrow = options["narrow"][0];
+            blocking.tile_fit = options["tilefit"][0];
             cpu::set_packed_gemm_blocking(blocking);
 
             std::printf("%-34s %6lld %6lld %6lld %4lld |", shape.what, static_cast<long long>(m),

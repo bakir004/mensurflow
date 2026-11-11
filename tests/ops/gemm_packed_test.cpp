@@ -388,6 +388,49 @@ int main() {
             cpu::set_max_threads(saved_threads);
         }
 
+        // The paths chosen by the shape of the product, each switched on and off:
+        //   narrow            outputs narrower than 16 columns, as dot products along the depth
+        //                     (depths that are not whole vectors, odd row counts, a depth longer
+        //                     than its depth block, one to fifteen columns, split over threads)
+        //   independent rows  many rows times few B panels: threads that share nothing, on the
+        //                     physical cores and on every hardware thread (short depth)
+        //   tile fit          shared B at a short depth: tiles no wider than what fits in the L2
+        // and the products with few rows whose B is packed privately a few panels at a time.
+        const std::int64_t shaped[][3] = {
+            {64, 10, 512},   {65, 10, 515},  {33, 1, 100},   {7, 2, 9},      {40, 15, 70},
+            {3, 12, 2000},   {20, 5, 40000}, {2000, 10, 300}, {1001, 13, 77}, {2, 3, 8},
+            {2000, 64, 147}, {3000, 40, 100}, {1500, 64, 30}, {900, 100, 200}, {5000, 16, 33},
+            {600, 2000, 100}, {700, 900, 250}, {32, 3000, 800}, {64, 1500, 100}};
+        for (int variant = 0; variant < 4; ++variant) {
+            cpu::PackedGemmBlocking blocking = original;
+            blocking.narrow = variant & 1;
+            blocking.independent_rows = variant & 1;
+            blocking.tile_fit = (variant >> 1) & 1;
+            blocking.pin = variant < 2 ? original.pin : 0;
+            cpu::set_packed_gemm_blocking(blocking);
+            const std::string name = "shaped paths variant " + std::to_string(variant);
+            for (const auto& s : shaped) {
+                check_shape(cpu::matmul_f32_packed, name.c_str(), s[0], s[1], s[2]);
+                for (int threads : {2, 12, 24}) {
+                    cpu::set_max_threads(threads);
+                    check_shape(cpu::matmul_f32_packed_parallel, (name + " parallel").c_str(), s[0],
+                                s[1], s[2]);
+                }
+                cpu::set_max_threads(saved_threads);
+            }
+            // Narrow outputs read A in place: padded rows of A, and every layout of B.
+            for (int kind_b = 0; kind_b < 5; ++kind_b) {
+                for (int kind_a = 0; kind_a < 2; ++kind_a) {
+                    check_strided(cpu::matmul_f32_packed_strided, name, kind_a, kind_b, 37, 11, 301);
+                    cpu::set_max_threads(12);
+                    check_strided(cpu::matmul_f32_packed_parallel_strided, name + " parallel",
+                                  kind_a, kind_b, 2000, 10, 300);
+                    cpu::set_max_threads(saved_threads);
+                }
+            }
+        }
+        cpu::set_packed_gemm_blocking(original);
+
         // Strided operands (transposed, padded, interleaved) and a padded C, with the single-thread
         // and the threaded kernel, with default and tiny block sizes.
         const std::int64_t strided_shapes[][3] = {{1, 1, 1},      {5, 15, 7},     {13, 33, 255},
