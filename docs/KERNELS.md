@@ -50,11 +50,21 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`matvec`|OpenMP, double accumulation per row|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
-|`matmul`|blocked, rows split across threads; CPU autograd backward|—|—|
+|`matmul`|packed AVX2/FMA GEMM on our own thread pool (scalar fallback without AVX2); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|—|
+|`gemm`|alpha, beta and transposes|—|—|
 |`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|
+|`scal`, `asum`, `nrm2`, `copy`, `gemv`|OpenMP, float32|—|—|
 |`ger`|OpenMP, rows split across threads|—|—|
+|`pow`, `minimum`, `maximum`|OpenMP, with broadcasting|—|—|
+|`log`, `rsqrt`, `tanh`, `sin`, `cos`, `reciprocal`, `clamp`|OpenMP, float32|—|—|
+|`leaky_relu`, `gelu`, `silu`, `elu`, `softplus`|OpenMP, float32, forward only|—|—|
+|`relu`, `sigmoid`, `tanh`, `gelu`, `silu` backward|OpenMP, float32|—|—|
+|`eq`, `ne`, `lt`, `le`, `gt`, `ge`, `where`|OpenMP, with broadcasting; Bool masks|—|—|
+|`min`, `prod`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`concat`, `pad`|OpenMP, memcpy pieces and vectorized fills; `pad` is constant mode only|—|—|
+|`gather`, `index_select`|CPU, integer indices|—|—|
 |`split`|views (no kernel)|views|views|
+|`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
 CUDA was tested on an RTX 3060; Metal has never been built on real hardware. The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
@@ -197,7 +207,8 @@ integer masks and unpacking int4 weights.
 * \[ ] `bitcast` — reinterpret bits without converting values.
 * \[ ] `add\_n` — sum of many same-shaped tensors in one pass.
 * \[ ] `bucketize` / `searchsorted` — map values to bins given sorted boundaries.
-* \[ ] General broadcasting for elementwise operations.
+* \[x] General broadcasting for elementwise operations — NumPy rules for binary arithmetic,
+`pow`, `minimum`, `maximum`, comparisons and `where`.
 
 ### Additional reductions and linear algebra
 
@@ -217,21 +228,20 @@ and GEMM; clamp small negative roundoff artifacts to zero.
 
 ### Indexing and shape operations
 
-* \[ ] `slice` with a restricted, documented indexing contract; steps (strided
-slice) can follow.
+* \[x] `slice` — `Tensor::slice(dim, start, end, step)`, a view; Python-style clamping, step ≥ 1.
 * \[ ] `select` and `diagonal` — single-index and diagonal views. Also building a
 diagonal matrix from a vector and overwriting a diagonal.
 * \[ ] `as\_strided` — general strided view, once views are supported.
 * \[x] `concat` and `split` along a selected axis (`split` returns views).
 * \[ ] `stack` / `unstack` — join along, or split into, a new axis.
-* \[ ] `gather` / row selection with integer indices and bounds validation.
+* \[x] `gather` / row selection with integer indices and bounds validation (CPU).
 * \[ ] `gather\_nd` / `scatter\_nd` — multi-dimensional index tuples.
 * \[ ] Boolean-mask selection (`masked\_select`, ONNX `Compress`).
 * \[ ] `one\_hot` and `hardmax` (one-hot of the argmax).
 * \[ ] `unique` — output shape depends on data, like `nonzero`.
-* \[ ] `broadcast\_to` / `expand`, initially materialized if zero-stride views are
-unsupported.
-* \[ ] `squeeze` / `unsqueeze` — metadata-only.
+* \[x] `broadcast\_to` / `expand` — `Tensor::expand`, a zero-stride view.
+* \[x] `unsqueeze` — metadata-only (`Tensor::unsqueeze`).
+* \[ ] `squeeze` — metadata-only.
 * \[ ] `repeat` / tile.
 * \[ ] `pad` — constant mode done; reflection and replication modes remain.
 * \[ ] `flip` and `roll`; `reverse\_sequence` for variable-length sequences.
@@ -239,7 +249,8 @@ unsupported.
 `batch\_to\_space` / `space\_to\_batch` are the batch-axis equivalents.
 * \[ ] `tril` / `triu` — build causal masks.
 * \[ ] `arange` — index and position tensors.
-* \[ ] `index\_select`, `scatter`, and `scatter\_reduce` beyond scatter-add.
+* \[x] `index\_select` (CPU).
+* \[ ] `scatter` and `scatter\_reduce` beyond scatter-add.
 * \[ ] `slice\_scatter`, `select\_scatter`, and `index\_put` — write values into part
 of a tensor, e.g. KV-cache updates.
 * \[ ] `masked\_scatter` — fill masked positions from a source tensor.
@@ -247,7 +258,8 @@ of a tensor, e.g. KV-cache updates.
 
 ### Losses and evaluation
 
-* \[x] Mean squared error (MSE).
+* \[ ] Mean squared error (MSE) as an op (removed; `examples/mlp\_xor.cpp` writes it as
+`mean(square(sub(p, t)))`).
 * \[ ] Binary cross-entropy **with logits**, using a stable formula.
 * \[ ] `log\_softmax`, using stable log-sum-exp (removed).
 * \[ ] Multiclass cross-entropy **with logits**, with integer class labels (removed).
