@@ -139,6 +139,22 @@ const char* op_name(OpId op) {
         return "gather";
     case OpId::IndexSelect:
         return "index_select";
+    case OpId::Uniform:
+        return "uniform";
+    case OpId::Normal:
+        return "normal";
+    case OpId::Bernoulli:
+        return "bernoulli";
+    case OpId::Dropout:
+        return "dropout";
+    case OpId::DropoutBackward:
+        return "dropout_backward";
+    case OpId::OneHot:
+        return "one_hot";
+    case OpId::Embedding:
+        return "embedding";
+    case OpId::EmbeddingBackward:
+        return "embedding_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }
@@ -188,10 +204,12 @@ Device execution_device(Execution execution, Device data_device) {
 }
 
 void dispatch(OpId op, const OpArgs& args, Execution execution) {
-    if (args.inputs.empty()) {
+    const bool factory = op == OpId::Uniform || op == OpId::Normal || op == OpId::Bernoulli;
+    if (args.inputs.empty() && (!factory || args.outputs.empty())) {
         throw std::invalid_argument(std::string(op_name(op)) + ": no input tensors");
     }
-    const Device data_device = args.inputs[0].device();
+    const Tensor& source = args.inputs.empty() ? args.outputs[0] : args.inputs[0];
+    const Device data_device = source.device();
     for (const auto* group : {&args.inputs, &args.outputs}) {
         for (const Tensor& t : *group) {
             if (t.device() != data_device) {
@@ -205,7 +223,7 @@ void dispatch(OpId op, const OpArgs& args, Execution execution) {
     const Device target = execution_device(execution, data_device);
     Registry& registry = Registry::instance();
     Backend& backend = registry.get(target);
-    const KernelFn kernel = registry.dispatcher().lookup({op, target.type, args.inputs[0].dtype()});
+    const KernelFn kernel = registry.dispatcher().lookup({op, target.type, source.dtype()});
     if (target == data_device) {
         kernel(args, backend.stream(target.index));
         return;

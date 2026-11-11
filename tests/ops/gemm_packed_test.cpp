@@ -48,10 +48,11 @@ void check_shape(Kernel kernel, const char* name, std::int64_t m, std::int64_t n
             // Products are exact in float; only the summation order/rounding can differ.
             const double tolerance =
                 1e-5 * (1.0 + std::abs(expected)) * (1.0 + static_cast<double>(k) / 64.0);
-            test::require(std::abs(static_cast<double>(got) - expected) <= tolerance,
-                          what + " wrong at (" + std::to_string(i) + "," + std::to_string(j) +
-                              "): got " + std::to_string(got) + " expected " +
-                              std::to_string(expected));
+            if (!(std::abs(static_cast<double>(got) - expected) <= tolerance)) {
+                test::require(false, what + " wrong at (" + std::to_string(i) + "," +
+                                         std::to_string(j) + "): got " + std::to_string(got) +
+                                         " expected " + std::to_string(expected));
+            }
         }
     }
 }
@@ -138,10 +139,9 @@ void check_strided(StridedKernel kernel, const std::string& name, int kind_a, in
         for (std::int64_t j = 0; j < ldc; ++j) {
             const float got = c[static_cast<std::size_t>(i * ldc + j)];
             if (j >= n) {
-                if (i * ldc + j < static_cast<std::int64_t>(c.size())) {
-                    test::require(got == poison, what + ": wrote outside the matrix at (" +
-                                                     std::to_string(i) + "," + std::to_string(j) +
-                                                     ")");
+                if (i * ldc + j < static_cast<std::int64_t>(c.size()) && got != poison) {
+                    test::require(false, what + ": wrote outside the matrix at (" +
+                                             std::to_string(i) + "," + std::to_string(j) + ")");
                 }
                 continue;
             }
@@ -152,14 +152,17 @@ void check_strided(StridedKernel kernel, const std::string& name, int kind_a, in
             }
             const double tolerance =
                 1e-5 * (1.0 + std::abs(expected)) * (1.0 + static_cast<double>(k) / 64.0);
-            test::require(std::abs(static_cast<double>(got) - expected) <= tolerance,
-                          what + ": wrong at (" + std::to_string(i) + "," + std::to_string(j) +
-                              "): got " + std::to_string(got) + " expected " +
-                              std::to_string(expected));
+            if (!(std::abs(static_cast<double>(got) - expected) <= tolerance)) {
+                test::require(false, what + ": wrong at (" + std::to_string(i) + "," +
+                                         std::to_string(j) + "): got " + std::to_string(got) +
+                                         " expected " + std::to_string(expected));
+            }
         }
     }
     for (std::size_t i = c.size() - 16; i < c.size(); ++i) {
-        test::require(c[i] == poison, what + ": wrote past the end of C");
+        if (c[i] != poison) {
+            test::require(false, what + ": wrote past the end of C");
+        }
     }
 }
 

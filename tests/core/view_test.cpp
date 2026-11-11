@@ -1,5 +1,8 @@
 // Tests view ops (transpose, slice, expand, unsqueeze, view) and strided copy_to_host.
 #include "mensurflow/tensor.hpp"
+#include "mensurflow/ops/elementwise.hpp"
+#include "mensurflow/ops/reduction.hpp"
+#include "core/autograd.hpp"
 #include "test_util.hpp"
 
 #include <stdexcept>
@@ -103,6 +106,97 @@ void test_permute_and_parallel_contiguous() {
                                                 "out of range permutation axis");
 }
 
+void test_view_gradients() {
+    Tensor base = matrix();
+    base.set_requires_grad();
+    Tensor transposed = base.transpose(0, 1);
+    const Tensor weights = Tensor::from_vector(Values{1, 2, 3, 4, 5, 6}, {3, 2});
+    sum(mul(transposed, weights)).backward();
+    test::require(base.grad().shape() == base.shape(), "transpose gradient keeps base shape");
+    test::require(base.grad().to_vector<float>() == Values{1, 3, 5, 2, 4, 6},
+                  "transpose inverse gradient");
+    test::require(transposed.grad().shape() == transposed.shape(),
+                  "view keeps its own gradient shape");
+    base.zero_grad();
+    test::require(transposed.grad().to_vector<float>() == weights.to_vector<float>(),
+                  "zeroing base gradient does not change view gradient");
+    transposed.set_requires_grad(false);
+    test::require(base.requires_grad(), "view autograd state is independent from base");
+
+    Tensor sliced_base = Tensor::ones({2, 5});
+    sliced_base.set_requires_grad();
+    const Tensor sliced = sliced_base.slice(1, 1, 5, 2);
+    sum(mul(sliced, Tensor::from_vector(Values{1, 2, 3, 4}, {2, 2}))).backward();
+    test::require(sliced_base.grad().to_vector<float>() == Values{0, 1, 0, 2, 0, 0, 3, 0, 4, 0},
+                  "slice backward scatters with offset and step");
+
+    Tensor permuted_base = Tensor::ones({2, 3, 4});
+    permuted_base.set_requires_grad();
+    Values coefficients(24), expected(24);
+    for (int k = 0; k < 4; ++k) {
+        for (int b = 0; b < 2; ++b) {
+            for (int r = 0; r < 3; ++r) {
+                const float value = static_cast<float>((k * 2 + b) * 3 + r + 1);
+                coefficients[static_cast<std::size_t>((k * 2 + b) * 3 + r)] = value;
+                expected[static_cast<std::size_t>((b * 3 + r) * 4 + k)] = value;
+            }
+        }
+    }
+    sum(mul(permuted_base.permute({2, 0, 1}),
+            Tensor::from_vector(coefficients, {4, 2, 3}))).backward();
+    test::require(permuted_base.grad().to_vector<float>() == expected, "permutation inverse");
+
+    Tensor reshaped_base = matrix();
+    reshaped_base.set_requires_grad();
+    sum(mul(reshaped_base.view({3, 2}).unsqueeze(1),
+            Tensor::from_vector(Values{1, 2, 3, 4, 5, 6}, {3, 1, 2}))).backward();
+    test::require(reshaped_base.grad().shape() == Shape{2, 3} &&
+                      reshaped_base.grad().to_vector<float>() == Values{1, 2, 3, 4, 5, 6},
+                  "reshape and unsqueeze inverse");
+
+    Tensor broadcast_base = Tensor::ones({1, 3});
+    broadcast_base.set_requires_grad();
+    sum(mul(broadcast_base.expand({2, 3}),
+            Tensor::from_vector(Values{1, 2, 3, 4, 5, 6}, {2, 3}))).backward();
+    test::require(broadcast_base.grad().to_vector<float>() == Values{5, 7, 9},
+                  "expand backward sums repeated elements");
+
+    Tensor scalar = Tensor::ones({});
+    scalar.set_requires_grad();
+    sum(mul(scalar.expand({2, 3}),
+            Tensor::from_vector(Values{1, 2, 3, 4, 5, 6}, {2, 3}))).backward();
+    test::require(scalar.grad().shape().empty() && scalar.grad().item<float>() == 21.0f,
+                  "scalar expand inverse");
+
+    Tensor composed_base = Tensor::ones({2, 4});
+    composed_base.set_requires_grad();
+    const Tensor composed = composed_base.transpose(0, 1).slice(0, 1, 4, 2)
+                                .unsqueeze(1).permute({2, 0, 1});
+    sum(mul(composed, Tensor::from_vector(Values{1, 2, 3, 4}, {2, 2, 1}))).backward();
+    test::require(composed_base.grad().to_vector<float>() == Values{0, 1, 0, 2, 0, 3, 0, 4},
+                  "composed view inverses");
+
+    Tensor overlapping_base = Tensor::ones({1, 3});
+    overlapping_base.set_requires_grad();
+    sum(overlapping_base.expand({2, 3}).transpose(0, 1).slice(1, 0, 1)).backward();
+    test::require(overlapping_base.grad().to_vector<float>() == Values{1, 1, 1},
+                  "slice of expanded view keeps logical occurrences separate");
+
+    Tensor empty_base = Tensor::ones({1, 3});
+    empty_base.set_requires_grad();
+    sum(empty_base.expand({0, 3}).slice(0, 0, 0)).backward();
+    test::require(empty_base.grad().to_vector<float>() == Values{0, 0, 0},
+                  "empty view gradient");
+
+    detail::autograd::NoGradGuard guard;
+    test::require(!base.transpose(0, 1).requires_grad() &&
+                      !base.permute({1, 0}).requires_grad() &&
+                      !base.slice(0, 0, 1).requires_grad() &&
+                      !base.unsqueeze(0).requires_grad() && !base.view({6}).requires_grad(),
+                  "NoGrad views do not acquire autograd state");
+    test::require(!broadcast_base.expand({2, 3}).requires_grad(), "NoGrad expand");
+}
+
 } // namespace
 
 int main() {
@@ -113,5 +207,6 @@ int main() {
         test_view();
         test_composed_views();
         test_permute_and_parallel_contiguous();
+        test_view_gradients();
     });
 }

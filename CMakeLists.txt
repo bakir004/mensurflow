@@ -42,7 +42,9 @@ add_library(mensurflow
     src/core/tensor.cpp
     src/ops/blas.cpp
     src/ops/elementwise.cpp
+    src/ops/indexing.cpp
     src/ops/movement.cpp
+    src/ops/random.cpp
     src/ops/reduction.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/affinity.cpp
@@ -53,7 +55,9 @@ add_library(mensurflow
     src/backends/cpu/ops/elementwise/parallel_cutoffs.cpp
     src/backends/cpu/ops/elementwise/elementwise.cpp
     src/backends/cpu/ops/elementwise/cast.cpp
+    src/backends/cpu/ops/indexing/indexing.cpp
     src/backends/cpu/ops/movement/movement.cpp
+    src/backends/cpu/ops/random/random.cpp
     src/backends/cpu/ops/reduction/reduction.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
@@ -152,6 +156,8 @@ mensurflow_add_test(gemm_batched_test tests/ops/gemm_batched_test.cpp)
 mensurflow_add_test(ger_test tests/ops/ger_test.cpp)
 mensurflow_add_test(movement_test tests/ops/movement_test.cpp)
 mensurflow_add_test(activation_movement_test tests/ops/activation_movement_test.cpp)
+mensurflow_add_test(random_test tests/ops/random_test.cpp)
+mensurflow_add_test(indexing_test tests/ops/indexing_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -235,6 +241,7 @@ mensurflow_add_benchmark(cast_benchmark benchmarks/cast_benchmark.cpp)
 mensurflow_add_benchmark(gemm_batched_benchmark benchmarks/blas/gemm_batched_benchmark.cpp)
 mensurflow_add_benchmark(ger_benchmark benchmarks/blas/ger_benchmark.cpp)
 mensurflow_add_benchmark(movement_benchmark benchmarks/movement_benchmark.cpp)
+mensurflow_add_benchmark(random_indexing_benchmark benchmarks/random_indexing_benchmark.cpp)
 
 # LibTorch from a CPU PyTorch wheel is an optional native reference, not a core dependency.
 # Configure a separate build directory with Torch's CMake prefix when enabling this target.
@@ -252,6 +259,8 @@ if(MENSURFLOW_TORCH_BENCHMARK)
     target_compile_definitions(selection_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
     target_link_libraries(cast_benchmark PRIVATE ${TORCH_LIBRARIES})
     target_compile_definitions(cast_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
+    target_link_libraries(random_indexing_benchmark PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(random_indexing_benchmark PRIVATE MENSURFLOW_TORCH_REFERENCE=1)
     # The imported torch target supplies the C++ standard its installed headers require.
 endif()
 

@@ -97,7 +97,6 @@ void gather_f32(const float* x, const std::int64_t* indices, float* out,
         MENSURFLOW_PARALLEL_FOR(if (n > parallel_work_threshold))
         for (std::int64_t job = 0; job < jobs; ++job) {
             const std::int64_t outer_index = job / output_axis;
-            const std::int64_t output_index = job % output_axis;
             const std::int64_t source_index = indices[job * inner];
             const std::int64_t source =
                 (outer_index * input_axis + source_index) * inner;

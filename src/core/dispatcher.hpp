@@ -82,7 +82,15 @@ enum class OpId {
     Concat,
     Pad,
     Gather,
-    IndexSelect
+    IndexSelect,
+    Uniform,
+    Normal,
+    Bernoulli,
+    Dropout,
+    DropoutBackward,
+    OneHot,
+    Embedding,
+    EmbeddingBackward
 };
 
 const char* op_name(OpId op);
@@ -112,6 +120,10 @@ struct OpArgs {
     // pad: elements added before and after each dimension, as (before, after) pairs in dimension
     // order. Unused by other operations.
     std::vector<std::int64_t> padding{};
+    // Counter-based random generation: offset counts output elements, not threads.
+    std::uint64_t seed = 0;
+    std::uint64_t offset = 0;
+    bool training = true; // Dropout: eval mode is the identity.
 };
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);
@@ -145,7 +157,8 @@ Device execution_device(Execution execution, Device data_device);
 // Runs `op` where `execution` says (see execution_device). The inputs must all be on one device;
 // the outputs must be allocated on that same device. If the op runs elsewhere, the inputs are
 // copied there, the kernel writes temporary outputs, and those are copied back into `outputs`.
-// The kernel is looked up for the execution device and the first input's dtype. On a GPU it may
+// The kernel is looked up for the execution device and the first input's dtype (the first
+// output's dtype for random factories, which have no inputs). On a GPU it may
 // return before the device finishes; reading an output through Tensor blocks until it is ready.
 // Throws invalid_argument if the tensors are on different devices, runtime_error if the
 // execution device is unavailable, and NotImplemented if it has no kernel for the op and dtype.

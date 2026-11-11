@@ -33,7 +33,7 @@ bit-identical CPU/GPU reductions.
 What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
 dispatcher where to run. CPU kernels are in
-`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement}/`; each is one loop that OpenMP
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
@@ -63,6 +63,10 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`min`, `prod`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`concat`, `pad`|OpenMP, memcpy pieces and vectorized fills; `pad` is constant mode only|—|—|
 |`gather`, `index_select`|CPU, integer indices|—|—|
+|`uniform`, `normal`, `bernoulli`|OpenMP over Philox4x32-10 blocks; seeded F32 output, sample offsets, same stream at every thread count; forward only|—|—|
+|`dropout`|OpenMP, F32 forward/backward and CPU autograd; saved Bool mask, inverted scaling and explicit train/eval|—|—|
+|`one_hot`|OpenMP, I64 indices and output; arbitrary-rank indices, explicit class count; forward only|—|—|
+|`embedding`|OpenMP, F32 weights/output and I64 indices; forward/backward and CPU autograd; repeated-index gradients accumulate deterministically|—|—|
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
@@ -106,6 +110,36 @@ Each CPU elementwise operation has an independent OpenMP cutoff in
 Defaults are 32,768 elements pending measurement; parallel execution requires `n > cutoff`.
 Without OpenMP, execution stays serial. Benchmark controls and tuning guidance are in
 [BENCHMARKING.md](BENCHMARKING.md#elementwise-parallel-cutoffs).
+
+## CPU random generation and embeddings
+
+Random factories return F32 CPU tensors and use an explicit seed and sample offset; there is no
+global RNG state. Repeating the same call repeats its values. Continue a stream by adding the
+previous output's element count to the offset, including for `normal` and partial Philox blocks.
+Changing the CPU thread count does not change values within a build. Normal uses Box-Muller;
+transcendental rounding can vary between platforms.
+
+```cpp
+auto weights = normal({100, 32}, 0.0f, 0.02f, 42); // shape, mean, stddev, seed
+auto labels = Tensor::from_vector(std::vector<std::int64_t>{2, 0, 2}, {3});
+auto encoded = one_hot(labels, 100);                // I64 [3, 100]
+weights.set_requires_grad();
+auto vectors = embedding(weights, labels);         // F32 [3, 32]
+auto dropped = dropout(vectors, 0.1f, true, 42);    // output + saved Bool mask
+sum(dropped.output).backward();                    // gradients accumulate into weight row 2 twice
+```
+
+`uniform` requires finite ordered bounds and returns values in `[low, high)` (equal bounds give
+a constant). `normal` accepts finite mean and nonnegative finite standard deviation. `bernoulli`
+returns F32 zeros and ones with a finite probability in `[0, 1]`.
+
+Dropout uses inverted scaling in training, copies its input in evaluation, and returns zero at
+training probability one. Backward uses the saved mask with the same probability and mode.
+Embedding accepts arbitrary-rank I64 indices, appends the table's feature width, and sums
+duplicate-index gradients in input order at every thread count. Both ops integrate with CPU F32
+autograd; their explicit backward calls also work without recording a graph. Views are packed
+before dispatch. Index validation rejects negative and out-of-range IDs, including for empty
+feature dimensions. GPU kernels and general gather backward are still pending.
 
 ## P0 — Minimum useful dense inference library
 
@@ -237,7 +271,8 @@ diagonal matrix from a vector and overwriting a diagonal.
 * \[x] `gather` / row selection with integer indices and bounds validation (CPU).
 * \[ ] `gather\_nd` / `scatter\_nd` — multi-dimensional index tuples.
 * \[ ] Boolean-mask selection (`masked\_select`, ONNX `Compress`).
-* \[ ] `one\_hot` and `hardmax` (one-hot of the argmax).
+* \[x] `one\_hot` — I64 indices/output, explicit positive class count, CPU.
+* \[ ] `hardmax` (one-hot of the argmax).
 * \[ ] `unique` — output shape depends on data, like `nonzero`.
 * \[x] `broadcast\_to` / `expand` — `Tensor::expand`, a zero-stride view.
 * \[x] `unsqueeze` — metadata-only (`Tensor::unsqueeze`).
@@ -286,16 +321,17 @@ graphs if a full automatic differentiation system would exceed scope.
 * \[ ] Softmax/log-softmax backward when required independently of fused losses (removed).
 * \[ ] `sum\_to\_shape` — reduce broadcasted gradients back to an input's shape.
 * \[ ] Gradient accumulation for parameters used by multiple graph branches.
-* \[ ] Scatter-add or equivalent accumulation for gather/indexing gradients;
-repeated indices must accumulate correctly.
+* \[x] Embedding indexing gradients use deterministic scatter-add; repeated indices accumulate.
+* \[ ] Backward for general `gather` / `index_select`.
 
 A mathematical backward formula may use existing primitives rather than a new
 kernel. For example, GEMM backward can dispatch two existing GEMM operations.
 
 ### Parameter initialization and optimizer operations
 
-* \[ ] Seeded uniform and normal random initialization.
-* \[ ] `randperm` and Bernoulli sampling — data shuffling and dropout masks.
+* \[x] Seeded `uniform` and `normal` random initialization, Philox4x32-10, CPU F32.
+* \[x] `bernoulli` sampling — CPU F32 zeros/ones with explicit probability.
+* \[ ] `randperm` — data shuffling.
 * \[ ] Xavier/He initialization built from random generation and scaling.
 * \[ ] SGD parameter update (removed).
 * \[ ] Optional momentum SGD, followed by Adam with optimizer state and bias
@@ -303,7 +339,7 @@ correction.
 * \[ ] AdamW — Adam with decoupled weight decay; the usual optimizer for
 transformer training.
 * \[ ] Gradient zeroing and optional global-norm clipping.
-* \[ ] Optional dropout forward/backward with saved masks and explicit train/eval
+* \[x] Optional dropout forward/backward with saved masks and explicit train/eval
 behavior.
 
 ### Useful accumulation primitives
@@ -387,7 +423,7 @@ backward operations; forward-only support is not sufficient.
 This is a stretch tier. Reuse earlier primitives before writing specialized fused
 kernels.
 
-* \[ ] Embedding lookup, built on gather.
+* \[x] Embedding row lookup and backward; CPU F32 with I64 indices and repeated-index accumulation.
 * \[ ] Batched GEMM with transpose support for attention scores and weighted sums.
 * \[ ] Scaled dot-product attention: `softmax(QK^T / sqrt(d) + mask) V`.
 * \[ ] Causal, padding, and sliding-window masks, with defined all-masked-row

@@ -63,15 +63,28 @@ void test_registry() {
                     OpId::Relu,    OpId::LeakyRelu, OpId::Gelu, OpId::Silu, OpId::Elu,
                     OpId::Softplus, OpId::Sqrt,   OpId::Exp,    OpId::Sigmoid, OpId::Axpy,
                     OpId::BiasAdd, OpId::Sum,    OpId::Mean,   OpId::Max,     OpId::Argmax,
-                    OpId::Eq, OpId::Ne, OpId::Lt, OpId::Le, OpId::Gt, OpId::Ge, OpId::Where}) {
+                    OpId::Eq, OpId::Ne, OpId::Lt, OpId::Le, OpId::Gt, OpId::Ge, OpId::Where,
+                    OpId::Uniform, OpId::Normal, OpId::Bernoulli, OpId::Dropout,
+                    OpId::DropoutBackward, OpId::Embedding, OpId::EmbeddingBackward}) {
         test::require(registry.dispatcher().find({op, DeviceType::CPU, DType::F32}) != nullptr,
                       std::string("cpu ") + op_name(op) + " is registered");
     }
+    test::require(registry.dispatcher().find({OpId::OneHot, DeviceType::CPU, DType::I64}) != nullptr,
+                  "cpu one_hot is registered for integer indices");
 }
 
 void test_dispatch_errors() {
     test::require_throws<std::invalid_argument>(
         [] { dispatch(OpId::Dot, OpArgs{}, Execution::CPU); }, "no inputs");
+    test::require_throws<std::invalid_argument>(
+        [] { dispatch(OpId::Uniform, OpArgs{}, Execution::CPU); }, "factory needs an output");
+    const Tensor generated = Tensor::empty({7});
+    OpArgs args{{}, {generated}};
+    args.alpha = 0.0f;
+    args.beta = 1.0f;
+    dispatch(OpId::Uniform, args, Execution::CPU);
+    test::require(generated.to_vector<float>() == uniform({7}).to_vector<float>(),
+                  "factory dispatch uses the output dtype and device");
     const Tensor ints = Tensor::from_vector(std::vector<int>{1, 2}, {2});
     test::require_throws<NotImplemented>(
         [&] {

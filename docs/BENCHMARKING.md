@@ -30,6 +30,7 @@ the threads made it faster.
 | `cpu_parallel_benchmark` | sequential vs parallel arithmetic/activations and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
 | `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
 | `activation_movement_benchmark` | public activation-backward and tensor-movement APIs across CPU thread counts | `benchmarks/activation_movement_benchmark.cpp` |
+| `random_indexing_benchmark` | seeded RNG, dropout and indexing forward/backward public APIs; optional native ATen comparison | `benchmarks/random_indexing_benchmark.cpp` |
 | `selection_benchmark` | F32 comparisons and `where`, one/many CPU threads; optional native ATen reference | `benchmarks/selection_benchmark.cpp` |
 | `cast_benchmark` | all 16 F32/I32/F16/BF16 pairs, one/many CPU threads; optional native ATen `copy_` reference | `benchmarks/cast_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
@@ -225,6 +226,41 @@ comparison and at most 13 for `where`; casts count source plus destination bytes
 physical DRAM bandwidth measurements. Selection uses deterministic finite inputs; cast floating
 inputs use quarter increments and I32 inputs use integers from -2046 to 2046. Cast names use
 `<source>_to_<destination>` (for example, `f32_to_bf16`); omit names to run all 16 pairs.
+
+## Comparing random generation and indexing against PyTorch
+
+`random_indexing_benchmark` is always built. Without LibTorch it compares the public APIs on one
+and many CPU threads. `MENSURFLOW_TORCH_BENCHMARK=ON` enables native allocating ATen references in
+the same executable, using the existing Torch CMake setup above. Both sides time allocation,
+validation and execution; tensor construction, correctness checks and host readback are outside
+the timer. Autograd recording is disabled. This scope differs from the preallocated activation
+benchmark and should not be compared with its raw times.
+
+```bash
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=spread \
+  ./build-torch-bench/random_indexing_benchmark --sizes=1000,32769,8388608 \
+  --threads=1,2,6,12 > build-torch-bench/results/random-indexing-run1.txt
+# Cool the machine before the second run.
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=spread \
+  ./build-torch-bench/random_indexing_benchmark --sizes=1000,32769,8388608 \
+  --threads=1,2,6,12 --reverse > build-torch-bench/results/random-indexing-run2.txt
+python3 benchmarks/reference/random_indexing.py \
+  build-torch-bench/results/random-indexing-run1.txt \
+  build-torch-bench/results/random-indexing-run2.txt
+```
+
+Select individual operations by name: `uniform normal bernoulli dropout dropout_backward one_hot
+embedding embedding_backward`. Sizes are output-element targets; one-hot rounds up to a multiple
+of 16 classes, and embedding rounds up to 32 features. Embedding backward reports its upstream
+shape and always produces the 512×32 table gradient. The large default exceeds a 16 MiB L3 cache.
+
+MensurFlow uses Philox, while PyTorch's CPU RNG uses a different stream. Bounds and distribution
+moments are checked independently rather than requiring equal samples. Dropout forward checks
+each implementation's own mask and scaling; backward uses the same predetermined Bool mask.
+One-hot and both embedding directions use shared deterministic inputs and independent references,
+including repeated indices. Every measured library is preceded by a 500 ms worker-settling pause;
+all rows use nine samples. The reporting script retains paired medians/minimums and flags drift
+above 10%; raw logs also retain maximums and throughput.
 
 ## Elementwise parallel cutoffs
 
