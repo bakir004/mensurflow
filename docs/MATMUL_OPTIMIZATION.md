@@ -40,6 +40,7 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 25 | Balance: equal column blocks, static tiles, finer row tiles, more threads for small products, a caller that shares a worker's core | `balanced_nc`; `static_items` (each thread owns a fixed run of the tiles); `fine_rows`; `min_macs_per_thread` 256K; `pool_run` can leave out the worker on the caller's core; `thread_pool_benchmark`; first run at n = 8192; 4 input-gradient shapes | n = 8192 on one thread 87 -> 107 GFLOP/s (was 0.83x OpenBLAS). 32x4096x4096 430 -> 455-540; weight gradients 872 -> 1052 and 271 -> 478; attention scores 145 -> 241; conv 196 px 702 -> 952; n = 256 on 12 threads 593 -> 746. 25 of 25 shapes ahead (geometric mean 1.94x), squares 49 of 49 up to n = 8192 |
 | 26 | Chiplets divide the rows for narrow outputs; B packed once and reused | `split_rows`: with few B panels each chiplet packs only its rows of A instead of a copy of all of it. `pack_b_f32` / `matmul_f32_prepacked` / `PackedB`: the weights of a layer in inference are packed once | Convolutions as im2col: 3136 px 667-816 -> 945-960 GFLOP/s, 12544 px 574-600 -> 811-886, and stable. 25 shapes: geometric mean 2.01x. Prepacked: batch 16 405 -> 548, 32x4096x4096 527 -> 812, logits 672 -> 915; none slower |
 | 27 | MKL and AOCL-BLIS added to the shapes benchmark (a measurement, no kernel change) | `gemm_shapes_openblas_benchmark` loads MKL 2026.2 and AOCL-BLAS 5.2 at run time and times them next to OpenBLAS, each at its best of 7 thread counts, with and without their threads bound to cores | Ahead of MKL on 25 of 25 shapes (geometric mean 1.76x) and of OpenBLAS on 25 of 25 (1.86x). Against AOCL-BLIS: 1.29x, ahead on 19, level on 2, behind on 4 (512->10 0.63x, logits 0.83x, conv 12544 px 0.88x, weight gradient 4096x4096 0.94x) |
+| 28 | The shapes where AOCL-BLIS was ahead: narrow outputs as dot products, independent rows, smaller private B chunks, tiles that fit the L2 at a short depth, both hardware threads for short depths | `narrow`, `independent_rows`, `tile_fit` in `PackedGemmBlocking`; the private B chunk is a fifth of the L2 on a team; `smt_max_depth` | 64 x 10 x 512: 38 -> 70 GFLOP/s (AOCL 60). Logits 64 x 32000 x 768: 660 -> 811 (AOCL 816, level). Conv 12544 px: 895 -> 1058 (AOCL 924). Weight gradient 4096 x 4096 x 256: 1056 -> 1141 (AOCL 1099). All 25 shapes: 1.35x AOCL-BLIS (was 1.29x), ahead on 24 and level on 1; 1.85x MKL, 1.99x OpenBLAS |
 
 ## The improvements, explained
 
@@ -1216,6 +1217,102 @@ about 10-15% below those of section 26 in the first run), 3 rounds, medians. Dif
 or on Intel hardware, where MKL uses its own AVX2 or AVX-512 kernels. The prepacked path
 (section 26) was not part of this comparison.
 
+### 28. The shapes where AOCL-BLIS was ahead
+
+Section 27 left four shapes behind AOCL-BLIS. Each had a different cause.
+
+**Narrow outputs: dot products (`narrow`).** 64 x 10 x 512 is a classifier head with 10 classes.
+The 6 x 16 tile computes 16 columns whether they exist or not (10/16 of the arithmetic is used), and
+all of A is packed for a product that takes microseconds. For n below 16 every element of C is now
+a dot product along the depth, C[i, j] = A[i, :] . B[:, j], eight depth steps per FMA: no lane is
+wasted whatever n is. A is read in place (its rows must be contiguous along the depth, otherwise
+the tile path is used); the n columns of B are copied once into n contiguous rows. Two rows of A
+times up to six columns of B are 12 sums in 12 registers (10 columns are done as 5 + 5; with one or
+two columns, four rows at a time). Threads take whole runs of rows. The results differ from the tile
+kernel's in the last bits (eight partial sums per element).
+
+A first version computed the transposed product with the 6 x 16 tile (the 10 columns along the
+6-row side). It reached 53 GFLOP/s, because A still had to be packed; the dot products reach 70-74.
+
+**Independent rows (`independent_rows`).** A convolution as im2col with 64 output channels has many
+rows and 4 B panels. When there is one depth step and the packed B fits in half an L2, each thread
+now packs its own copy of B (37 KB here) and takes blocks of rows: it packs those rows of A into its
+own buffer and multiplies them. Nothing is shared, so there is no barrier; each thread owns a run
+of the blocks and takes from the others only when it is done. 3136 x 64 x 576: 946-961 -> 1060-1089.
+
+**Both hardware threads for short depths.** With a depth of 147 the kernel returns to C after few
+steps and the threads wait for A and C much of the time. The second hardware thread of each core
+works in those gaps: 12544 x 64 x 147 on 24 against 12 threads 914 -> 1040, 784 x 512 x 16
+460 -> 530, 768 x 3072 x 64 925 -> 978. Deeper products lose (3136 x 64 x 256 -9%, 512 x 512 x 128
+-5%, 256 x 256 x 128 -21%), so the rule is narrow: products with at least 512 rows and a depth of at
+most 96, and independent-rows products up to a depth of 160. Everything else below 2^30
+multiply-adds stays at one thread per core, as before.
+
+**Smaller private B chunks.** On a team, the B panels a thread packs for one tile now take a fifth
+of the L2 (2 panels at a depth of 768) instead of half (5 panels). Measured on 12 threads, 5 rounds,
+twice: logits 64 x 32000 x 768 655 -> 727, 32 x 4096 x 4096 513 -> 594, 256 x 4096 x 4096
+914 -> 1048 and its input gradient 960 -> 1116; the shapes with 512 columns already used one panel
+and do not change. One panel is no better than two. On one thread the larger chunk stays (it is
+faster there: 69 against 64 at 32 x 4096 x 4096).
+
+**Tiles that fit the L2 at a short depth (`tile_fit`).** 4096 x 4096 x 256 used tiles of 240 rows
+by 24 B panels: 246 KB of A plus 393 KB of B, more than the L2, so the B panels came from L3 again
+for every A panel. A tile is now no wider than the B panels that fit in three quarters of the L2
+together with its rows (8 panels here). 1054 -> 1146-1158; the weight gradient 1056 -> 1117-1141.
+At the usual depth of 768 the rows alone exceed the L2 and the rule does not apply.
+
+**Tried and not kept.** Streaming (non-temporal) stores for a C larger than the L3: no measurable
+change on 4096 x 4096 x 256 (1151 against 1149), removed.
+
+**Result** (same method as section 27: seven thread counts, two runs, better of the two for every
+library; GFLOP/s):
+
+| shape | m x n x k | ours | OpenBLAS | MKL | AOCL | / OpenBLAS | / MKL | / AOCL |
+|---|---|---|---|---|---|---|---|---|
+| mlp 784->512, batch 1 | 1 x 512 x 784 | 39 | 3 | 25 | 37 | 13.00 | 1.56 | 1.05 |
+| mlp 784->512, batch 16 | 16 x 512 x 784 | 419 | 115 | 136 | 255 | 3.64 | 3.08 | 1.64 |
+| mlp 784->512, batch 64 | 64 x 512 x 784 | 701 | 284 | 321 | 406 | 2.47 | 2.18 | 1.73 |
+| mlp 784->512, batch 256 | 256 x 512 x 784 | 988 | 590 | 680 | 622 | 1.67 | 1.45 | 1.59 |
+| mlp 512->10, batch 64 | 64 x 10 x 512 | 70 | 32 | 16 | 60 | 2.19 | 4.38 | 1.17 |
+| mlp 4096->4096, batch 32 | 32 x 4096 x 4096 | 614 | 388 | 290 | 552 | 1.58 | 2.12 | 1.11 |
+| mlp 4096->4096, batch 256 | 256 x 4096 x 4096 | 1050 | 908 | 780 | 620 | 1.16 | 1.35 | 1.69 |
+| transformer 768->768, 128 tok | 128 x 768 x 768 | 971 | 449 | 590 | 537 | 2.16 | 1.65 | 1.81 |
+| transformer 768->768, 2048 tok | 2048 x 768 x 768 | 1104 | 733 | 794 | 967 | 1.51 | 1.39 | 1.14 |
+| transformer 768->3072, 512 tok | 512 x 3072 x 768 | 1158 | 907 | 766 | 764 | 1.28 | 1.51 | 1.52 |
+| transformer 3072->768, 512 tok | 512 x 768 x 3072 | 1089 | 945 | 1020 | 1012 | 1.15 | 1.07 | 1.08 |
+| transformer 768->3072, 8192 tok | 8192 x 3072 x 768 | 1187 | 1027 | 836 | 1151 | 1.16 | 1.42 | 1.03 |
+| attention scores 128x128, d 64 | 128 x 128 x 64 | 228 | 67 | 95 | 128 | 3.40 | 2.40 | 1.78 |
+| logits 768->32000, batch 64 | 64 x 32000 x 768 | 811 | 462 | 225 | 816 | 1.76 | 3.60 | 0.99 |
+| conv im2col 3136 px, 576->64 | 3136 x 64 x 576 | 1089 | 602 | 586 | 996 | 1.81 | 1.86 | 1.09 |
+| conv im2col 784 px, 1152->128 | 784 x 128 x 1152 | 1018 | 531 | 755 | 947 | 1.92 | 1.35 | 1.07 |
+| conv im2col 196 px, 2304->256 | 196 x 256 x 2304 | 955 | 498 | 722 | 673 | 1.92 | 1.32 | 1.42 |
+| conv im2col 12544 px, 147->64 | 12544 x 64 x 147 | 1058 | 585 | 504 | 924 | 1.81 | 2.10 | 1.15 |
+| weight grad 768x3072, batch 64 | 768 x 3072 x 64 | 992 | 380 | 489 | 731 | 2.61 | 2.03 | 1.36 |
+| weight grad 4096x4096, batch 256 | 4096 x 4096 x 256 | 1141 | 787 | 723 | 1099 | 1.45 | 1.58 | 1.04 |
+| weight grad 784x512, batch 16 | 784 x 512 x 16 | 539 | 116 | 136 | 224 | 4.65 | 3.96 | 2.41 |
+| input grad 784<-512, batch 64 | 64 x 784 x 512 | 770 | 299 | 333 | 534 | 2.58 | 2.31 | 1.44 |
+| input grad 4096<-4096, batch 256 | 256 x 4096 x 4096 | 1134 | 974 | 869 | 674 | 1.16 | 1.30 | 1.68 |
+| input grad 768<-3072, 512 tok | 512 x 768 x 3072 | 1099 | 950 | 997 | 1000 | 1.16 | 1.10 | 1.10 |
+| input grad 3072<-768, 512 tok | 512 x 3072 x 768 | 1218 | 832 | 691 | 715 | 1.46 | 1.76 | 1.70 |
+
+| against | geometric mean | we are faster on | section 27 |
+|---|---|---|---|
+| OpenBLAS 0.3.34 | 1.99x | 25 of 25 | 1.86x |
+| MKL 2026.2 | 1.85x | 25 of 25 | 1.76x |
+| AOCL-BLAS 5.2.0 | 1.35x | 24 of 25, 1 level (logits 0.99x) | 1.29x, 19 of 25 |
+| the fastest of the three on each shape | 1.28x | 24 of 25 | 1.21x |
+
+In the two runs separately we were ahead of AOCL-BLIS on 24 of 25 (defaults; logits 810 against
+816) and 25 of 25 (bound; logits 811 against 801). The square sizes were rerun against OpenBLAS
+(128 to 4096) and show no change beyond noise. Raw tables:
+[benchmarks/asja-ryzen9-5900x-2026-11-11.md](benchmarks/asja-ryzen9-5900x-2026-11-11.md).
+
+**How far to trust it.** As in section 27: one run of each table on a machine that was not quiet.
+Three of the four margins are small (logits level, the weight gradient 1.04x, 8192 tokens 1.03x) and
+could go either way on another day; the convolution (1.15x) and the narrow output (1.17x) are clear.
+The thresholds of this section (depths 96 and 160, a fifth of the L2, three quarters of the L2) were
+set on this one processor.
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
 `matmul_openblas_benchmark 128 256 512 1024 2048 4096 8192`, OpenBLAS 0.3.34, after section 25
@@ -1329,9 +1426,10 @@ n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchma
 | Linux timings and the i7 laptop | The Linux pinning code (sysfs topology, `pthread_setaffinity_np`) compiles and passes `affinity_test` and `gemm_packed_test` on the GitHub Ubuntu runner, but nothing has been timed on Linux; the i7 (4 cores, 8 threads, 256 KB L2) has no threaded measurements, and its small-L2 defaults are untested |
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
 | Use the prepacked B from the layers | `pack_b_f32` / `matmul_f32_prepacked` exist at the kernel level (section 26) but the tensor-level `matmul` does not use them. A dense layer in inference mode should own a `PackedB` of its weights and remake it when they change; in training the weights change every step, so there is nothing to gain |
-| The four shapes where AOCL-BLIS is ahead (section 27) | 64 x 10 x 512 (0.63x), logits 64 x 32000 x 768 (0.83x: we stop scaling after 8 threads), conv 12544 x 64 x 147 (0.88x) and the weight gradient 4096 x 4096 x 256 (0.94x). The first is the narrow-output item below; the other three are threaded efficiency on large products |
+| Small margins against AOCL-BLIS (section 28) | Logits 64 x 32000 x 768 is level (0.99x-1.01x), the weight gradient 4096 x 4096 x 256 is 1.04x and 8192 x 3072 x 768 is 1.03x. All three run at 84-89% of the chip's peak; the rest is packing before the single depth step and memory traffic |
+| 2048 x 4096 x 512 on 12 threads | Seen at 695-849 GFLOP/s while neighbouring shapes reach 1100; not looked into |
 | Repeat the reference comparison on a quiet machine, on other hardware, and with oneDNN, BLIS and LIBXSMM | Section 27 is one noisy run on one two-chiplet processor. Before any claim outside this machine: repeat runs, an EPYC and an Intel machine, the square-matrix table with MKL and AOCL-BLIS, and the libraries a framework actually calls for these shapes (oneDNN) |
-| Narrow outputs and 2 to 5 rows | n below 16 (mlp 512->10: 38 GFLOP/s) fills only part of the 16-wide tile, and 2 to 5 rows fill only part of the 6 rows (4 x 512 x 784: 31 on one thread). A transposed tile or a multi-row version of `row_times_matrix` would help; both products are tiny in absolute time |
+| 2 to 5 rows | 2 to 5 rows fill only part of the 6 rows of the tile (4 x 512 x 784: 31 GFLOP/s on one thread). A multi-row version of `row_times_matrix` would help. Narrow outputs (n below 16) are done (section 28), except with an A that is not contiguous along the depth |
 | Thread count for small products | Now 256K multiply-adds per thread, at most half the B panels below 4M, one chiplet split from 4M, caller pinned from 12M. These limits were set on a handful of shapes each; cubes of 96-200 and depths of 8-32 are still uneven (160 x 160 x 160: 286-378 on 12 threads, 315 on 4) |
 | Fuse alpha and beta into the kernel (probably another time) | `gemm` applies alpha and beta as separate elementwise passes over C (`mul`, `scal`, `add`, each a full read and write plus a temporary). Fusing them into the micro-kernel's C update (scale the accumulators by alpha, add beta times the old C when storing) would remove those passes and temporaries. Estimated cost of the passes at n = 2048 (not measured): about 4 ms on top of a 16 ms product with both alpha and beta, about 1 ms with alpha only, and several times the product when k is small. It only matters for `gemm` calls with alpha other than 1 or beta other than 0; `matmul` and the backward pass are unaffected. Decided to postpone until such calls are on a hot path; measure `gemm` against `matmul` first |
 
