@@ -91,7 +91,8 @@ tr.group td { background: var(--soft); font-weight: 600; font-size: 12px; color:
   text-transform: uppercase; letter-spacing: .04em; }
 .mono { font-family: var(--mono); font-size: 12px; }
 .cell { display: flex; align-items: center; gap: 8px; min-width: 170px; }
-.cell .t { font-variant-numeric: tabular-nums; }
+.cell .t { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cell .r { white-space: nowrap; }
 .cell .r { color: var(--muted); font-size: 12px; }
 .cell.best .t { font-weight: 700; }
 .cell.best::before { content: ""; width: 3px; align-self: stretch; border-radius: 2px; background: var(--good); }
@@ -101,7 +102,7 @@ tr.group td { background: var(--soft); font-weight: 600; font-size: 12px; color:
   color: var(--muted); font-size: 12px; }
 .run:hover { color: var(--ink); border-color: var(--muted); }
 .run:disabled { opacity: .4; cursor: default; }
-.grun { text-transform: none; letter-spacing: 0; font-weight: 500; padding: 1px 8px; background: var(--panel); }
+.grun { white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 500; padding: 1px 8px; background: var(--panel); }
 .doc { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--panel);
   border-radius: 0 6px 6px 0; font-size: 13px; }
 .doc code { font: 12px var(--mono); }
@@ -175,10 +176,6 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   <section id="kernels">
     <h2 class="sec" style="margin-top:0">Kernels</h2>
     <div class="bar">
-      <label class="f">Columns<select id="k-view">
-        <option value="devices">devices</option>
-        <option value="versions">CPU versions: sequential, SIMD, threaded SIMD</option>
-      </select></label>
       <label class="f">Filter<input type="text" id="k-filter" placeholder="op or group"></label>
       <button class="b primary" id="k-run-all">Run all</button>
       <button class="b" id="k-stop" disabled>Stop</button>
@@ -189,11 +186,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     </div>
     <p class="note">Each cell is the median time of one public call with data on that device (GPU devices
       run with <span class="mono">Execution::GPU</span>), and the rate it implies: GB/s of inputs + output for
-      memory-bound ops, GFLOP/s for matrix products. The fastest device per op is marked. Greyed cells have no
+      memory-bound ops, GFLOP/s for matrix products. The fastest cell per op is marked. Greyed cells have no
       registered kernel. Click an op for its page: results, size sweep and call breakdown.<br>
-      <b>CPU versions</b> runs each CPU kernel three ways: <i>sequential</i> (1 thread, from a copy of the library
-      built without auto-vectorization, <span class="mono">observe_scalar</span>), <i>SIMD</i> (1 thread, normal
-      build) and <i>threaded SIMD</i> (the Threads setting, default all). The gain columns divide their times.
+      The CPU runs each kernel three ways: <i>sequential</i> (1 thread, from a copy of the library built without
+      auto-vectorization, <span class="mono">observe_scalar</span>), <i>SIMD</i> (1 thread, normal build) and
+      <i>threaded SIMD</i> (the Threads setting, default all; this is the plain cpu:0 result). The gain columns divide
+      their times: SIMD = sequential / SIMD, threads = SIMD / threaded, total = sequential / threaded.
       Hand-written intrinsics (the x86 AVX2 GEMM kernel) and libc's <span class="mono">memcpy</span> stay vectorized
       even in the sequential build.</p>
   </section>
@@ -206,15 +204,15 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     <h2 class="sec">Results</h2>
     <div class="bar">
       <button class="b primary" id="o-run-all">Run all</button>
-      <button class="b" id="o-run-devices">Devices</button>
-      <button class="b" id="o-run-versions">CPU versions</button>
+      <button class="b" id="o-run-versions">CPU (3 ways)</button>
+      <button class="b" id="o-run-devices">GPU devices</button>
       <button class="b" id="o-stop" disabled>Stop</button>
       <span class="progress" id="o-progress"></span>
     </div>
     <div class="panel scroll"><table id="o-table"></table></div>
-    <p class="note">The same cells as the Kernels table, at the size set in the sidebar: one call with data on each
-      device, and the CPU kernel three ways (<i>sequential</i>: 1 thread, built without auto-vectorization;
-      <i>SIMD</i>: 1 thread; <i>threaded SIMD</i>: the Threads setting).</p>
+    <p class="note">The same cells as the Kernels table, at the size set in the sidebar: the CPU kernel three ways
+      (<i>sequential</i>: 1 thread, built without auto-vectorization; <i>SIMD</i>: 1 thread; <i>threaded SIMD</i>:
+      the Threads setting) and one call with data on each other device.</p>
 
     <h2 class="sec">Sweep</h2>
     <div class="bar">
@@ -495,7 +493,16 @@ function versionColumns() {
 function deviceColumns() {
   return state.info.devices.map((d) => ({ key: d, device: d, label: d, detail: "", color: deviceColor(d), support: (op) => op.support[d] }));
 }
-function columns() { return $("k-view").value === "versions" ? versionColumns() : deviceColumns(); }
+// The Kernels table and op pages: the CPU three ways (sequential, SIMD, threaded SIMD), then the other devices.
+// Threaded SIMD is the plain cpu:0 run, so it shares that key with the device view.
+function columns() {
+  const [sequential, simd, threaded] = versionColumns();
+  const cpu = deviceColumns().find((c) => c.key === "cpu:0");
+  return [sequential, simd, { ...cpu, label: threaded.label, detail: threaded.detail, cpuVersion: true },
+    ...deviceColumns().filter((c) => c.key !== "cpu:0")];
+}
+const cpuColumns = () => columns().slice(0, 3);
+const otherDeviceColumns = () => columns().slice(3);
 function column(key) { return [...deviceColumns(), ...versionColumns()].find((c) => c.key === key); }
 function gain(a, b) {
   if (!a || !b || a.median_ms == null || b.median_ms == null) return "<td></td>";
@@ -517,11 +524,15 @@ function cellHtml(op, c, r, best) {
 function renderKernels() {
   if (!state.info) { $("k-table").innerHTML = ""; return; }
   const cols = columns();
-  const versions = $("k-view").value === "versions";
-  const extra = versions ? ["SIMD gain", "thread gain", "total gain"] : [];
+  const extra = ["SIMD", "threads", "total"];
   const filter = $("k-filter").value.trim().toLowerCase();
-  let html = "<thead><tr><th>op</th><th>size</th>" +
-    cols.map((c) => `<th><span class="sw" style="background:${c.color}"></span>${esc(c.label)}${c.detail ? `<div class="note" style="font-weight:400">${esc(c.detail)}</div>` : ""}</th>`).join("") +
+  const others = cols.slice(3);
+  const head = (c) => `<span class="sw" style="background:${c.color}"></span>${esc(c.label)}${c.detail ? `<div class="note" style="font-weight:400">${esc(c.detail)}</div>` : ""}`;
+  let html = `<thead><tr><th rowspan="2">op</th><th rowspan="2">size</th>` +
+    `<th colspan="3" style="text-align:center;border-bottom:0"><span class="sw" style="background:${css("--cpu")}"></span>cpu:0</th>` +
+    others.map((c) => `<th rowspan="2">${head(c)}</th>`).join("") +
+    `<th colspan="3" style="text-align:center;border-bottom:0">gain</th></tr><tr>` +
+    cols.slice(0, 3).map((c) => `<th>${head(c)}</th>`).join("") +
     extra.map((x) => `<th class="num">${x}</th>`).join("") + "</tr></thead><tbody>";
   let group = "";
   const off = state.running ? "disabled" : "";
@@ -539,7 +550,7 @@ function renderKernels() {
     const best = times.length > 1 ? Math.min(...times) : null;
     html += `<tr><td class="opcell" data-op="${esc(op.name)}"><a class="op" data-op="${esc(op.name)}">${esc(op.name)}</a></td><td class="mono">${fmtSize(scaleSize(op))}</td>`;
     cols.forEach((c, i) => { html += `<td>${cellHtml(op, c, cells[i], best)}</td>`; });
-    if (versions) html += gain(cells[0], cells[1]) + gain(cells[1], cells[2]) + gain(cells[0], cells[2]);
+    html += gain(cells[0], cells[1]) + gain(cells[1], cells[2]) + gain(cells[0], cells[2]);
     html += "</tr>";
   }
   $("k-table").innerHTML = html + "</tbody>";
@@ -605,7 +616,6 @@ $("k-table").addEventListener("mouseover", (e) => {
 });
 $("k-scale").addEventListener("change", () => { renderKernels(); renderOpResults(); });
 $("k-filter").addEventListener("input", renderKernels);
-$("k-view").addEventListener("change", renderKernels);
 $("threads").addEventListener("input", () => { renderKernels(); renderOpResults(); });
 
 // ---------- power-of-two size pickers ----------
@@ -1044,7 +1054,9 @@ async function loadHistory() {
   // Fill the kernel matrix with the latest result per op and device (data where it lives).
   for (const run of state.history) {
     if (run.variant) {
-      for (const r of run.results || []) if (!r.error) keep(run.op + "|v:" + run.variant, r);
+      // Threaded SIMD is the plain cpu:0 run (an older view stored it separately).
+      const key = run.variant === "threaded" ? "cpu:0" : "v:" + run.variant;
+      for (const r of run.results || []) if (!r.error) keep(run.op + "|" + key, r);
       continue;
     }
     const native = run.device && run.execution === (run.device.startsWith("cpu") ? "cpu" : "gpu");
@@ -1080,18 +1092,15 @@ function renderOpPage() {
 function renderOpResults() {
   const op = opByName(state.current);
   if (!op || !state.info) return;
-  const devices = deviceColumns(), versions = versionColumns();
-  const row = (c, best) => `<tr><td><span class="sw" style="background:${c.color}"></span>${c.variant ? "cpu:0 " : ""}${esc(c.label)}</td><td class="note">${esc(c.detail || (c.device.startsWith("cpu") ? "Execution::CPU" : "Execution::GPU"))}</td><td>${cellHtml(op, c, cellResult(op, c.key), best)}</td></tr>`;
-  const bestOf = (cols) => {
-    const t = cols.map((c) => cellResult(op, c.key)).filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
-    return t.length > 1 ? Math.min(...t) : null;
-  };
-  const v = versions.map((c) => cellResult(op, c.key));
-  const gains = `<tr><td colspan="2" class="note">gains: SIMD · threads · total</td><td><table style="width:auto"><tr>${gain(v[0], v[1])}${gain(v[1], v[2])}${gain(v[0], v[2])}</tr></table></td></tr>`;
+  const cols = columns();
+  const cells = cols.map((c) => cellResult(op, c.key));
+  const times = cells.filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
+  const best = times.length > 1 ? Math.min(...times) : null;
+  const how = (c) => c.detail || (c.device.startsWith("cpu") ? "Execution::CPU" : "Execution::GPU");
+  const row = (c, i) => `<tr><td><span class="sw" style="background:${c.color}"></span>${i < 3 ? "cpu:0 " : ""}${esc(c.label)}</td><td class="note">${esc(how(c))}</td><td>${cellHtml(op, c, cells[i], best)}</td></tr>`;
+  const gains = `<tr><td colspan="2" class="note">gain: SIMD · threads · total</td><td><table style="width:auto"><tr>${gain(cells[0], cells[1])}${gain(cells[1], cells[2])}${gain(cells[0], cells[2])}</tr></table></td></tr>`;
   $("o-table").innerHTML = `<thead><tr><th>where</th><th>how</th><th>result at ${fmtSize(scaleSize(op))}</th></tr></thead><tbody>` +
-    `<tr class="group"><td colspan="3">devices</td></tr>` + devices.map((c) => row(c, bestOf(devices))).join("") +
-    `<tr class="group"><td colspan="3">CPU versions</td></tr>` + versions.map((c) => row(c, bestOf(versions))).join("") +
-    gains + "</tbody>";
+    cols.map(row).join("") + gains + "</tbody>";
 }
 $("o-table").addEventListener("click", (e) => {
   const run = e.target.closest(".run");
@@ -1101,9 +1110,9 @@ function runOp(cols, what) {
   const op = opByName(state.current);
   return runQueue(cols.filter((c) => c.support(op) === "ok").map((c) => [op.name, c]), $("o-progress"), what);
 }
-$("o-run-all").addEventListener("click", () => runOp([...deviceColumns(), ...versionColumns()], "devices and CPU versions"));
-$("o-run-devices").addEventListener("click", () => runOp(deviceColumns(), "devices"));
-$("o-run-versions").addEventListener("click", () => runOp(versionColumns(), "CPU versions"));
+$("o-run-all").addEventListener("click", () => runOp(columns(), "everything"));
+$("o-run-devices").addEventListener("click", () => runOp(otherDeviceColumns(), "GPU devices"));
+$("o-run-versions").addEventListener("click", () => runOp(cpuColumns(), "CPU three ways"));
 $("o-stop").addEventListener("click", () => { state.stop = true; });
 
 // ---------- sidebar ----------

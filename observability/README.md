@@ -82,20 +82,20 @@ address bar keeps the page (`#kernels`, `#programs`, `#history`, `#op/<name>`), 
   when the page loads. Clicking an op opens its page. *Run all* goes through the whole matrix (or the filtered rows). Each group row (blas, elementwise,
   reduction, ...) has *▶ run group* for every device and *▶ <device>* for one device. *Stop* cancels after the current
   cell.
-- **Kernels, CPU versions** (the *Columns* select): every CPU kernel run three ways, plus the speedups between
-  them:
+- **Kernels, CPU columns**: the CPU has three columns, each kernel run three ways, plus the speedups between
+  them (SIMD gain = sequential / SIMD, thread gain = SIMD / threaded, total = sequential / threaded):
   - *sequential*: 1 thread, `observe_scalar`. Same sources, compiled with `-fno-vectorize -fno-slp-vectorize`
     (Clang) or `-fno-tree-vectorize` (GCC).
   - *SIMD*: 1 thread, the normal build.
-  - *threaded SIMD*: the Threads setting (default all), the normal build.
+  - *threaded SIMD*: the Threads setting (default all), the normal build. This is the plain cpu:0 result.
 
   The thread count is set through `OMP_NUM_THREADS`, which every kernel (and the GEMM's own thread team) reads.
   Hand-written intrinsics (the x86 AVX2 GEMM micro-kernel) and libc's `memcpy` stay vectorized even in the
   sequential build. MSVC has no switch to turn auto-vectorization off, so there the sequential column is
   unavailable. Gains are only shown when all three results are at the same size.
 - **Op page** (`#op/<name>`): everything about one op, in three sections:
-  - **Results**: the op's Kernels cells for every device and every CPU version, one row each, with *Run all*,
-    *Devices*, *CPU versions* and *Stop*, and the SIMD, thread and total gains.
+  - **Results**: the op's Kernels cells, one row each (the CPU three ways, then the other devices), with *Run
+    all*, *CPU (3 ways)*, *GPU devices* and *Stop*, and the SIMD, thread and total gains.
   - **Sweep** and **Call breakdown**, described in the next two items.
 
   Each op keeps its own last sweep and call breakdown, so switching ops doesn't lose them.
