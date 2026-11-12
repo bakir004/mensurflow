@@ -41,6 +41,7 @@ i7-10510U laptop has not been measured yet. OpenBLAS is the prebuilt 0.3.34 x64 
 | 26 | Chiplets divide the rows for narrow outputs; B packed once and reused | `split_rows`: with few B panels each chiplet packs only its rows of A instead of a copy of all of it. `pack_b_f32` / `matmul_f32_prepacked` / `PackedB`: the weights of a layer in inference are packed once | Convolutions as im2col: 3136 px 667-816 -> 945-960 GFLOP/s, 12544 px 574-600 -> 811-886, and stable. 25 shapes: geometric mean 2.01x. Prepacked: batch 16 405 -> 548, 32x4096x4096 527 -> 812, logits 672 -> 915; none slower |
 | 27 | MKL and AOCL-BLIS added to the shapes benchmark (a measurement, no kernel change) | `gemm_shapes_openblas_benchmark` loads MKL 2026.2 and AOCL-BLAS 5.2 at run time and times them next to OpenBLAS, each at its best of 7 thread counts, with and without their threads bound to cores | Ahead of MKL on 25 of 25 shapes (geometric mean 1.76x) and of OpenBLAS on 25 of 25 (1.86x). Against AOCL-BLIS: 1.29x, ahead on 19, level on 2, behind on 4 (512->10 0.63x, logits 0.83x, conv 12544 px 0.88x, weight gradient 4096x4096 0.94x) |
 | 28 | The shapes where AOCL-BLIS was ahead: narrow outputs as dot products, independent rows, smaller private B chunks, tiles that fit the L2 at a short depth, both hardware threads for short depths | `narrow`, `independent_rows`, `tile_fit` in `PackedGemmBlocking`; the private B chunk is a fifth of the L2 on a team; `smt_max_depth` | 64 x 10 x 512: 38 -> 70 GFLOP/s (AOCL 60). Logits 64 x 32000 x 768: 660 -> 811 (AOCL 816, level). Conv 12544 px: 895 -> 1058 (AOCL 924). Weight gradient 4096 x 4096 x 256: 1056 -> 1141 (AOCL 1099). All 25 shapes: 1.35x AOCL-BLIS (was 1.29x), ahead on 24 and level on 1; 1.85x MKL, 1.99x OpenBLAS |
+| 29 | How large network products get, and whether our shapes are realistic (research, no measurement) | Published layer sizes (Llama 3, GPT-3, ViT, ResNet) and DeepBench's 160 training GEMMs compared with our 25 shapes | All 25 shapes are real layers; the square sweep to 8192 covers DeepBench's largest near-square cases. Not covered: widths 4096-16384, feed-forward 14336+, vocabulary 128000, more than 12544 rows, depth 500000 |
 
 ## The improvements, explained
 
@@ -1313,6 +1314,72 @@ could go either way on another day; the convolution (1.15x) and the narrow outpu
 The thresholds of this section (depths 96 and 160, a fifth of the L2, three quarters of the L2) were
 set on this one processor.
 
+### 29. How large network products get, and whether our shapes are realistic
+
+The square sweep stops at n = 8192 and the shapes benchmark at 12544 rows, 32000 columns and depth
+4096. This section checks those limits against published model sizes. It is research only: nothing
+was timed. Shapes are written as in the benchmark, rows x columns x depth (m x n x k).
+
+**Published sizes.**
+
+| Source | Width (depth k) | Output (n) | Rows (m) |
+|---|---|---|---|
+| Llama 3 8B / 70B / 405B | 4096 / 8192 / 16384 | feed-forward 14336 / 28672 / 53248; vocabulary 128000 | batch x sequence |
+| GPT-3 175B | 12288 | feed-forward 4 x 12288 | batch x sequence |
+| ViT Base / Large / Huge | 768 / 1024 / 1280 | MLP 3072 / 4096 / 5120 | 197 tokens per image; pretraining batch 4096 images (about 807K rows) |
+| ResNet-50, last stage (3x3 convolution as im2col) | 4608 (512 x 3 x 3) | 512 | 49 pixels per image |
+| DeepBench, 160 training GEMMs | 512 to 500000 | 35 to 8448 | 8 to 48000 |
+
+DeepBench (Baidu's benchmark suite) calls the output dimension M and the batch N; the table maps them
+to our convention. Its largest near-square products are 9124 x 5124 x 4096 and 7000 x 4096 x 4096.
+Square products larger than 8192 appear only as the weight-shaped products of the largest language
+models, which are trained on GPUs. At n = 16384 the three float32 matrices take 3 GB together.
+
+**Our 25 shapes against this.** Every shape is a real layer:
+
+- The MLP shapes (784 -> 512, 4096 -> 4096) and the transformer shapes (768 -> 768, 768 <-> 3072)
+  are the widths of BERT-base, GPT-2 small and ViT-Base.
+- The four im2col shapes are the ResNet-18/34 convolutions for one 224 x 224 image (12544 px
+  147 -> 64, 3136 px 576 -> 64, 784 px 1152 -> 128, 196 px 2304 -> 256).
+- Logits at 32000 columns match the Llama 2 / Mistral vocabulary.
+
+So the benchmark is valid as it stands. It covers the sizes of 2018-2020 models and leaves out the
+large end:
+
+| Not covered | Published size | Our largest |
+|---|---|---|
+| Transformer width | 4096-16384 | 768 (4096 only in the MLP shapes) |
+| Feed-forward output | 14336-53248 | 3072 |
+| Vocabulary | 128000 (Llama 3), 50257 (GPT-2) | 32000 |
+| Rows | 48000 (DeepBench), about 800K (ViT pretraining batch) | 12544 |
+| Very deep, few columns | 512 x 8 x 500000 (DeepBench) | depth 4096 |
+| Batched convolution | 32 images: 100352 px x 64 x 576 | one image |
+| ResNet-50 last stage | 49 px x 512 x 4608 | not present |
+
+**Proposed additions** (m x n x k, each matrix at most about 1.5 GB in float32):
+
+| Shape | Represents |
+|---|---|
+| 512 x 14336 x 4096 | Llama 3 8B feed-forward |
+| 512 x 8192 x 8192 | 70B-class attention projection |
+| 256 x 50257 x 768 | GPT-2 logits |
+| 7680 x 48000 x 2560 | DeepBench's largest training product |
+| 512 x 8 x 500000 | DeepBench, very deep with few columns |
+| 100352 x 64 x 576 | convolution as im2col, batch of 32 |
+
+A 128000-column logits product at depth 4096 needs 2 GB for the weights alone, so it is left out
+unless it is wanted specifically.
+
+Sources: [Llama 3 paper](https://arxiv.org/pdf/2407.21783),
+[Llama 3.1 deployment paper](https://arxiv.org/pdf/2603.05692),
+[DeepBench `gemm_problems.h`](https://github.com/baidu-research/DeepBench/blob/master/code/kernels/gemm_problems.h),
+[GPT-3 sizes](https://aizi.substack.com/p/how-does-gpt-3-spend-its-175b-parameters),
+[ViT](https://huggingface.co/docs/transformers/en/model_doc/vit),
+[ViT pretraining recipe](https://docs.nvidia.com/nemo-framework/user-guide/24.07/nemotoolkit/vision/vit.html),
+[ResNet-50 layer table](https://arxiv.org/pdf/1803.06131).
+The GPT-2 vocabulary (50257) and the Llama 2 / Mistral vocabulary (32000) are from memory and were
+not checked against a source.
+
 ## Where we stand against OpenBLAS (Ryzen 9 5900X, latest run, default settings)
 
 `matmul_openblas_benchmark 128 256 512 1024 2048 4096 8192`, OpenBLAS 0.3.34, after section 25
@@ -1427,6 +1494,7 @@ n = 4096 (89%, before: about 1142; up to 1228 back to back in the thread benchma
 | Quiet-machine repeat runs | All numbers here are single runs; OpenBLAS at 24 threads varies by up to 40% |
 | Use the prepacked B from the layers | `pack_b_f32` / `matmul_f32_prepacked` exist at the kernel level (section 26) but the tensor-level `matmul` does not use them. A dense layer in inference mode should own a `PackedB` of its weights and remake it when they change; in training the weights change every step, so there is nothing to gain |
 | Small margins against AOCL-BLIS (section 28) | Logits 64 x 32000 x 768 is level (0.99x-1.01x), the weight gradient 4096 x 4096 x 256 is 1.04x and 8192 x 3072 x 768 is 1.03x. All three run at 84-89% of the chip's peak; the rest is packing before the single depth step and memory traffic |
+| Large network shapes (section 29) | The 25 shapes stop at width 768 for transformers, 32000 columns and 12544 rows. Add the six proposed shapes (Llama 3 feed-forward, 8192-wide projection, GPT-2 logits, DeepBench's largest, depth 500000, batch-32 convolution) and time them against the three libraries |
 | 2048 x 4096 x 512 on 12 threads | Seen at 695-849 GFLOP/s while neighbouring shapes reach 1100; not looked into |
 | Repeat the reference comparison on a quiet machine, on other hardware, and with oneDNN, BLIS and LIBXSMM | Section 27 is one noisy run on one two-chiplet processor. Before any claim outside this machine: repeat runs, an EPYC and an Intel machine, the square-matrix table with MKL and AOCL-BLIS, and the libraries a framework actually calls for these shapes (oneDNN) |
 | 2 to 5 rows | 2 to 5 rows fill only part of the 6 rows of the tile (4 x 512 x 784: 31 GFLOP/s on one thread). A multi-row version of `row_times_matrix` would help. Narrow outputs (n below 16) are done (section 28), except with an A that is not contiguous along the depth |
