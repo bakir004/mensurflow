@@ -272,3 +272,6 @@ target_link_libraries(client PRIVATE mensurflow)
 
 add_executable(client_perf client/perf.cpp)
 target_link_libraries(client_perf PRIVATE mensurflow)
+
+# Tracing and the observability dashboard (observability/README.md).
+add_subdirectory(observability)

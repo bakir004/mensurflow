@@ -11,3 +11,5 @@ movement-benchmark-results.txt
 .DS_Store
 
 ForPc_run.bat
+# Dashboard run history.
+observability/results/

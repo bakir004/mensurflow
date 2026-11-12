@@ -2,6 +2,7 @@
 #include "core/dispatcher.hpp"
 
 #include "core/registry.hpp"
+#include "mensurflow/trace.hpp"
 
 namespace mensurflow::detail {
 
@@ -221,10 +222,12 @@ void dispatch(OpId op, const OpArgs& args, Execution execution) {
     }
 
     const Device target = execution_device(execution, data_device);
+    MENSURFLOW_TRACE(op_name(op), target, args.inputs, args.outputs);
     Registry& registry = Registry::instance();
     Backend& backend = registry.get(target);
     const KernelFn kernel = registry.dispatcher().lookup({op, target.type, source.dtype()});
     if (target == data_device) {
+        MENSURFLOW_TRACE("kernel", target, args.inputs, args.outputs);
         kernel(args, backend.stream(target.index));
         return;
     }
@@ -237,7 +240,10 @@ void dispatch(OpId op, const OpArgs& args, Execution execution) {
     for (Tensor& output : moved.outputs) {
         output = Tensor::empty(output.shape(), output.dtype(), target);
     }
-    kernel(moved, backend.stream(target.index));
+    {
+        MENSURFLOW_TRACE("kernel", target, moved.inputs, moved.outputs);
+        kernel(moved, backend.stream(target.index));
+    }
     for (std::size_t i = 0; i < args.outputs.size(); ++i) {
         Tensor destination = args.outputs[i]; // shares storage with the caller's output
         destination.copy_from(moved.outputs[i].to(data_device));

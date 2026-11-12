@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mensurflow observe</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1c1d1f; --muted: #6b6f76; --line: #e3e3df;
+  --soft: #f0f0ec; --accent: #2a62d6; --bad: #c2410c; --good: #15803d;
+  --cpu: #2a62d6; --metal: #d9701c; --cuda: #1d9a5b; --other: #8a5cd1;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141517; --panel: #1c1e21; --ink: #e8e8e6; --muted: #9a9ea6; --line: #2e3136;
+    --soft: #24272b; --accent: #6b9bff; --bad: #f08a4b; --good: #4ade80;
+    --cpu: #6b9bff; --metal: #f39a4a; --cuda: #4cc98a; --other: #b08cf0;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141517; --panel: #1c1e21; --ink: #e8e8e6; --muted: #9a9ea6; --line: #2e3136;
+  --soft: #24272b; --accent: #6b9bff; --bad: #f08a4b; --good: #4ade80;
+  --cpu: #6b9bff; --metal: #f39a4a; --cuda: #4cc98a; --other: #b08cf0;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 20px;
+  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+header h1 span { color: var(--muted); font-weight: 450; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 12px var(--mono); padding: 2px 8px; border-radius: 999px; background: var(--soft);
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.chip.on { color: var(--good); } .chip.off { color: var(--bad); }
+nav { display: flex; gap: 2px; margin-left: auto; }
+nav button { background: none; border: 0; padding: 6px 12px; border-radius: 6px; color: var(--muted);
+  font: inherit; cursor: pointer; }
+nav button.active { background: var(--soft); color: var(--ink); font-weight: 600; }
+main { padding: 18px 20px 60px; max-width: 1400px; margin: 0 auto; }
+section[hidden] { display: none; }
+.bar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; margin-bottom: 14px; }
+label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+input, select, button { font: inherit; color: var(--ink); }
+input[type=text], input[type=number], select { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; min-width: 0; }
+input[type=number] { width: 80px; }
+button.b { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px;
+  cursor: pointer; }
+button.b:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+  margin-bottom: 16px; }
+.panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; }
+.note { color: var(--muted); font-size: 13px; }
+.banner { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--bad); color: var(--bad);
+  margin-bottom: 14px; background: var(--panel); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; position: sticky; top: 0; background: var(--panel); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.group td { background: var(--soft); font-weight: 600; font-size: 12px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.cell { display: flex; align-items: center; gap: 8px; min-width: 170px; }
+.cell .t { font-variant-numeric: tabular-nums; }
+.cell .r { color: var(--muted); font-size: 12px; }
+.cell.best .t { font-weight: 700; }
+.cell.best::before { content: ""; width: 3px; align-self: stretch; border-radius: 2px; background: var(--good); }
+.missing { color: var(--muted); opacity: .6; font-size: 12px; }
+.err { color: var(--bad); font-size: 12px; }
+.run { border: 1px solid var(--line); background: none; border-radius: 4px; cursor: pointer; padding: 0 6px;
+  color: var(--muted); font-size: 12px; }
+.run:hover { color: var(--ink); border-color: var(--muted); }
+a.op { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: pointer; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
+@media (max-width: 520px) { .charts { grid-template-columns: 1fr; } main { padding: 14px 16px 40px; } }
+svg text { fill: var(--muted); font-size: 11px; }
+svg .grid { stroke: var(--line); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px;
+  vertical-align: middle; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+#tooltip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.15);
+  display: none; z-index: 20; max-width: 360px; }
+#timeline { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.stats { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 12px; }
+.stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12px; }
+.code { font: 12px/1.6 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  overflow-x: auto; padding: 6px 0; margin: 0; }
+.code div { display: flex; padding: 0 10px; white-space: pre; }
+.code div.hit { cursor: default; }
+.code div.on { background: var(--soft); box-shadow: inset 3px 0 0 var(--accent); }
+.code i { font-style: normal; color: var(--muted); width: 36px; flex: none; text-align: right; margin-right: 14px;
+  user-select: none; }
+.code b { font-weight: 600; color: var(--accent); }
+#timeline rect.dim { opacity: .15; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.progress { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>mensurflow <span>observe</span></h1>
+  <div class="chips" id="chips"></div>
+  <nav id="tabs">
+    <button data-tab="kernels" class="active">Kernels</button>
+    <button data-tab="sweep">Sweep</button>
+    <button data-tab="call">Call</button>
+    <button data-tab="trace">Trace</button>
+    <button data-tab="history">History</button>
+  </nav>
+</header>
+<main>
+  <div id="banner"></div>
+
+  <!-- Kernels: every op on every device at one size -->
+  <section id="kernels">
+    <div class="bar">
+      <label class="f">Size<select id="k-scale">
+        <option value="0">small (16K elems, N=64)</option>
+        <option value="1" selected>medium (1M elems, N=256)</option>
+        <option value="2">large (16M elems, N=1024)</option>
+      </select></label>
+      <label class="f">Threads<input type="number" id="threads" min="1" placeholder="all"></label>
+      <label class="f">Min time / size (s)<input type="number" id="min-time" value="0.25" step="0.05" min="0.02"></label>
+      <label class="f">Filter<input type="text" id="k-filter" placeholder="op or group"></label>
+      <button class="b primary" id="k-run-all">Run all</button>
+      <button class="b" id="k-stop" disabled>Stop</button>
+      <span class="progress" id="k-progress"></span>
+    </div>
+    <div class="panel scroll">
+      <table id="k-table"></table>
+    </div>
+    <p class="note">Each cell is the median time of one public call with data on that device (GPU devices
+      run with <span class="mono">Execution::GPU</span>), and the rate it implies: GB/s of inputs + output for
+      memory-bound ops, GFLOP/s for matrix products. The fastest device per op is marked. Greyed cells have no
+      registered kernel. Click an op to sweep sizes.</p>
+  </section>
+
+  <!-- Sweep: one op, several devices and sizes -->
+  <section id="sweep" hidden>
+    <div class="bar">
+      <label class="f">Op<select id="s-op"></select></label>
+      <label class="f">Devices<span id="s-devices" class="chips"></span></label>
+      <label class="f">Execution<select id="s-exec">
+        <option value="default">where the data is</option>
+        <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
+      </select></label>
+      <label class="f" style="flex:1;min-width:220px"><span>Sizes, <span id="s-unit">elements</span></span>
+        <input type="text" id="s-sizes"></label>
+      <button class="b primary" id="s-run">Run sweep</button>
+      <span class="progress" id="s-progress"></span>
+    </div>
+    <div class="charts">
+      <div class="panel"><h2>Rate</h2><div id="s-rate"></div></div>
+      <div class="panel"><h2>Median time per call</h2><div id="s-time"></div></div>
+    </div>
+    <div class="panel scroll"><h2>Results</h2><table id="s-table"></table></div>
+  </section>
+
+  <!-- Call: where the time of one call goes -->
+  <section id="call" hidden>
+    <div class="bar">
+      <label class="f">Op<select id="c-op"></select></label>
+      <label class="f">Device (data)<select id="c-device"></select></label>
+      <label class="f">Execution<select id="c-exec">
+        <option value="default">where the data is</option>
+        <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
+      </select></label>
+      <label class="f"><span>Size, <span id="c-unit">elements</span></span><input type="text" id="c-size" style="width:110px"></label>
+      <label class="f">Calls<input type="number" id="c-calls" value="25" min="1" max="500"></label>
+      <button class="b primary" id="c-run">Trace calls</button>
+      <label class="f">Show call<select id="c-pick"></select></label>
+      <span class="progress" id="c-progress"></span>
+    </div>
+    <div class="panel">
+      <div class="stats" id="c-stats"></div>
+      <h2>One call</h2>
+      <div id="c-flame"></div>
+      <p class="note">Each bar is a span, and the bars under it ran inside it. <span class="mono">call</span> runs from
+        entering the op until its result can be read. It splits into the op function returning and
+        <span class="mono">read result</span>, which waits for the device. Inside are the library's spans: the
+        dispatcher (named after the op), the <span class="mono">kernel</span>, and every allocation and copy.</p>
+    </div>
+    <div class="panel">
+      <h2>Where the time goes (self time, mean over calls)</h2>
+      <div id="c-stack"></div>
+      <div class="scroll"><table id="c-table"></table></div>
+      <p class="note">Self time is a span's time minus the spans inside it. For example, the op function's self time
+        is its argument checks and setup. The self times add up to the whole call.</p>
+    </div>
+  </section>
+
+  <!-- Trace: timeline of every traced kernel call -->
+  <section id="trace" hidden>
+    <div class="bar">
+      <label class="f">Device<select id="t-device"></select></label>
+      <label class="f">Execution<select id="t-exec">
+        <option value="default">where the data is</option>
+        <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
+      </select></label>
+      <label class="f">Iterations<input type="number" id="t-iter" value="3" min="1" max="50"></label>
+      <button class="b primary" id="t-run">Trace demo program</button>
+      <label class="b" style="cursor:pointer">Open trace file…<input type="file" id="t-file" accept=".json" hidden></label>
+      <label class="f">Zoom<input type="range" id="t-zoom" min="1" max="40" value="1"></label>
+      <span class="progress" id="t-progress"></span>
+    </div>
+    <div class="panel">
+      <div class="stats" id="t-stats"></div>
+      <div id="timeline"></div>
+      <p class="note">One bar per span, one lane per thread: the top row is the dispatcher (named after the op), and
+        under it are the <span class="mono">kernel</span>, allocations and copies. Gaps are time spent outside the library.
+        The demo is one MLP training step (forward, backward, concat, pad, dropout). Files written by
+        <span class="mono">observe::TraceCollector::write()</span> open here, in chrome://tracing and in Perfetto.</p>
+    </div>
+    <div class="panel" id="t-code-panel" hidden>
+      <h2>Demo program <span class="note" id="t-code-file" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+      <div class="code" id="t-code"></div>
+      <p class="note">Hover a line to light up its spans in the timeline. Hover a span to find its line. Ops are
+        matched by name, and the spans from <span class="mono">loss.backward()</span> come from autograd, not from one
+        line.</p>
+    </div>
+    <div class="panel scroll"><h2>By op</h2><table id="t-agg"></table></div>
+    <div class="panel scroll"><details><summary>All events</summary><table id="t-events"></table></details></div>
+  </section>
+
+  <!-- History: everything run through the dashboard -->
+  <section id="history" hidden>
+    <div class="bar">
+      <label class="f">Op<select id="h-op"><option value="">all</option></select></label>
+      <label class="f">Device<select id="h-device"><option value="">all</option></select></label>
+      <button class="b" id="h-reload">Reload</button>
+      <button class="b" id="h-clear">Clear history</button>
+    </div>
+    <div class="panel"><h2>Median time over runs</h2><div id="h-chart"></div>
+      <p class="note">One line per op · device · size, for the filter above (at most 12 lines).</p></div>
+    <div class="panel scroll"><table id="h-table"></table></div>
+  </section>
+</main>
+<div id="tooltip"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { info: null, ops: [], results: {}, history: [], running: false, stop: false, trace: [] };
+
+// ---------- formatting ----------
+function fmtMs(ms) {
+  if (ms == null || !isFinite(ms)) return "–";
+  if (ms < 1e-3) return (ms * 1e6).toFixed(0) + " ns";
+  if (ms < 1) return (ms * 1e3).toPrecision(3) + " µs";
+  if (ms < 1000) return ms.toPrecision(3) + " ms";
+  return (ms / 1000).toPrecision(3) + " s";
+}
+function fmtUs(us) { return fmtMs(us / 1000); }
+function fmtSize(n) {
+  if (n >= 1 << 30 && n % (1 << 30) === 0) return n / (1 << 30) + "G";
+  if (n >= 1 << 20 && n % (1 << 20) === 0) return n / (1 << 20) + "M";
+  if (n >= 1 << 10 && n % (1 << 10) === 0) return n / (1 << 10) + "K";
+  return String(n);
+}
+function fmtRate(r, unit) { return r == null ? "–" : (r >= 100 ? r.toFixed(0) : r.toPrecision(3)) + " " + unit; }
+function shapes(list) { return (list || []).map((s) => "[" + s.join("×") + "]").join(" ") || "–"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function deviceColor(device) {
+  const type = String(device).split(":")[0];
+  return css("--" + (["cpu", "metal", "cuda"].includes(type) ? type : "other"));
+}
+const OP_COLORS = ["#4f7fe0", "#e08a3c", "#c4566e", "#8a6fd8", "#c9a227", "#3aa6b8", "#d16ba5", "#7b8a3a", "#a0674b"];
+function opColor(name) {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return OP_COLORS[h % OP_COLORS.length];
+}
+
+// ---------- server ----------
+async function api(path, body) {
+  const response = await fetch(path, body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await response.json();
+  if (data && data.fatal) throw new Error(data.fatal);
+  return data;
+}
+function runRequest(op, device, sizes, execution) {
+  return api("/api/run", {
+    op, device, sizes, execution: execution || "default",
+    threads: Number($("threads").value) || null, min_time: Number($("min-time").value) || 0.25,
+  });
+}
+
+// ---------- tooltip ----------
+const tip = $("tooltip");
+function showTip(event, html) {
+  tip.innerHTML = html; tip.style.display = "block";
+  const x = Math.min(event.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  const y = Math.min(event.clientY + 14, window.innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+// ---------- line chart (SVG, log axes) ----------
+function lineChart(el, series, o) {
+  const W = Math.max(el.clientWidth, 300), H = 260, L = 58, R = 12, T = 10, B = 34;
+  const pts = series.flatMap((s) => s.points).filter((p) => p[1] > 0 && isFinite(p[1]));
+  if (!pts.length) { el.innerHTML = '<p class="note">No data yet.</p>'; return; }
+  const tx = o.xlog ? Math.log10 : (v) => v, ty = o.ylog ? Math.log10 : (v) => v;
+  let x0 = Math.min(...pts.map((p) => tx(p[0]))), x1 = Math.max(...pts.map((p) => tx(p[0])));
+  let y0 = Math.min(...pts.map((p) => ty(p[1]))), y1 = Math.max(...pts.map((p) => ty(p[1])));
+  if (!o.ylog) y0 = Math.min(0, y0);
+  if (x0 === x1) { x0 -= 0.5; x1 += 0.5; }
+  if (y0 === y1) { y0 -= 0.5; y1 += 0.5; }
+  const pad = (y1 - y0) * 0.06; y1 += pad; if (o.ylog) y0 -= pad;
+  const X = (v) => L + (tx(v) - x0) / (x1 - x0) * (W - L - R);
+  const Y = (v) => T + (1 - (ty(v) - y0) / (y1 - y0)) * (H - T - B);
+  let svg = `<svg width="${W}" height="${H}" role="img">`;
+  const yticks = o.ylog ? logTicks(y0, y1) : linTicks(y0, y1);
+  for (const v of yticks) {
+    const y = Y(v);
+    svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${y + 4}" text-anchor="end">${o.fmtY(v)}</text>`;
+  }
+  const xs = [...new Set(pts.map((p) => p[0]))].sort((a, b) => a - b);
+  const every = Math.ceil(xs.length / Math.max(1, Math.floor((W - L) / 56)));
+  xs.forEach((v, i) => { if (i % every === 0) svg += `<text x="${X(v)}" y="${H - B + 16}" text-anchor="middle">${o.fmtX(v)}</text>`; });
+  svg += `<text x="${(L + W - R) / 2}" y="${H - 4}" text-anchor="middle">${esc(o.xlabel)}</text>`;
+  for (const s of series) {
+    const p = s.points.filter((q) => q[1] > 0 && isFinite(q[1])).sort((a, b) => a[0] - b[0]);
+    if (!p.length) continue;
+    svg += `<polyline fill="none" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="5 4"' : ""} points="${p.map((q) => X(q[0]) + "," + Y(q[1])).join(" ")}"/>`;
+    for (const q of p) {
+      svg += `<circle cx="${X(q[0])}" cy="${Y(q[1])}" r="3.5" fill="${s.color}" data-tip="${esc(`<b>${s.name}</b><br>${o.fmtX(q[0])}: ${o.fmtY(q[1])}`)}"/>`;
+    }
+  }
+  svg += "</svg>";
+  el.innerHTML = svg + '<div class="legend">' + series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("") + "</div>";
+  el.querySelectorAll("circle").forEach((c) => {
+    c.addEventListener("mousemove", (e) => showTip(e, c.dataset.tip));
+    c.addEventListener("mouseleave", hideTip);
+  });
+}
+function linTicks(a, b) {
+  const step = Math.pow(10, Math.floor(Math.log10((b - a) / 4 || 1)));
+  const m = [1, 2, 5, 10].find((k) => (b - a) / (k * step) <= 5) * step;
+  const out = []; for (let v = Math.ceil(a / m) * m; v <= b; v += m) out.push(+v.toPrecision(10)); return out;
+}
+function logTicks(a, b) {
+  const out = [];
+  for (let e = Math.floor(a); e <= Math.ceil(b); e++) for (const k of [1, 2, 5]) {
+    const v = k * Math.pow(10, e); if (Math.log10(v) >= a && Math.log10(v) <= b) out.push(v);
+  }
+  if (out.length > 7) return out.filter((v) => Math.abs(Math.log10(v) % 1) < 1e-9);
+  if (out.length < 3) {
+    const fine = [];
+    for (let e = Math.floor(a); e <= Math.ceil(b); e++) for (const k of [1, 1.5, 2, 3, 5, 7]) {
+      const v = k * Math.pow(10, e); if (Math.log10(v) >= a && Math.log10(v) <= b) fine.push(v);
+    }
+    return fine;
+  }
+  return out;
+}
+
+// ---------- header ----------
+function renderChips() {
+  const i = state.info;
+  const chips = [];
+  if (i) {
+    chips.push(`<span class="chip ${i.tracing ? "on" : "off"}" title="${i.tracing ? "" : "configure with -DMENSURFLOW_ENABLE_TRACING=ON"}">tracing ${i.tracing ? "on" : "off"}</span>`);
+    for (const d of i.devices) chips.push(`<span class="chip"><span class="sw" style="background:${deviceColor(d)}"></span>${d}</span>`);
+    chips.push(`<span class="chip">${i.threads} threads (${i.hardware_threads} hw)</span>`);
+  } else chips.push('<span class="chip off">offline</span>');
+  $("chips").innerHTML = chips.join("");
+}
+
+// ---------- kernels tab ----------
+function scaleSize(op) {
+  const k = Number($("k-scale").value);
+  if (op.unit.includes("batch")) return [16, 64, 256][k];
+  if (op.unit.startsWith("matrix")) return [64, 256, 1024][k];
+  return [1 << 14, 1 << 20, 1 << 24][k];
+}
+function renderKernels() {
+  if (!state.info) { $("k-table").innerHTML = ""; return; }
+  const devices = state.info.devices;
+  const filter = $("k-filter").value.trim().toLowerCase();
+  let html = "<thead><tr><th>op</th><th>size</th>" + devices.map((d) => `<th><span class="sw" style="background:${deviceColor(d)}"></span>${d}</th>`).join("") + "</tr></thead><tbody>";
+  let group = "";
+  for (const op of state.ops) {
+    if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
+    if (op.group !== group) { group = op.group; html += `<tr class="group"><td colspan="${devices.length + 2}">${group}</td></tr>`; }
+    const cells = devices.map((d) => state.results[op.name + "|" + d]);
+    const times = cells.filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
+    const best = times.length > 1 ? Math.min(...times) : null;
+    html += `<tr><td><a class="op" data-op="${esc(op.name)}">${esc(op.name)}</a></td><td class="mono">${fmtSize(scaleSize(op))}</td>`;
+    devices.forEach((d, i) => {
+      const support = op.support[d];
+      if (support !== "ok") { html += `<td><span class="missing" title="${esc(support)}">not registered</span></td>`; return; }
+      const r = cells[i];
+      let inner = `<button class="run" data-op="${esc(op.name)}" data-device="${d}" title="run">▶</button>`;
+      if (r && r.error) inner += `<span class="err" title="${esc(r.error)}">error</span>`;
+      else if (r && r.pending) inner += '<span class="r">running…</span>';
+      else if (r) inner += `<span class="t">${fmtMs(r.median_ms)}</span><span class="r">${fmtRate(r.rate, r.rate_unit)}${r.size !== scaleSize(op) ? " @" + fmtSize(r.size) : ""}</span>`;
+      html += `<td><div class="cell ${r && r.median_ms === best ? "best" : ""}">${inner}</div></td>`;
+    });
+    html += "</tr>";
+  }
+  $("k-table").innerHTML = html + "</tbody>";
+}
+async function runCell(opName, device) {
+  const op = state.ops.find((o) => o.name === opName);
+  const key = opName + "|" + device;
+  state.results[key] = { pending: true };
+  renderKernels();
+  try {
+    const data = await runRequest(opName, device, [scaleSize(op)]);
+    state.results[key] = data.results[0];
+    state.history.push(data);
+  } catch (e) { state.results[key] = { error: e.message }; }
+  renderKernels();
+}
+$("k-table").addEventListener("click", (e) => {
+  const run = e.target.closest(".run");
+  if (run && !state.running) return runCell(run.dataset.op, run.dataset.device);
+  const link = e.target.closest("a.op");
+  if (link) { $("s-op").value = link.dataset.op; onSweepOp(); showTab("sweep"); }
+});
+$("k-run-all").addEventListener("click", async () => {
+  if (state.running) return;
+  state.running = true; state.stop = false;
+  $("k-run-all").disabled = true; $("k-stop").disabled = false;
+  const filter = $("k-filter").value.trim().toLowerCase();
+  const jobs = [];
+  for (const op of state.ops) {
+    if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
+    for (const d of state.info.devices) if (op.support[d] === "ok") jobs.push([op.name, d]);
+  }
+  for (let i = 0; i < jobs.length && !state.stop; i++) {
+    $("k-progress").textContent = `${i + 1} / ${jobs.length}: ${jobs[i][0]} on ${jobs[i][1]}`;
+    await runCell(...jobs[i]);
+  }
+  $("k-progress").textContent = state.stop ? "stopped" : `done, ${jobs.length} runs`;
+  state.running = false; $("k-run-all").disabled = false; $("k-stop").disabled = true;
+});
+$("k-stop").addEventListener("click", () => { state.stop = true; });
+$("k-scale").addEventListener("change", renderKernels);
+$("k-filter").addEventListener("input", renderKernels);
+
+// ---------- sweep tab ----------
+let sweepData = [];
+function onSweepOp() {
+  const op = state.ops.find((o) => o.name === $("s-op").value);
+  if (!op) return;
+  $("s-unit").textContent = op.unit;
+  $("s-sizes").value = op.sizes.join(", ");
+  $("s-devices").innerHTML = state.info.devices.map((d) => {
+    const ok = op.support[d] === "ok";
+    return `<label class="chip" title="${ok ? "" : esc(op.support[d])}"><input type="checkbox" value="${d}" ${ok ? "checked" : ""}> ${d}</label>`;
+  }).join("");
+}
+$("s-op").addEventListener("change", onSweepOp);
+$("s-run").addEventListener("click", async () => {
+  const op = $("s-op").value;
+  const sizes = $("s-sizes").value.split(/[\s,]+/).filter(Boolean).map(Number).filter((n) => n > 0);
+  const devices = [...$("s-devices").querySelectorAll("input:checked")].map((i) => i.value);
+  const execution = $("s-exec").value;
+  if (!sizes.length || !devices.length) return;
+  $("s-run").disabled = true;
+  for (const d of devices) {
+    $("s-progress").textContent = `running ${op} on ${d}…`;
+    try {
+      const data = await runRequest(op, d, sizes, execution);
+      state.history.push(data);
+      sweepData = sweepData.filter((s) => !(s.op === op && s.device === d && s.execution === data.execution));
+      sweepData.push(data);
+    } catch (e) { $("s-progress").textContent = "error: " + e.message; }
+  }
+  $("s-run").disabled = false; $("s-progress").textContent = "";
+  renderSweep();
+});
+function renderSweep() {
+  const op = $("s-op").value;
+  const runs = sweepData.filter((s) => s.op === op);
+  const series = (field) => runs.map((r) => ({
+    name: `${r.device} (${r.execution})`, color: deviceColor(r.device), dash: r.execution !== (r.device.startsWith("cpu") ? "cpu" : "gpu"),
+    points: r.results.filter((x) => x[field] != null).map((x) => [x.size, x[field]]),
+  }));
+  const unit = runs.flatMap((r) => r.results).find((x) => x.rate_unit)?.rate_unit || "GB/s";
+  const xlabel = runs[0] ? runs[0].unit : "size";
+  lineChart($("s-rate"), series("rate"), { xlog: true, ylog: false, xlabel, fmtX: fmtSize, fmtY: (v) => fmtRate(v, unit) });
+  lineChart($("s-time"), series("median_ms"), { xlog: true, ylog: true, xlabel, fmtX: fmtSize, fmtY: fmtMs });
+  let html = '<thead><tr><th>device</th><th>exec</th><th class="num">size</th><th>inputs</th><th class="num">calls</th><th class="num">p10</th><th class="num">median</th><th class="num">p90</th><th class="num">rate</th><th>traced call (self time)</th></tr></thead><tbody>';
+  for (const r of runs) for (const x of r.results) {
+    if (x.error) { html += `<tr><td>${r.device}</td><td>${r.execution}</td><td class="num">${fmtSize(x.size)}</td><td colspan="7" class="err">${esc(x.error)}</td></tr>`; continue; }
+    const traced = !r.tracing ? '<span class="missing">tracing off</span>' :
+      selfSummary(x.trace || []) || '<span class="missing">no dispatch</span>';
+    html += `<tr><td><span class="sw" style="background:${deviceColor(r.device)}"></span>${r.device}</td><td>${r.execution}</td><td class="num mono">${fmtSize(x.size)}</td><td class="mono">${shapes(x.inputs)}</td><td class="num">${x.calls}</td><td class="num">${fmtMs(x.p10_ms)}</td><td class="num"><b>${fmtMs(x.median_ms)}</b></td><td class="num">${fmtMs(x.p90_ms)}</td><td class="num">${fmtRate(x.rate, x.rate_unit)}</td><td>${traced}</td></tr>`;
+  }
+  $("s-table").innerHTML = html + "</tbody>";
+}
+
+// ---------- span trees (shared by the call, sweep and trace views) ----------
+const STEP_INFO = {
+  "call": "whole call, until the result can be read",
+  "read result": "reads one element of the result, which waits for the device to finish",
+  "kernel": "the backend kernel (on a GPU it may return once the work is queued)",
+  "Tensor::empty": "allocate a tensor",
+  "Tensor::to": "copy a tensor to another device",
+  "Tensor::copy_to_host": "read tensor memory into host memory",
+  "Tensor::copy_from": "copy into an existing tensor",
+  "Tensor::from_host": "make a tensor from host data",
+  "Tensor::contiguous": "pack a strided view into a new tensor",
+};
+function stepInfo(e) {
+  if (STEP_INFO[e.name]) return STEP_INFO[e.name];
+  if (e.args?.device === "client") return "the op function: argument checks, output allocation, then dispatch";
+  return "dispatcher: picks the device, looks up the kernel, moves data if it runs elsewhere";
+}
+// Nests events (one thread) by time. Sets e._parent, e._depth, e._self (µs).
+function nest(events) {
+  const sorted = [...events].sort((a, b) => a.ts - b.ts || b.dur - a.dur);
+  const stack = [];
+  for (const e of sorted) {
+    while (stack.length && stack[stack.length - 1].ts + stack[stack.length - 1].dur < e.ts + e.dur - 1e-3) stack.pop();
+    e._parent = stack[stack.length - 1] || null;
+    e._depth = stack.length;
+    e._self = e.dur;
+    if (e._parent) e._parent._self -= e.dur;
+    stack.push(e);
+  }
+  for (const e of sorted) e._self = Math.max(e._self, 0);
+  return sorted;
+}
+function nestByThread(events) {
+  const lanes = {};
+  for (const e of events) (lanes[e.tid] = lanes[e.tid] || []).push(e);
+  return Object.values(lanes).flatMap(nest);
+}
+function rankColors(totals) {
+  const rank = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+  return (name) => OP_COLORS[Math.max(rank.indexOf(name), 0) % OP_COLORS.length];
+}
+// "kernel 233 µs · dispatch 1.6 µs · Tensor::empty 0.5 µs": self time per step of one traced call.
+function selfSummary(events) {
+  const self = {};
+  for (const e of nest(events)) self[e.name] = (self[e.name] || 0) + e._self;
+  return Object.entries(self).sort((a, b) => b[1] - a[1])
+    .map(([n, v]) => `<div class="mono"><span class="sw" style="background:${n === "kernel" ? css("--good") : opColor(n)}"></span>${esc(n)} · ${fmtUs(v)}</div>`).join("");
+}
+
+// ---------- call tab ----------
+let callData = null;
+function onCallOp() {
+  const op = state.ops.find((o) => o.name === $("c-op").value);
+  if (!op) return;
+  $("c-unit").textContent = op.unit;
+  $("c-size").value = op.sizes[Math.floor(op.sizes.length / 2)];
+  $("c-device").innerHTML = state.info.devices.map((d) => `<option ${op.support[d] === "ok" ? "" : "disabled"}>${d}</option>`).join("");
+}
+$("c-op").addEventListener("change", onCallOp);
+$("c-run").addEventListener("click", async () => {
+  $("c-run").disabled = true; $("c-progress").textContent = "running…";
+  try {
+    callData = await api("/api/call", { op: $("c-op").value, device: $("c-device").value, execution: $("c-exec").value,
+      size: Number($("c-size").value) || null, calls: Number($("c-calls").value) || 25, threads: Number($("threads").value) || null });
+    callData.calls.forEach((c) => nest(c.events));
+    const order = callData.calls.map((c, i) => i).sort((a, b) => callData.calls[a].total_ms - callData.calls[b].total_ms);
+    callData.median = order[Math.floor(order.length / 2)];
+    $("c-pick").innerHTML = callData.calls.map((c, i) => `<option value="${i}" ${i === callData.median ? "selected" : ""}>#${i + 1} · ${fmtMs(c.total_ms)}${i === callData.median ? " (median)" : ""}</option>`).join("");
+    $("c-progress").textContent = "";
+  } catch (e) { $("c-progress").textContent = "error: " + e.message; }
+  $("c-run").disabled = false;
+  renderCall();
+});
+$("c-pick").addEventListener("change", renderCall);
+function renderCall() {
+  if (!callData) { $("c-flame").innerHTML = '<p class="note">Pick an op and trace it.</p>'; return; }
+  const d = callData;
+  if (!d.tracing) { $("c-flame").innerHTML = '<p class="note">Tracing is off in this build: only the client spans are shown. Configure with -DMENSURFLOW_ENABLE_TRACING=ON.</p>'; }
+  // mean self time per step over all calls
+  const agg = {};
+  for (const c of d.calls) for (const e of c.events) {
+    const a = (agg[e.name] = agg[e.name] || { self: 0, total: 0, n: 0, info: stepInfo(e), parents: new Set(), device: new Set() });
+    a.self += e._self; a.total += e.dur; a.n++;
+    if (e._parent) a.parents.add(e._parent.name);
+    if (e.args?.device && e.args.device !== "client") a.device.add(e.args.device);
+  }
+  const calls = d.calls.length;
+  const totals = Object.fromEntries(Object.entries(agg).map(([k, a]) => [k, a.self]));
+  const color = rankColors(totals);
+  const callMean = (agg.call ? agg.call.total : 0) / calls;
+  const overhead = d.traced_median_ms - d.untraced_median_ms;
+  $("c-stats").innerHTML = [
+    [fmtMs(d.untraced_median_ms), "median call, untraced"],
+    [fmtMs(d.traced_median_ms), "median call, traced"],
+    [(overhead >= 0 ? "+" : "−") + fmtMs(Math.abs(overhead)), "tracing overhead"],
+    [d.calls.length, "calls"],
+    [`${d.op} on ${d.device} (${d.execution})`, shapes(d.inputs)],
+  ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span class="mono">${esc(l)}</span></div>`).join("");
+
+  // flame chart of the chosen call
+  const c = d.calls[Number($("c-pick").value) || d.median];
+  const ev = c.events;
+  const span = Math.max(...ev.map((e) => e.ts + e.dur), 1e-3);
+  const depth = Math.max(...ev.map((e) => e._depth)) + 1;
+  const W = Math.max($("c-flame").clientWidth, 400), rowH = 26, L = 4, R = 4;
+  const X = (t) => L + t / span * (W - L - R);
+  let svg = `<svg width="${W}" height="${depth * rowH + 24}">`;
+  for (const v of linTicks(0, span)) svg += `<line class="grid" x1="${X(v)}" x2="${X(v)}" y1="16" y2="${depth * rowH + 24}"/><text x="${X(v)}" y="11" text-anchor="${v === 0 ? "start" : "middle"}">${fmtUs(v)}</text>`;
+  ev.forEach((e, i) => {
+    const x = X(e.ts), w = Math.max(X(e.ts + e.dur) - x, 1.5), y = 20 + e._depth * rowH;
+    const fill = e.name === "kernel" ? css("--good") : e.args?.device === "client" ? css("--muted") : color(e.name);
+    svg += `<rect x="${x}" y="${y}" width="${w}" height="${rowH - 4}" rx="3" fill="${fill}" fill-opacity="${e.args?.device === "client" ? 0.35 : 0.9}" data-i="${i}"/>`;
+    const label = `${e.name} ${fmtUs(e.dur)}`;
+    if (w > label.length * 6.2 + 8) svg += `<text x="${x + 5}" y="${y + 15}" style="fill:${e.args?.device === "client" ? "var(--ink)" : "#fff"};pointer-events:none">${esc(label)}</text>`;
+    else if (w > 30) svg += `<text x="${x + 4}" y="${y + 15}" style="fill:${e.args?.device === "client" ? "var(--ink)" : "#fff"};pointer-events:none">${esc(e.name.replace("Tensor::", "").slice(0, Math.floor(w / 6.5)))}</text>`;
+  });
+  $("c-flame").innerHTML = svg + "</svg>";
+  $("c-flame").querySelectorAll("rect").forEach((r) => {
+    const e = ev[Number(r.dataset.i)];
+    r.addEventListener("mousemove", (m) => showTip(m, `<b>${esc(e.name)}</b> · ${fmtUs(e.dur)} (self ${fmtUs(e._self)})<br>${esc(stepInfo(e))}<br>${e.args?.device && e.args.device !== "client" ? esc(e.args.device + " " + (e.args.dtype || "")) + "<br>" : ""}<span class="mono">${e.args?.inputs?.length ? shapes(e.args.inputs) + " → " : ""}${shapes(e.args?.outputs)}</span><br>starts at ${fmtUs(e.ts)}`));
+    r.addEventListener("mouseleave", hideTip);
+  });
+
+  // stacked self-time bar + table
+  const rows = Object.entries(agg).sort((a, b) => b[1].self - a[1].self);
+  const sumSelf = rows.reduce((s, [, a]) => s + a.self, 0) || 1;
+  $("c-stack").innerHTML = '<div style="display:flex;height:22px;border-radius:4px;overflow:hidden;margin:4px 0 12px">' +
+    rows.filter(([, a]) => a.self / sumSelf > 0.002).map(([n, a]) => `<div title="${esc(n)}: ${fmtUs(a.self / calls)}" style="width:${(100 * a.self / sumSelf).toFixed(2)}%;background:${n === "kernel" ? css("--good") : color(n)}"></div>`).join("") + "</div>";
+  $("c-table").innerHTML = '<thead><tr><th>step</th><th>what it is</th><th class="num">per call</th><th class="num">self time</th><th class="num">share</th><th class="num">incl. inner</th><th>inside</th><th>device</th></tr></thead><tbody>' +
+    rows.map(([n, a]) => `<tr><td class="mono"><span class="sw" style="background:${n === "kernel" ? css("--good") : color(n)}"></span>${esc(n)}</td><td class="note">${esc(a.info)}</td><td class="num">${(a.n / calls).toFixed(a.n % calls ? 1 : 0)}×</td><td class="num"><b>${fmtUs(a.self / calls)}</b></td><td class="num">${(100 * a.self / sumSelf).toFixed(1)}%</td><td class="num">${fmtUs(a.total / calls)}</td><td class="mono">${esc([...a.parents].join(", "))}</td><td class="mono">${esc([...a.device].join(", "))}</td></tr>`).join("") +
+    `<tr><td><b>sum</b></td><td></td><td></td><td class="num"><b>${fmtUs(sumSelf / calls)}</b></td><td></td><td class="num">${fmtUs(callMean)}</td><td></td><td></td></tr></tbody>`;
+}
+
+// ---------- trace tab ----------
+// Which span names a line of the demo calls: identifiers followed by "(", matched to dispatch spans by name
+// ("sum" also matches "sum_axis").
+function lineOps(text) {
+  return [...text.matchAll(/([A-Za-z_]\w*)\s*\(/g)].map((m) => m[1]);
+}
+function spanMatchesLine(e, ops) {
+  const top = e.name === "kernel" && e._parent ? e._parent.name : e.name;
+  return ops.some((op) => top === op || top.startsWith(op + "_"));
+}
+function renderSource() {
+  const src = state.traceMeta?.source;
+  $("t-code-panel").hidden = !src;
+  if (!src) return;
+  $("t-code-file").textContent = `${src.file}, lines ${src.first_line}–${src.first_line + src.lines.length - 1}`;
+  const names = new Set(state.trace.map((e) => e.name));
+  $("t-code").innerHTML = src.lines.map((text, i) => {
+    const ops = lineOps(text).filter((op) => [...names].some((n) => n === op || n.startsWith(op + "_")));
+    const html = esc(text).replace(/([A-Za-z_]\w*)(\s*\()/g, (m, id, paren) => (ops.includes(id) ? `<b>${id}</b>${paren}` : m));
+    return `<div class="${ops.length ? "hit" : ""}" data-ops="${ops.join(" ")}"><i>${src.first_line + i}</i>${html || " "}</div>`;
+  }).join("");
+  $("t-code").querySelectorAll("div.hit").forEach((line) => {
+    const ops = line.dataset.ops.split(" ");
+    line.addEventListener("mouseenter", () => {
+      line.classList.add("on");
+      $("timeline").querySelectorAll("rect").forEach((r) => r.classList.toggle("dim", !spanMatchesLine(state.trace[Number(r.dataset.i)], ops)));
+    });
+    line.addEventListener("mouseleave", () => {
+      line.classList.remove("on");
+      $("timeline").querySelectorAll("rect").forEach((r) => r.classList.remove("dim"));
+    });
+  });
+}
+function markLineFor(e) {
+  $("t-code").querySelectorAll("div.hit").forEach((line) => line.classList.toggle("on", !!e && spanMatchesLine(e, line.dataset.ops.split(" "))));
+}
+function setTrace(events, meta) {
+  state.trace = (events || []).filter((e) => e.ph === "X" || e.dur != null);
+  state.traceMeta = meta || {};
+  renderTrace();
+}
+function renderTrace() {
+  const ev = state.trace;
+  nestByThread(ev);
+  // A kernel span is shown under its dispatcher's name: "matmul · kernel".
+  const label = (e) => (e.name === "kernel" && e._parent ? e._parent.name + " · kernel" : e.name);
+  const totals = {};
+  for (const e of ev) totals[label(e)] = (totals[label(e)] || 0) + e._self;
+  const color = rankColors(totals);
+  if (!ev.length) {
+    $("timeline").innerHTML = `<p class="note" style="padding:12px">${state.info && !state.info.tracing ? "Tracing is off in this build. Configure with -DMENSURFLOW_ENABLE_TRACING=ON and rebuild observe." : "No events yet. Trace the demo program or open a trace file."}</p>`;
+    $("t-stats").innerHTML = ""; $("t-agg").innerHTML = ""; $("t-events").innerHTML = ""; renderSource(); return;
+  }
+  const t0 = Math.min(...ev.map((e) => e.ts)), t1 = Math.max(...ev.map((e) => e.ts + e.dur));
+  const span = Math.max(t1 - t0, 1e-3);
+  // lanes: one per thread, extra rows for nested spans
+  const byTid = {};
+  for (const e of ev) {
+    const lane = (byTid[e.tid] = byTid[e.tid] || { rows: 1, items: [] });
+    lane.rows = Math.max(lane.rows, e._depth + 1); lane.items.push([e, e._depth]);
+  }
+  const zoom = Number($("t-zoom").value);
+  const L = 70, rowH = 22, width = Math.max($("timeline").clientWidth - 2, 400) * zoom;
+  const X = (t) => L + (t - t0) / span * (width - L - 10);
+  let y = 26, body = "";
+  const tids = Object.keys(byTid).sort((a, b) => a - b);
+  for (const tid of tids) {
+    const lane = byTid[tid];
+    body += `<text x="6" y="${y + 15}">thread ${tid}</text>`;
+    for (const [e, depth] of lane.items) {
+      const x = X(e.ts), w = Math.max(X(e.ts + e.dur) - x, 1), yy = y + depth * rowH;
+      body += `<rect x="${x}" y="${yy + 2}" width="${w}" height="${rowH - 4}" rx="2" fill="${color(label(e))}" data-i="${ev.indexOf(e)}"/>`;
+      if (w > 40) body += `<text x="${x + 4}" y="${yy + 15}" style="fill:#fff;pointer-events:none">${esc(e.name.replace("Tensor::", ""))}</text>`;
+    }
+    y += lane.rows * rowH + 8;
+  }
+  let axis = "";
+  for (const v of linTicks(0, span)) axis += `<line class="grid" x1="${X(t0 + v)}" x2="${X(t0 + v)}" y1="18" y2="${y}"/><text x="${X(t0 + v)}" y="13" text-anchor="middle">${fmtUs(v)}</text>`;
+  $("timeline").innerHTML = `<svg width="${width}" height="${y}">${axis}${body}</svg>`;
+  $("timeline").querySelectorAll("rect").forEach((r) => {
+    const e = ev[Number(r.dataset.i)];
+    r.addEventListener("mouseenter", () => markLineFor(e));
+    r.addEventListener("mouseleave", () => markLineFor(null));
+    r.addEventListener("mousemove", (m) => showTip(m, `<b>${esc(label(e))}</b> · ${fmtUs(e.dur)} (self ${fmtUs(e._self)})<br>${esc(e.args?.device || "")} ${esc(e.args?.dtype || "")}<br><span class="mono">${shapes(e.args?.inputs)} → ${shapes(e.args?.outputs)}</span><br>at ${fmtUs(e.ts - t0)}`));
+    r.addEventListener("mouseleave", hideTip);
+  });
+  // stats + aggregate
+  const busy = ev.filter((e) => !e._parent).reduce((s, e) => s + e.dur, 0);
+  const dispatches = ev.filter((e) => e.name === "kernel").length;
+  const meta = state.traceMeta;
+  $("t-stats").innerHTML = [
+    [dispatches, "kernel calls"], [ev.length, "spans"], [fmtUs(span), "first to last"], [fmtUs(busy), "inside the library"],
+    [(100 * busy / span).toFixed(0) + "%", "library share of span"],
+    ...(meta.total_ms ? [[fmtMs(meta.total_ms), "program wall time"]] : []),
+    ...(meta.label ? [[meta.label, "source"]] : []),
+  ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span>${l}</span></div>`).join("") +
+    (meta.error ? `<div class="err">${esc(meta.error)}</div>` : "");
+  const agg = {};
+  for (const e of ev) {
+    const a = (agg[label(e)] = agg[label(e)] || { n: 0, total: 0, self: 0, max: 0, devices: new Set() });
+    a.n++; a.total += e.dur; a.self += e._self; a.max = Math.max(a.max, e.dur); if (e.args?.device) a.devices.add(e.args.device);
+  }
+  $("t-agg").innerHTML = '<thead><tr><th>span</th><th class="num">count</th><th class="num">self time</th><th class="num">incl. inner</th><th class="num">mean</th><th class="num">max</th><th>share (self)</th><th>devices</th></tr></thead><tbody>' +
+    Object.entries(agg).sort((a, b) => b[1].self - a[1].self).map(([name, a]) =>
+      `<tr><td><span class="sw" style="background:${color(name)}"></span>${esc(name)}</td><td class="num">${a.n}</td><td class="num"><b>${fmtUs(a.self)}</b></td><td class="num">${fmtUs(a.total)}</td><td class="num">${fmtUs(a.total / a.n)}</td><td class="num">${fmtUs(a.max)}</td><td style="min-width:180px"><div style="display:flex;align-items:center;gap:8px"><div style="flex:1"><div style="background:${color(name)};height:8px;border-radius:2px;width:${(100 * a.self / busy).toFixed(1)}%"></div></div><span class="note" style="width:44px;text-align:right">${(100 * a.self / busy).toFixed(1)}%</span></div></td><td class="mono">${[...a.devices].join(", ")}</td></tr>`).join("") + "</tbody>";
+  renderSource();
+  $("t-events").innerHTML = '<thead><tr><th class="num">start</th><th class="num">duration</th><th>span</th><th>device</th><th>dtype</th><th>inputs</th><th>outputs</th><th class="num">thread</th></tr></thead><tbody>' +
+    ev.slice(0, 2000).map((e) => `<tr><td class="num">${fmtUs(e.ts - t0)}</td><td class="num">${fmtUs(e.dur)}</td><td>${"· ".repeat(e._depth)}${esc(label(e))}</td><td>${esc(e.args?.device || "")}</td><td>${esc(e.args?.dtype || "")}</td><td class="mono">${shapes(e.args?.inputs)}</td><td class="mono">${shapes(e.args?.outputs)}</td><td class="num">${e.tid}</td></tr>`).join("") + "</tbody>";
+}
+$("t-zoom").addEventListener("input", renderTrace);
+$("t-run").addEventListener("click", async () => {
+  $("t-run").disabled = true; $("t-progress").textContent = "running…";
+  try {
+    const data = await api("/api/program", { device: $("t-device").value, execution: $("t-exec").value,
+      iterations: Number($("t-iter").value) || 3, threads: Number($("threads").value) || null });
+    setTrace(data.traceEvents, { total_ms: data.total_ms, error: data.error, label: `demo on ${data.device} (${data.execution})`, source: data.source });
+    $("t-progress").textContent = "";
+  } catch (e) { $("t-progress").textContent = "error: " + e.message; }
+  $("t-run").disabled = false;
+});
+$("t-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    setTrace(Array.isArray(data) ? data : data.traceEvents, { label: file.name, total_ms: data.total_ms, error: data.error });
+  } catch (err) { $("t-progress").textContent = "could not read " + file.name + ": " + err.message; }
+  e.target.value = "";
+});
+
+// ---------- history tab ----------
+function historyRows() {
+  const rows = [];
+  for (const run of state.history) for (const r of run.results || []) {
+    if (r.error || r.median_ms == null) continue;
+    rows.push({ time: run.time, op: run.op, device: run.device, execution: run.execution, threads: run.threads_requested || run.threads, ...r });
+  }
+  return rows;
+}
+function renderHistory() {
+  const rows = historyRows();
+  const opSel = $("h-op"), devSel = $("h-device"), op = opSel.value, dev = devSel.value;
+  const ops = [...new Set(rows.map((r) => r.op))].sort(), devs = [...new Set(rows.map((r) => r.device))].sort();
+  opSel.innerHTML = '<option value="">all</option>' + ops.map((o) => `<option ${o === op ? "selected" : ""}>${esc(o)}</option>`).join("");
+  devSel.innerHTML = '<option value="">all</option>' + devs.map((d) => `<option ${d === dev ? "selected" : ""}>${d}</option>`).join("");
+  const shown = rows.filter((r) => (!op || r.op === op) && (!dev || r.device === dev));
+  const groups = {};
+  for (const r of shown) (groups[`${r.op} · ${r.device} · ${fmtSize(r.size)}`] = groups[`${r.op} · ${r.device} · ${fmtSize(r.size)}`] || []).push(r);
+  const keys = Object.keys(groups).filter((k) => groups[k].length > 1).slice(0, 12);
+  const el = $("h-chart");
+  if (!keys.length) el.innerHTML = '<p class="note">Run the same op, device and size more than once to see a trend.</p>';
+  else lineChart(el, keys.map((k, i) => ({ name: k, color: OP_COLORS[i % OP_COLORS.length], points: groups[k].map((r, j) => [j + 1, r.median_ms]) })),
+    { xlog: false, ylog: true, xlabel: "run #", fmtX: (v) => (Number.isInteger(v) ? String(v) : ""), fmtY: fmtMs });
+  $("h-table").innerHTML = '<thead><tr><th>when</th><th>op</th><th>device</th><th>exec</th><th class="num">threads</th><th class="num">size</th><th class="num">median</th><th class="num">min</th><th class="num">rate</th></tr></thead><tbody>' +
+    shown.slice().reverse().slice(0, 1000).map((r) => `<tr><td class="mono">${r.time ? new Date(r.time * 1000).toLocaleString() : "now"}</td><td>${esc(r.op)}</td><td>${r.device}</td><td>${r.execution}</td><td class="num">${r.threads ?? ""}</td><td class="num mono">${fmtSize(r.size)}</td><td class="num"><b>${fmtMs(r.median_ms)}</b></td><td class="num">${fmtMs(r.min_ms)}</td><td class="num">${fmtRate(r.rate, r.rate_unit)}</td></tr>`).join("") + "</tbody>";
+}
+async function loadHistory() {
+  try { state.history = await api("/api/history"); } catch { state.history = []; }
+  // Fill the kernel matrix with the latest result per op and device (data where it lives).
+  for (const run of state.history) {
+    const native = run.device && run.execution === (run.device.startsWith("cpu") ? "cpu" : "gpu");
+    if (!native) continue;
+    for (const r of run.results || []) if (!r.error) state.results[run.op + "|" + run.device] = r;
+  }
+}
+$("h-op").addEventListener("change", renderHistory);
+$("h-device").addEventListener("change", renderHistory);
+$("h-reload").addEventListener("click", async () => { await loadHistory(); renderHistory(); });
+$("h-clear").addEventListener("click", async () => {
+  if (!confirm("Delete observability/results/history.jsonl?")) return;
+  await api("/api/history/clear", {}); state.history = []; renderHistory();
+});
+
+// ---------- tabs + startup ----------
+function showTab(name) {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== name));
+  if (name === "sweep") renderSweep();
+  if (name === "call") renderCall();
+  if (name === "trace") renderTrace();
+  if (name === "history") renderHistory();
+}
+$("tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); });
+window.addEventListener("resize", () => {
+  const active = document.querySelector("#tabs button.active").dataset.tab;
+  if (active === "sweep") renderSweep(); else if (active === "call") renderCall(); else if (active === "trace") renderTrace(); else if (active === "history") renderHistory();
+});
+
+(async function start() {
+  try {
+    $("k-progress").textContent = "probing ops on every device…";
+    state.info = await api("/api/list");
+    // Keep each group together, in the order the groups first appear.
+    const order = [...new Set(state.info.ops.map((o) => o.group))];
+    state.ops = state.info.ops.slice().sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
+    $("k-progress").textContent = "";
+  } catch (e) {
+    $("k-progress").textContent = "";
+    $("banner").innerHTML = `<div class="banner">No runner: start the server with <span class="mono">python3 observability/serve.py</span> and open the page it prints. Trace files can still be opened in the Trace tab. (${esc(e.message)})</div>`;
+    renderChips(); showTab("trace"); return;
+  }
+  renderChips();
+  $("s-op").innerHTML = state.ops.map((o) => `<option>${esc(o.name)}</option>`).join("");
+  $("c-op").innerHTML = state.ops.map((o) => `<option>${esc(o.name)}</option>`).join("");
+  $("c-op").value = "dot";
+  onCallOp();
+  $("t-device").innerHTML = state.info.devices.map((d) => `<option>${d}</option>`).join("");
+  onSweepOp();
+  await loadHistory();
+  renderKernels();
+  if (location.hash) showTab(location.hash.slice(1));
+})();
+</script>
+</body>
+</html>

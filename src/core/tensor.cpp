@@ -3,10 +3,11 @@
 // staged through a host copy.
 #include "mensurflow/tensor.hpp"
 
+#include "backends/cpu/ops/movement/movement.hpp"
 #include "core/autograd.hpp"
 #include "core/storage.hpp"
 #include "core/tensor_access.hpp"
-#include "backends/cpu/ops/movement/movement.hpp"
+#include "mensurflow/trace.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -116,6 +117,7 @@ Tensor::Tensor(std::shared_ptr<detail::Storage> storage, std::int64_t offset, Sh
 
 Tensor Tensor::empty(Shape shape, DType dtype, Device device) {
     validate_shape(shape);
+    MENSURFLOW_TRACE("Tensor::empty", device, shape, dtype);
     const auto bytes = static_cast<std::size_t>(mensurflow::numel(shape)) * dtype_size(dtype);
     auto storage = std::make_shared<detail::Storage>(device, bytes);
     Strides strides = contiguous_strides(shape);
@@ -177,6 +179,7 @@ Tensor Tensor::full_like(const Tensor& other, double value) {
 }
 
 Tensor Tensor::from_host(const void* data, Shape shape, DType dtype, Device device) {
+    MENSURFLOW_TRACE("Tensor::from_host", device, shape, dtype);
     Tensor out = empty(std::move(shape), dtype, device);
     if (out.nbytes() > 0) {
         if (data == nullptr) {
@@ -192,6 +195,7 @@ Tensor Tensor::to(Device target) const {
     if (target == device()) {
         return *this;
     }
+    MENSURFLOW_TRACE("Tensor::to", target, shape_, dtype_);
     Tensor out = empty(shape_, dtype_, target);
     if (out.nbytes() > 0) {
         std::vector<std::byte> host(out.nbytes());
@@ -206,6 +210,7 @@ Tensor Tensor::contiguous() const {
     if (is_contiguous()) {
         return *this;
     }
+    MENSURFLOW_TRACE("Tensor::contiguous", device(), shape_, dtype_);
     Tensor out = empty(shape_, dtype_, device());
     if (device().type == DeviceType::CPU && dtype_ == DType::F32) {
         const float* input = detail::TensorAccess::data<float>(*this);
@@ -265,6 +270,7 @@ void Tensor::copy_from(const Tensor& source) {
         throw std::invalid_argument(
             "copy_from: tensors must have matching shape, dtype, and device");
     }
+    MENSURFLOW_TRACE("Tensor::copy_from", device(), shape_, dtype_);
     const Tensor packed = source.contiguous();
     std::vector<std::byte> bytes(packed.nbytes());
     packed.copy_to_host(bytes.data());
@@ -285,6 +291,7 @@ void Tensor::copy_to_host(void* dst) const {
     if (dst == nullptr) {
         throw std::invalid_argument("copy_to_host: dst is null");
     }
+    MENSURFLOW_TRACE("Tensor::copy_to_host", device(), shape_, dtype_);
     const std::size_t item = itemsize();
     const std::size_t byte_offset = static_cast<std::size_t>(offset_) * item;
     auto* out = static_cast<std::byte*>(dst);
@@ -341,10 +348,9 @@ Tensor Tensor::transpose(int d0, int d1) const {
     Strides strides = strides_;
     std::swap(shape[a], shape[b]);
     std::swap(strides[a], strides[b]);
-    return record_view(make_view(offset_, std::move(shape), std::move(strides)), *this,
-                       [a, b](const Tensor& gradient) {
-                           return gradient.transpose(a, b).contiguous();
-                       });
+    return record_view(
+        make_view(offset_, std::move(shape), std::move(strides)), *this,
+        [a, b](const Tensor& gradient) { return gradient.transpose(a, b).contiguous(); });
 }
 
 Tensor Tensor::permute(const std::vector<int>& order) const {
@@ -376,10 +382,9 @@ Tensor Tensor::permute(const std::vector<int>& order) const {
         shape.push_back(shape_[static_cast<std::size_t>(axis)]);
         strides.push_back(strides_[static_cast<std::size_t>(axis)]);
     }
-    return record_view(make_view(offset_, std::move(shape), std::move(strides)), *this,
-                       [inverse](const Tensor& gradient) {
-                           return gradient.permute(inverse).contiguous();
-                       });
+    return record_view(
+        make_view(offset_, std::move(shape), std::move(strides)), *this,
+        [inverse](const Tensor& gradient) { return gradient.permute(inverse).contiguous(); });
 }
 
 Tensor Tensor::slice(int d, std::int64_t start, std::int64_t end, std::int64_t step) const {
@@ -412,8 +417,9 @@ Tensor Tensor::slice(int d, std::int64_t start, std::int64_t end, std::int64_t s
                 const auto flat = static_cast<std::int64_t>(i);
                 const auto outer = flat / inner / selected;
                 const auto along_axis = start + (flat / inner % selected) * step;
-                const auto target = (outer * parent_shape[static_cast<std::size_t>(axis)] +
-                                     along_axis) * inner + flat % inner;
+                const auto target =
+                    (outer * parent_shape[static_cast<std::size_t>(axis)] + along_axis) * inner +
+                    flat % inner;
                 out[static_cast<std::size_t>(target)] = upstream[i];
             }
             return Tensor::from_vector(out, parent_shape, gradient.device());
