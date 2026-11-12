@@ -45,6 +45,7 @@ Tensor bias_add(const Tensor& x, const Tensor& bias, Execution execution = Execu
 // Unary operations return a new contiguous tensor with the same shape, dtype, and device;
 // strided and broadcast views are supported. Currently CPU float32 only. Undefined input throws
 // invalid_argument; unsupported devices or dtypes throw NotImplemented, including empty inputs.
+
 // -x
 Tensor neg(const Tensor& x, Execution execution = Execution::Auto);
 // |x|, including -0 -> +0 and clearing a NaN's sign
@@ -70,14 +71,20 @@ Tensor softplus(const Tensor& x, float beta = 1.0f, float threshold = 20.0f,
 
 // Activation derivatives. `x` is the forward input and `gradient` is the upstream gradient.
 // Both tensors must have the same shape, dtype, and device. CPU float32 is supported.
+
+// Backward pass of relu: gradient where x > 0, otherwise 0.
 Tensor relu_backward(const Tensor& x, const Tensor& gradient,
                      Execution execution = Execution::Auto);
+// Backward pass of sigmoid: gradient * s * (1 - s) with s = sigmoid(x).
 Tensor sigmoid_backward(const Tensor& x, const Tensor& gradient,
                         Execution execution = Execution::Auto);
+// Backward pass of tanh: gradient * (1 - tanh(x)^2).
 Tensor tanh_backward(const Tensor& x, const Tensor& gradient,
                      Execution execution = Execution::Auto);
+// Backward pass of gelu: gradient * gelu'(x), exact or tanh-approximate to match the forward.
 Tensor gelu_backward(const Tensor& x, const Tensor& gradient, bool approximate = false,
                      Execution execution = Execution::Auto);
+// Backward pass of silu: gradient * s * (1 + x * (1 - s)) with s = sigmoid(x).
 Tensor silu_backward(const Tensor& x, const Tensor& gradient,
                      Execution execution = Execution::Auto);
 // sqrt(x); negatives -> NaN, preserves signed zeros
@@ -92,14 +99,19 @@ Tensor log(const Tensor& x, Execution execution = Execution::Auto);
 Tensor rsqrt(const Tensor& x, Execution execution = Execution::Auto);
 // hyperbolic tangent
 Tensor tanh(const Tensor& x, Execution execution = Execution::Auto);
+// sine of x (radians)
 Tensor sin(const Tensor& x, Execution execution = Execution::Auto);
+// cosine of x (radians)
 Tensor cos(const Tensor& x, Execution execution = Execution::Auto);
+// 1 / x; 0 -> inf with the sign of the zero
 Tensor reciprocal(const Tensor& x, Execution execution = Execution::Auto);
 
 // elementwise minimum
 Tensor minimum(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
 // elementwise maximum
 Tensor maximum(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+// Limits every element to [lower, upper]: values below lower become lower, above upper become
+// upper. lower must not exceed upper.
 Tensor clamp(const Tensor& x, float lower, float upper, Execution execution = Execution::Auto);
 
 // Elementwise F32 comparisons. Inputs must have the same dtype/device and broadcast normally.
@@ -107,11 +119,18 @@ Tensor clamp(const Tensor& x, float lower, float upper, Execution execution = Ex
 // NaN follows ordinary floating-point comparisons: only ne is true for a NaN operand.
 // CPU F32 only; unsupported dtype/backend throws NotImplemented, including empty inputs.
 // Comparisons do not track gradients. Read Bool values with copy_to_host into uint8_t storage.
+
+// a == b, elementwise, as a Bool tensor
 Tensor eq(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+// a != b, elementwise, as a Bool tensor (true when either is NaN)
 Tensor ne(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+// a < b, elementwise, as a Bool tensor
 Tensor lt(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+// a <= b, elementwise, as a Bool tensor
 Tensor le(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+// a > b, elementwise, as a Bool tensor
 Tensor gt(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
+// a >= b, elementwise, as a Bool tensor
 Tensor ge(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
 
 // Select x where condition is nonzero, otherwise y. Condition must be Bool; x/y must be F32

@@ -9,7 +9,9 @@
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/ops/gemm/gemm_batched.hpp"
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
+#include "backends/cpu/ops/indexing/indexing.hpp"
 #include "backends/cpu/ops/movement/movement.hpp"
+#include "backends/cpu/ops/random/random.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/dispatcher.hpp"
@@ -265,6 +267,55 @@ void index_select_kernel(const OpArgs& args, Stream&) {
                           indices.numel());
 }
 
+// ---- Random generation and indexing --------------------------------------------------------
+
+void uniform_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::uniform_f32(data<float>(out), out.numel(), args.alpha, args.beta, args.seed, args.offset);
+}
+
+void normal_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::normal_f32(data<float>(out), out.numel(), args.alpha, args.beta, args.seed, args.offset);
+}
+
+void bernoulli_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::bernoulli_f32(data<float>(out), out.numel(), args.alpha, args.seed, args.offset);
+}
+
+void dropout_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::dropout_f32(data<float>(args.inputs[0]), data<float>(out),
+                     data<std::uint8_t>(args.outputs[1]), out.numel(), args.alpha,
+                     args.training, args.seed, args.offset);
+}
+
+void dropout_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::dropout_backward_f32(data<float>(args.inputs[0]), data<std::uint8_t>(args.inputs[1]),
+                              data<float>(out), out.numel(), args.alpha, args.training);
+}
+
+void one_hot_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::one_hot_i64(data<std::int64_t>(args.inputs[0]), data<std::int64_t>(out),
+                     args.inputs[0].numel(), out.size(-1));
+}
+
+void embedding_kernel(const OpArgs& args, Stream&) {
+    const Tensor& weight = args.inputs[0];
+    cpu::embedding_f32(data<float>(weight), data<std::int64_t>(args.inputs[1]),
+                       data<float>(args.outputs[0]), args.inputs[1].numel(), weight.size(1));
+}
+
+void embedding_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& out = args.outputs[0];
+    cpu::embedding_backward_f32(data<float>(args.inputs[0]), data<std::int64_t>(args.inputs[1]),
+                                data<float>(out), args.inputs[1].numel(), out.size(0),
+                                out.size(1));
+}
+
 // ---- Elementwise ---------------------------------------------------------------------------
 
 // Ops hand elementwise kernels contiguous tensors of the output's shape, so n is its size.
@@ -497,6 +548,14 @@ class CpuBackend final : public Backend {
         add(OpId::Pad, pad_kernel);
         add(OpId::Gather, gather_kernel);
         add(OpId::IndexSelect, index_select_kernel);
+        add(OpId::Uniform, uniform_kernel);
+        add(OpId::Normal, normal_kernel);
+        add(OpId::Bernoulli, bernoulli_kernel);
+        add(OpId::Dropout, dropout_kernel);
+        add(OpId::DropoutBackward, dropout_backward_kernel);
+        dispatcher.register_kernel({OpId::OneHot, DeviceType::CPU, DType::I64}, one_hot_kernel);
+        add(OpId::Embedding, embedding_kernel);
+        add(OpId::EmbeddingBackward, embedding_backward_kernel);
     }
 
   private:

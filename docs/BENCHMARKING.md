@@ -30,6 +30,7 @@ the threads made it faster.
 | `cpu_parallel_benchmark` | sequential vs parallel arithmetic/activations and `dot`, thread sweep | `benchmarks/cpu_parallel_benchmark.cpp` |
 | `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
 | `activation_movement_benchmark` | public activation-backward and tensor-movement APIs across CPU thread counts | `benchmarks/activation_movement_benchmark.cpp` |
+| `random_indexing_benchmark` | seeded RNG, dropout and indexing forward/backward public APIs; optional native ATen comparison | `benchmarks/random_indexing_benchmark.cpp` |
 | `selection_benchmark` | F32 comparisons and `where`, one/many CPU threads; optional native ATen reference | `benchmarks/selection_benchmark.cpp` |
 | `cast_benchmark` | all 16 F32/I32/F16/BF16 pairs, one/many CPU threads; optional native ATen `copy_` reference | `benchmarks/cast_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |
@@ -176,6 +177,38 @@ OpenBLAS). It is only built when OpenBLAS is found.
 
 The header line prints the OpenBLAS build and the core type it selected; report both with the numbers.
 
+## Comparing against MKL and AOCL-BLIS
+
+`gemm_shapes_openblas_benchmark` (the products a neural network makes) also times Intel MKL and AMD's
+AOCL-BLIS when they are installed. All three libraries export the same BLAS names, so only OpenBLAS is
+linked; the other two are opened at run time from their DLLs (`benchmarks/blas/reference_blas.hpp`). A
+library that is not found is left out of the table, and nothing else in the build depends on them.
+
+1. **MKL**: the NuGet packages `intelmkl.redist.win-x64` and `intelopenmp.redist.win` (a `.nupkg` is a
+   zip). Put `mkl_rt.3.dll`, `mkl_core.3.dll`, `mkl_intel_thread.3.dll`, `mkl_def.3.dll`,
+   `mkl_avx2.3.dll`, `mkl_mc3.3.dll`, `mkl_avx512.3.dll` and `libiomp5md.dll` in one folder `<mkl>/bin`.
+   On Linux, any install with `libmkl_rt.so`.
+2. **AOCL-BLIS**: the conda-forge package `aocl-blas` (win-64; a `.conda` file is a zip of `.tar.zst`
+   archives, which the Windows `tar` unpacks) and `libomp.dll` from the conda-forge package
+   `llvm-openmp`. Put `AOCL-LibBlis-Win-MT-dll.dll` and `libomp.dll` in one folder `<aocl>/bin`. AMD's
+   own installer has the same library. On Linux, `libblis-mt.so`.
+3. Configure with `-DMKL_ROOT=<mkl> -DAOCL_BLIS_ROOT=<aocl>`; CMake prints which ones it found. The
+   environment variables `MENSURFLOW_MKL_DLL` and `MENSURFLOW_AOCL_BLIS_DLL` (full path of the DLL)
+   override the configured paths at run time.
+
+What to know when reading the numbers:
+
+- The header prints each library's version and code path. On an AMD processor MKL loads `mkl_def`,
+  which has its own AVX2 kernel for Zen; that is what MKL gives an AMD user by default.
+- MKL and AOCL-BLIS each bring their own OpenMP runtime, and their idle workers spin for 200 ms after a
+  call. The benchmark pauses 300 ms before each library (`settle=`); do not lower it below 200.
+- By default no library's threads are bound to cores except ours. Run a second time with
+  `OMP_PLACES=cores OMP_PROC_BIND=close` in the environment, which binds the threads of MKL and
+  AOCL-BLIS, and report both: binding is what a careful user of those libraries would set.
+- `threads=1,2,4,6,8,12,24` gives every library the chance to show its best thread count; the summary
+  compares each library at its own best (`*` columns).
+- `mkl=0` or `aocl=0` leaves a library out, to check that the others measure the same without it.
+
 ## Comparing activations against PyTorch
 
 `activation_torch_benchmark` is OFF by default; enable it with
@@ -225,6 +258,41 @@ comparison and at most 13 for `where`; casts count source plus destination bytes
 physical DRAM bandwidth measurements. Selection uses deterministic finite inputs; cast floating
 inputs use quarter increments and I32 inputs use integers from -2046 to 2046. Cast names use
 `<source>_to_<destination>` (for example, `f32_to_bf16`); omit names to run all 16 pairs.
+
+## Comparing random generation and indexing against PyTorch
+
+`random_indexing_benchmark` is always built. Without LibTorch it compares the public APIs on one
+and many CPU threads. `MENSURFLOW_TORCH_BENCHMARK=ON` enables native allocating ATen references in
+the same executable, using the existing Torch CMake setup above. Both sides time allocation,
+validation and execution; tensor construction, correctness checks and host readback are outside
+the timer. Autograd recording is disabled. This scope differs from the preallocated activation
+benchmark and should not be compared with its raw times.
+
+```bash
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=spread \
+  ./build-torch-bench/random_indexing_benchmark --sizes=1000,32769,8388608 \
+  --threads=1,2,6,12 > build-torch-bench/results/random-indexing-run1.txt
+# Cool the machine before the second run.
+OMP_NUM_THREADS=12 OMP_DYNAMIC=FALSE OMP_PLACES=cores OMP_PROC_BIND=spread \
+  ./build-torch-bench/random_indexing_benchmark --sizes=1000,32769,8388608 \
+  --threads=1,2,6,12 --reverse > build-torch-bench/results/random-indexing-run2.txt
+python3 benchmarks/reference/random_indexing.py \
+  build-torch-bench/results/random-indexing-run1.txt \
+  build-torch-bench/results/random-indexing-run2.txt
+```
+
+Select individual operations by name: `uniform normal bernoulli dropout dropout_backward one_hot
+embedding embedding_backward`. Sizes are output-element targets; one-hot rounds up to a multiple
+of 16 classes, and embedding rounds up to 32 features. Embedding backward reports its upstream
+shape and always produces the 512×32 table gradient. The large default exceeds a 16 MiB L3 cache.
+
+MensurFlow uses Philox, while PyTorch's CPU RNG uses a different stream. Bounds and distribution
+moments are checked independently rather than requiring equal samples. Dropout forward checks
+each implementation's own mask and scaling; backward uses the same predetermined Bool mask.
+One-hot and both embedding directions use shared deterministic inputs and independent references,
+including repeated indices. Every measured library is preceded by a 500 ms worker-settling pause;
+all rows use nine samples. The reporting script retains paired medians/minimums and flags drift
+above 10%; raw logs also retain maximums and throughput.
 
 ## Elementwise parallel cutoffs
 

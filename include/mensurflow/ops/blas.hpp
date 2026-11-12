@@ -24,6 +24,9 @@ Tensor asum(const Tensor& x, Execution execution = Execution::Auto);
 
 // Euclidean norm of a vector. Empty inputs give zero.
 Tensor nrm2(const Tensor& x, Execution execution = Execution::Auto);
+
+// Copies x into a new contiguous tensor of the same shape, dtype and device (a strided view is
+// packed). The result never shares storage with x.
 Tensor copy(const Tensor& x, Execution execution = Execution::Auto);
 
 // Matrix-vector product of a [M, K] and a [K] tensor, giving a new contiguous [M] tensor on the
@@ -31,6 +34,9 @@ Tensor copy(const Tensor& x, Execution execution = Execution::Auto);
 // K == 0 gives zeros. Only float32, and only on the CPU so far.
 Tensor matvec(const Tensor& a, const Tensor& x, Execution execution = Execution::Auto);
 
+// General matrix-vector multiply: alpha * op(a) * x + beta * y, where a is [M, N], op(a) is a or
+// its transpose (transpose_a), and y is optional (zeros when null; beta needs a y). Gives a new
+// contiguous vector of op(a)'s row count. Only float32, and only on the CPU so far.
 Tensor gemv(const Tensor& a, const Tensor& x, float alpha = 1.0f, const Tensor* y = nullptr,
             float beta = 0.0f, bool transpose_a = false, Execution execution = Execution::Auto);
 

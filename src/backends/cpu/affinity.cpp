@@ -173,6 +173,28 @@ int core_cache_domain(int index) {
     return list[static_cast<std::size_t>(index) % list.size()].domain;
 }
 
+
+int current_core_index() {
+    const std::vector<Core>& list = cores();
+#if defined(_WIN32)
+    PROCESSOR_NUMBER now{};
+    GetCurrentProcessorNumberEx(&now);
+    const KAFFINITY bit = static_cast<KAFFINITY>(1) << now.Number;
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        if (list[i].affinity.Group == now.Group && (list[i].affinity.Mask & bit) != 0) {
+            return static_cast<int>(i);
+        }
+    }
+#elif defined(__linux__)
+    const int cpu = sched_getcpu();
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        if (std::find(list[i].cpus.begin(), list[i].cpus.end(), cpu) != list[i].cpus.end()) {
+            return static_cast<int>(i);
+        }
+    }
+#endif
+    return -1;
+}
 int cache_domain_count() {
     int count = 1;
     for (const Core& core : cores()) {

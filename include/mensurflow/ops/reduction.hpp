@@ -18,15 +18,24 @@ Tensor mean(const Tensor& x, Execution execution = Execution::Auto);
 // Returns the maximum element as a scalar tensor. Empty tensors are invalid. NaN inputs
 // propagate to the result; positive zero wins when the maximum values are both zero.
 Tensor max(const Tensor& x, Execution execution = Execution::Auto);
+// Returns the minimum element as a scalar tensor. Empty tensors are invalid. NaN inputs propagate
+// to the result.
 Tensor min(const Tensor& x, Execution execution = Execution::Auto);
+// Returns the product of all elements as a scalar tensor. An empty tensor gives one.
 Tensor prod(const Tensor& x, Execution execution = Execution::Auto);
 
 // Reduces one axis and optionally retains it as a size-one dimension. Empty reduction axes are
 // invalid for mean and max; sum over an empty axis returns zeros.
+
+// Sums along one axis: a [R, C] input reduced over axis 1 gives the [R] row sums.
 Tensor sum(const Tensor& x, int axis, bool keepdim = false, Execution execution = Execution::Auto);
+// Mean along one axis.
 Tensor mean(const Tensor& x, int axis, bool keepdim = false, Execution execution = Execution::Auto);
+// Largest value along one axis.
 Tensor max(const Tensor& x, int axis, bool keepdim = false, Execution execution = Execution::Auto);
+// Smallest value along one axis.
 Tensor min(const Tensor& x, int axis, bool keepdim = false, Execution execution = Execution::Auto);
+// Product along one axis.
 Tensor prod(const Tensor& x, int axis, bool keepdim = false, Execution execution = Execution::Auto);
 
 // Returns the index of the largest element independently along the last axis. Ties select the

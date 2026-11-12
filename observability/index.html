@@ -1,0 +1,1197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mensurflow observe</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1c1d1f; --muted: #6b6f76; --line: #e3e3df;
+  --soft: #f0f0ec; --accent: #2a62d6; --bad: #c2410c; --good: #15803d;
+  --cpu: #2a62d6; --metal: #d9701c; --cuda: #1d9a5b; --other: #8a5cd1;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141517; --panel: #1c1e21; --ink: #e8e8e6; --muted: #9a9ea6; --line: #2e3136;
+    --soft: #24272b; --accent: #6b9bff; --bad: #f08a4b; --good: #4ade80;
+    --cpu: #6b9bff; --metal: #f39a4a; --cuda: #4cc98a; --other: #b08cf0;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141517; --panel: #1c1e21; --ink: #e8e8e6; --muted: #9a9ea6; --line: #2e3136;
+  --soft: #24272b; --accent: #6b9bff; --bad: #f08a4b; --good: #4ade80;
+  --cpu: #6b9bff; --metal: #f39a4a; --cuda: #4cc98a; --other: #b08cf0;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 20px;
+  border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+header h1 span { color: var(--muted); font-weight: 450; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: 12px var(--mono); padding: 2px 8px; border-radius: 999px; background: var(--soft);
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.chip.on { color: var(--good); } .chip.off { color: var(--bad); }
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); align-items: start; }
+aside { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--panel);
+  border-right: 1px solid var(--line); padding: 14px 12px 30px; display: flex; flex-direction: column; gap: 14px; }
+nav { display: flex; gap: 2px; background: var(--soft); padding: 3px; border-radius: 8px; }
+nav button { flex: 1; background: none; border: 0; padding: 6px 4px; border-radius: 6px; color: var(--muted);
+  font: inherit; font-size: 13px; cursor: pointer; }
+nav button.active { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.settings label.f:first-child { grid-column: 1 / -1; }
+.settings input[type=number] { width: 100%; }
+#side-filter { width: 100%; }
+.side-group { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+  margin: 10px 8px 3px; }
+.side-op { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 3px 8px;
+  border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }
+.side-op:hover { background: var(--soft); }
+.side-op.active { background: var(--soft); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.side-op .dots { display: flex; gap: 3px; }
+.side-op .dots i { width: 6px; height: 6px; border-radius: 50%; display: block; }
+main { padding: 18px 24px 60px; min-width: 0; max-width: 1400px; }
+h2.sec { font-size: 16px; margin: 26px 0 10px; font-weight: 650; letter-spacing: -0.01em; }
+.op-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.op-head h1 { margin: 0; font: 600 22px var(--mono); }
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; }
+  aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  #side-ops { max-height: 240px; overflow-y: auto; }
+  main { padding: 14px 16px 40px; }
+}
+section[hidden] { display: none; }
+.bar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; margin-bottom: 14px; }
+label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+input, select, button { font: inherit; color: var(--ink); }
+input[type=text], input[type=number], select { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 8px; min-width: 0; }
+input[type=number] { width: 80px; }
+button.b { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px;
+  cursor: pointer; }
+button.b:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+  margin-bottom: 16px; }
+.panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; }
+.note { color: var(--muted); font-size: 13px; }
+.banner { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--bad); color: var(--bad);
+  margin-bottom: 14px; background: var(--panel); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; position: sticky; top: 0; background: var(--panel); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.group td { background: var(--soft); font-weight: 600; font-size: 12px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.cell { display: flex; align-items: center; gap: 8px; min-width: 170px; }
+.cell .t { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cell .r { white-space: nowrap; }
+.cell .r { color: var(--muted); font-size: 12px; }
+.cell.best .t { font-weight: 700; }
+.cell.best::before { content: ""; width: 3px; align-self: stretch; border-radius: 2px; background: var(--good); }
+.missing { color: var(--muted); opacity: .6; font-size: 12px; }
+.err { color: var(--bad); font-size: 12px; }
+.run { border: 1px solid var(--line); background: none; border-radius: 4px; cursor: pointer; padding: 0 6px;
+  color: var(--muted); font-size: 12px; }
+.run:hover { color: var(--ink); border-color: var(--muted); }
+.run:disabled { opacity: .4; cursor: default; }
+.grun { white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 500; padding: 1px 8px; background: var(--panel); }
+.doc { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--panel);
+  border-radius: 0 6px 6px 0; font-size: 13px; }
+.doc code { font: 12px var(--mono); }
+a.op { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: pointer; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
+@media (max-width: 520px) { .charts { grid-template-columns: 1fr; } }
+svg text { fill: var(--muted); font-size: 11px; }
+svg .grid { stroke: var(--line); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px;
+  vertical-align: middle; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+#tooltip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.15);
+  display: none; z-index: 20; max-width: 480px; }
+#timeline { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.stats { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 12px; }
+.stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 12px; }
+.code { font: 12px/1.6 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+  overflow-x: auto; padding: 6px 0; margin: 0; }
+.code div { display: flex; padding: 0 10px; white-space: pre; }
+.code div.hit { cursor: default; }
+.code div.on { background: var(--soft); box-shadow: inset 3px 0 0 var(--accent); }
+.code i { font-style: normal; color: var(--muted); width: 36px; flex: none; text-align: right; margin-right: 14px;
+  user-select: none; }
+.code b { font-weight: 600; color: var(--accent); }
+#timeline rect.dim { opacity: .15; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.progress { font-size: 12px; color: var(--muted); }
+.p2s { display: flex; flex-wrap: wrap; gap: 4px; }
+.p2 { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 5px;
+  padding: 3px 7px; font: 12px var(--mono); cursor: pointer; min-width: 38px; }
+.p2:hover { border-color: var(--muted); color: var(--ink); }
+.p2.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.p2 sup { font-size: 9px; }
+.p2-tools { display: inline-flex; gap: 8px; margin-left: 8px; }
+.p2-tools a { color: var(--accent); cursor: pointer; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>mensurflow <span>observe</span></h1>
+  <div class="chips" id="chips"></div>
+</header>
+<div class="layout">
+<aside>
+  <nav id="tabs">
+    <button data-tab="kernels" class="active">Kernels</button>
+    <button data-tab="trace">Programs</button>
+    <button data-tab="history">History</button>
+  </nav>
+  <div class="settings">
+    <label class="f">Size<select id="k-scale">
+      <option value="0">small (16K elems, N=64)</option>
+      <option value="1" selected>medium (1M elems, N=256)</option>
+      <option value="2">large (16M elems, N=1024)</option>
+    </select></label>
+    <label class="f">Threads<input type="number" id="threads" min="1" placeholder="all"></label>
+    <label class="f">Min time (s)<input type="number" id="min-time" value="0.25" step="0.05" min="0.02"></label>
+  </div>
+  <div>
+    <input type="text" id="side-filter" placeholder="Find an op">
+    <div id="side-ops"></div>
+  </div>
+</aside>
+<main>
+  <div id="banner"></div>
+
+  <!-- Kernels: every op on every device at one size -->
+  <section id="kernels">
+    <h2 class="sec" style="margin-top:0">Kernels</h2>
+    <div class="bar">
+      <label class="f">Filter<input type="text" id="k-filter" placeholder="op or group"></label>
+      <button class="b primary" id="k-run-all">Run all</button>
+      <button class="b" id="k-stop" disabled>Stop</button>
+      <span class="progress" id="k-progress"></span>
+    </div>
+    <div class="panel scroll">
+      <table id="k-table"></table>
+    </div>
+    <p class="note">Each cell is the median time of one public call with data on that device (GPU devices
+      run with <span class="mono">Execution::GPU</span>), and the rate it implies: GB/s of inputs + output for
+      memory-bound ops, GFLOP/s for matrix products. The fastest cell per op is marked. Greyed cells have no
+      registered kernel. Click an op for its page: results, size sweep and call breakdown.<br>
+      The CPU runs each kernel three ways: <i>sequential</i> (1 thread, from a copy of the library built without
+      auto-vectorization, <span class="mono">observe_scalar</span>), <i>SIMD</i> (1 thread, normal build) and
+      <i>threaded SIMD</i> (the Threads setting, default all; this is the plain cpu:0 result). The gain columns divide
+      their times: SIMD = sequential / SIMD, threads = SIMD / threaded, total = sequential / threaded.
+      Hand-written intrinsics (the x86 AVX2 GEMM kernel) and libc's <span class="mono">memcpy</span> stay vectorized
+      even in the sequential build.</p>
+  </section>
+
+  <!-- One op: its results on every device and CPU version, a size sweep and a call breakdown -->
+  <section id="op" hidden>
+    <div class="op-head"><h1 id="op-name"></h1><span class="chip" id="op-group"></span><span class="chip" id="op-unit"></span></div>
+    <div class="doc" id="op-doc"></div>
+
+    <h2 class="sec">Results</h2>
+    <div class="bar">
+      <button class="b primary" id="o-run-all">Run all</button>
+      <button class="b" id="o-run-versions">CPU (3 ways)</button>
+      <button class="b" id="o-run-devices">GPU devices</button>
+      <button class="b" id="o-stop" disabled>Stop</button>
+      <span class="progress" id="o-progress"></span>
+    </div>
+    <div class="panel scroll"><table id="o-table"></table></div>
+    <p class="note">The same cells as the Kernels table, at the size set in the sidebar: the CPU kernel three ways
+      (<i>sequential</i>: 1 thread, built without auto-vectorization; <i>SIMD</i>: 1 thread; <i>threaded SIMD</i>:
+      the Threads setting) and one call with data on each other device.</p>
+
+    <h2 class="sec">Sweep</h2>
+    <div class="bar">
+      <select id="s-op" hidden></select>
+      <label class="f">Devices<span id="s-devices" class="chips"></span></label>
+      <label class="f">Execution<select id="s-exec">
+        <option value="default">where the data is</option>
+        <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
+      </select></label>
+      <div class="f" style="flex-basis:100%"><label class="f"><span>Sizes, <span id="s-unit">elements</span> (2<sup>k</sup>, pick any)
+        <span class="p2-tools"><a data-p2="s-sizes" data-p2-set="default">default</a><a data-p2="s-sizes" data-p2-set="none">none</a></span></span></label>
+        <div class="p2s" id="s-sizes" data-multi="1"></div></div>
+      <button class="b primary" id="s-run">Run sweep</button>
+      <span class="progress" id="s-progress"></span>
+    </div>
+    <div class="charts">
+      <div class="panel"><h2>Rate</h2><div id="s-rate"></div></div>
+      <div class="panel"><h2>Median time per call</h2><div id="s-time"></div></div>
+    </div>
+    <div class="panel scroll"><h2>Results</h2><table id="s-table"></table></div>
+
+    <h2 class="sec">Call breakdown</h2>
+    <div class="bar">
+      <select id="c-op" hidden></select>
+      <label class="f">Device (data)<select id="c-device"></select></label>
+      <label class="f">Execution<select id="c-exec">
+        <option value="default">where the data is</option>
+        <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
+      </select></label>
+      <div class="f" style="flex-basis:100%"><label class="f"><span>Size, <span id="c-unit">elements</span> (2<sup>k</sup>, pick one)</span></label>
+        <div class="p2s" id="c-size"></div></div>
+      <label class="f">Calls<input type="number" id="c-calls" value="25" min="1" max="500"></label>
+      <button class="b primary" id="c-run">Trace calls</button>
+      <label class="f">Show call<select id="c-pick"></select></label>
+      <span class="progress" id="c-progress"></span>
+    </div>
+    <div class="panel">
+      <div class="stats" id="c-stats"></div>
+      <h2>One call</h2>
+      <div id="c-flame"></div>
+      <p class="note">Each bar is a span, and the bars under it ran inside it. <span class="mono">call</span> runs from
+        entering the op until its result can be read. It splits into the op function returning and
+        <span class="mono">read result</span>, which waits for the device. Inside are the library's spans: the
+        dispatcher (named after the op), the <span class="mono">kernel</span>, and every allocation and copy.</p>
+    </div>
+    <div class="panel">
+      <h2>Where the time goes (self time, mean over calls)</h2>
+      <div id="c-stack"></div>
+      <div class="scroll"><table id="c-table"></table></div>
+      <p class="note">Self time is a span's time minus the spans inside it. For example, the op function's self time
+        is its argument checks and setup. The self times add up to the whole call.</p>
+    </div>
+  </section>
+
+  <!-- Trace: timeline of every traced kernel call -->
+  <section id="trace" hidden>
+    <h2 class="sec" style="margin-top:0">Programs</h2>
+    <div class="bar">
+      <label class="f">Device<select id="t-device"></select></label>
+      <label class="f">Execution<select id="t-exec">
+        <option value="default">where the data is</option>
+        <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
+      </select></label>
+      <label class="f">Iterations<input type="number" id="t-iter" value="3" min="1" max="50"></label>
+      <button class="b primary" id="t-run">Trace demo program</button>
+      <label class="b" style="cursor:pointer">Open trace file…<input type="file" id="t-file" accept=".json" hidden></label>
+      <label class="f">Zoom<input type="range" id="t-zoom" min="1" max="40" value="1"></label>
+      <span class="progress" id="t-progress"></span>
+    </div>
+    <div class="panel">
+      <div class="stats" id="t-stats"></div>
+      <div id="timeline"></div>
+      <p class="note">One bar per span, one lane per thread: the top row is the dispatcher (named after the op), and
+        under it are the <span class="mono">kernel</span>, allocations and copies. Gaps are time spent outside the library.
+        The demo is one MLP training step (forward, backward, concat, pad, dropout). Files written by
+        <span class="mono">observe::TraceCollector::write()</span> open here, in chrome://tracing and in Perfetto.</p>
+    </div>
+    <div class="panel" id="t-code-panel" hidden>
+      <h2>Demo program <span class="note" id="t-code-file" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+      <div class="code" id="t-code"></div>
+      <p class="note">Hover a line to light up its spans in the timeline. Hover a span to find its line. Ops are
+        matched by name, and the spans from <span class="mono">loss.backward()</span> come from autograd, not from one
+        line.</p>
+    </div>
+    <div class="panel scroll"><h2>By op</h2><table id="t-agg"></table></div>
+    <div class="panel scroll"><details><summary>All events</summary><table id="t-events"></table></details></div>
+  </section>
+
+  <!-- History: everything run through the dashboard -->
+  <section id="history" hidden>
+    <h2 class="sec" style="margin-top:0">History</h2>
+    <div class="bar">
+      <label class="f">Op<select id="h-op"><option value="">all</option></select></label>
+      <label class="f">Device<select id="h-device"><option value="">all</option></select></label>
+      <button class="b" id="h-reload">Reload</button>
+      <button class="b" id="h-clear">Clear history</button>
+    </div>
+    <div class="panel"><h2>Median time over runs</h2><div id="h-chart"></div>
+      <p class="note">One line per op · device · size, for the filter above (at most 12 lines).</p></div>
+    <div class="panel scroll"><table id="h-table"></table></div>
+  </section>
+</main>
+</div>
+<div id="tooltip"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { info: null, ops: [], results: {}, sized: {}, history: [], running: false, stop: false, trace: [],
+  calls: {}, current: null };
+// Latest result per op|column (any size) and per op|column|size.
+function keep(key, r) { state.results[key] = r; if (r && r.size != null) state.sized[key + "|" + r.size] = r; }
+function cellResult(op, colKey) {
+  const key = op.name + "|" + colKey, r = state.results[key];
+  return r && (r.pending || r.error) ? r : state.sized[key + "|" + scaleSize(op)] || r;
+}
+
+// ---------- formatting ----------
+function fmtMs(ms) {
+  if (ms == null || !isFinite(ms)) return "–";
+  if (ms < 1e-3) return (ms * 1e6).toFixed(0) + " ns";
+  if (ms < 1) return (ms * 1e3).toPrecision(3) + " µs";
+  if (ms < 1000) return ms.toPrecision(3) + " ms";
+  return (ms / 1000).toPrecision(3) + " s";
+}
+function fmtUs(us) { return fmtMs(us / 1000); }
+function fmtSize(n) {
+  if (n >= 1 << 30 && n % (1 << 30) === 0) return n / (1 << 30) + "G";
+  if (n >= 1 << 20 && n % (1 << 20) === 0) return n / (1 << 20) + "M";
+  if (n >= 1 << 10 && n % (1 << 10) === 0) return n / (1 << 10) + "K";
+  return String(n);
+}
+function fmtRate(r, unit) { return r == null ? "–" : (r >= 100 ? r.toFixed(0) : r.toPrecision(3)) + " " + unit; }
+function shapes(list) { return (list || []).map((s) => "[" + s.join("×") + "]").join(" ") || "–"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function deviceColor(device) {
+  const type = String(device).split(":")[0];
+  return css("--" + (["cpu", "metal", "cuda"].includes(type) ? type : "other"));
+}
+const OP_COLORS = ["#4f7fe0", "#e08a3c", "#c4566e", "#8a6fd8", "#c9a227", "#3aa6b8", "#d16ba5", "#7b8a3a", "#a0674b"];
+function opColor(name) {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return OP_COLORS[h % OP_COLORS.length];
+}
+
+// ---------- server ----------
+async function api(path, body) {
+  const response = await fetch(path, body === undefined ? {} :
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await response.json();
+  if (data && data.fatal) throw new Error(data.fatal);
+  return data;
+}
+// `col` is a column from columns(): a device, or one of the CPU versions (which sets threads and the binary).
+function runRequest(op, col, sizes, execution, tab = "kernels") {
+  return api("/api/run", {
+    op, device: col.device, sizes, execution: execution || "default", variant: col.variant || null, tab, col: col.key,
+    threads: col.threads ? col.threads() : Number($("threads").value) || null,
+    min_time: Number($("min-time").value) || 0.25,
+  });
+}
+
+// ---------- tooltip ----------
+const tip = $("tooltip");
+function showTip(event, html) {
+  tip.innerHTML = html; tip.style.display = "block";
+  const x = Math.min(event.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+  const y = Math.min(event.clientY + 14, window.innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+// ---------- line chart (SVG, log axes) ----------
+function lineChart(el, series, o) {
+  const W = Math.max(el.clientWidth, 300), H = 260, R = 12, T = 10, B = 34;
+  const pts = series.flatMap((s) => s.points).filter((p) => p[1] > 0 && isFinite(p[1]));
+  if (!pts.length) { el.innerHTML = '<p class="note">No data yet.</p>'; return; }
+  let L = 58; // widened below to fit the longest y label
+  const tx = o.xlog ? Math.log10 : (v) => v, ty = o.ylog ? Math.log10 : (v) => v;
+  let x0 = Math.min(...pts.map((p) => tx(p[0]))), x1 = Math.max(...pts.map((p) => tx(p[0])));
+  let y0 = Math.min(...pts.map((p) => ty(p[1]))), y1 = Math.max(...pts.map((p) => ty(p[1])));
+  if (!o.ylog) y0 = Math.min(0, y0);
+  if (x0 === x1) { x0 -= 0.5; x1 += 0.5; }
+  if (y0 === y1) { y0 -= 0.5; y1 += 0.5; }
+  const pad = (y1 - y0) * 0.06; y1 += pad; if (o.ylog) y0 -= pad;
+  const yticks = o.ylog ? logTicks(y0, y1) : linTicks(y0, y1);
+  L = Math.max(L, 12 + 6.4 * Math.max(...yticks.map((v) => String(o.fmtY(v)).length)));
+  const X = (v) => L + (tx(v) - x0) / (x1 - x0) * (W - L - R);
+  const Y = (v) => T + (1 - (ty(v) - y0) / (y1 - y0)) * (H - T - B);
+  let svg = `<svg width="${W}" height="${H}" role="img">`;
+  for (const v of yticks) {
+    const y = Y(v);
+    svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${y + 4}" text-anchor="end">${o.fmtY(v)}</text>`;
+  }
+  const xs = [...new Set(pts.map((p) => p[0]))].sort((a, b) => a - b);
+  const every = Math.ceil(xs.length / Math.max(1, Math.floor((W - L) / 56)));
+  xs.forEach((v, i) => { if (i % every === 0) svg += `<text x="${X(v)}" y="${H - B + 16}" text-anchor="middle">${o.fmtX(v)}</text>`; });
+  svg += `<text x="${(L + W - R) / 2}" y="${H - 4}" text-anchor="middle">${esc(o.xlabel)}</text>`;
+  for (const s of series) {
+    const p = s.points.filter((q) => q[1] > 0 && isFinite(q[1])).sort((a, b) => a[0] - b[0]);
+    if (!p.length) continue;
+    svg += `<polyline fill="none" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="5 4"' : ""} points="${p.map((q) => X(q[0]) + "," + Y(q[1])).join(" ")}"/>`;
+    for (const q of p) {
+      svg += `<circle cx="${X(q[0])}" cy="${Y(q[1])}" r="3.5" fill="${s.color}" data-tip="${esc(`<b>${s.name}</b><br>${o.fmtX(q[0])}: ${o.fmtY(q[1])}`)}"/>`;
+    }
+  }
+  svg += "</svg>";
+  el.innerHTML = svg + '<div class="legend">' + series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("") + "</div>";
+  el.querySelectorAll("circle").forEach((c) => {
+    c.addEventListener("mousemove", (e) => showTip(e, c.dataset.tip));
+    c.addEventListener("mouseleave", hideTip);
+  });
+}
+function linTicks(a, b) {
+  const step = Math.pow(10, Math.floor(Math.log10((b - a) / 4 || 1)));
+  const m = [1, 2, 5, 10].find((k) => (b - a) / (k * step) <= 5) * step;
+  const out = []; for (let v = Math.ceil(a / m) * m; v <= b; v += m) out.push(+v.toPrecision(10)); return out;
+}
+function logTicks(a, b) {
+  const out = [];
+  for (let e = Math.floor(a); e <= Math.ceil(b); e++) for (const k of [1, 2, 5]) {
+    const v = k * Math.pow(10, e); if (Math.log10(v) >= a && Math.log10(v) <= b) out.push(v);
+  }
+  if (out.length > 7) return out.filter((v) => Math.abs(Math.log10(v) % 1) < 1e-9);
+  if (out.length < 3) {
+    const fine = [];
+    for (let e = Math.floor(a); e <= Math.ceil(b); e++) for (const k of [1, 1.5, 2, 3, 5, 7]) {
+      const v = k * Math.pow(10, e); if (Math.log10(v) >= a && Math.log10(v) <= b) fine.push(v);
+    }
+    return fine;
+  }
+  return out;
+}
+
+// ---------- header ----------
+function renderChips() {
+  const i = state.info;
+  const chips = [];
+  if (i) {
+    chips.push(`<span class="chip ${i.tracing ? "on" : "off"}" title="${i.tracing ? "" : "configure with -DMENSURFLOW_ENABLE_TRACING=ON"}">tracing ${i.tracing ? "on" : "off"}</span>`);
+    for (const d of i.devices) chips.push(`<span class="chip"><span class="sw" style="background:${deviceColor(d)}"></span>${d}</span>`);
+    chips.push(`<span class="chip">${i.threads} threads (${i.hardware_threads} hw)</span>`);
+  } else chips.push('<span class="chip off">offline</span>');
+  $("chips").innerHTML = chips.join("");
+}
+
+// ---------- op descriptions (read by serve.py from the comments in include/mensurflow/ops/*.hpp) ----------
+function docHtml(op) {
+  const d = op && op.doc;
+  if (!d) return "";
+  return `<code>${esc(d.signature)}</code><div style="margin-top:6px">${esc(d.text)}</div>` +
+    `<div class="note mono" style="margin-top:6px">${esc(d.file)}:${d.line}</div>`;
+}
+
+// ---------- kernels tab ----------
+function scaleSize(op) {
+  const k = Number($("k-scale").value);
+  if (op.unit.includes("batch")) return [16, 64, 256][k];
+  if (op.unit.startsWith("matrix")) return [64, 256, 1024][k];
+  return [1 << 14, 1 << 20, 1 << 24][k];
+}
+// The three CPU versions: the same kernels without SIMD on one thread, with SIMD on one thread, and with
+// SIMD on all threads (or the Threads setting).
+const VERSIONS = [
+  { key: "v:scalar", variant: "scalar", label: "sequential", detail: "1 thread, no SIMD", color: "#a0674b", threads: () => 1 },
+  { key: "v:simd", variant: "simd", label: "SIMD", detail: "1 thread", color: "#c9a227", threads: () => 1 },
+  { key: "v:threaded", variant: "threaded", label: "threaded SIMD", detail: "", color: null, threads: () => Number($("threads").value) || null },
+];
+function versionColumns() {
+  return VERSIONS.map((v) => ({
+    ...v, device: "cpu:0", color: v.color || css("--cpu"),
+    detail: v.detail || `${Number($("threads").value) || state.info.threads} threads`,
+    support: (op) => (v.variant === "scalar" && !state.info.scalar_build ? "observe_scalar is not built" : op.support["cpu:0"]),
+  }));
+}
+function deviceColumns() {
+  return state.info.devices.map((d) => ({ key: d, device: d, label: d, detail: "", color: deviceColor(d), support: (op) => op.support[d] }));
+}
+// The Kernels table and op pages: the CPU three ways (sequential, SIMD, threaded SIMD), then the other devices.
+// Threaded SIMD is the plain cpu:0 run, so it shares that key with the device view.
+function columns() {
+  const [sequential, simd, threaded] = versionColumns();
+  const cpu = deviceColumns().find((c) => c.key === "cpu:0");
+  return [sequential, simd, { ...cpu, label: threaded.label, detail: threaded.detail, cpuVersion: true },
+    ...deviceColumns().filter((c) => c.key !== "cpu:0")];
+}
+const cpuColumns = () => columns().slice(0, 3);
+const otherDeviceColumns = () => columns().slice(3);
+function column(key) { return [...deviceColumns(), ...versionColumns()].find((c) => c.key === key); }
+function gain(a, b) {
+  if (!a || !b || a.median_ms == null || b.median_ms == null) return "<td></td>";
+  if (a.size !== b.size) return `<td class="num note" title="measured at different sizes">–</td>`;
+  const g = a.median_ms / b.median_ms;
+  const tone = g >= 1.5 ? "var(--good)" : g < 0.95 ? "var(--bad)" : "var(--muted)";
+  return `<td class="num" style="color:${tone};font-weight:600">${g >= 10 ? g.toFixed(0) : g.toFixed(1)}×</td>`;
+}
+// One result cell: run button, median time and rate (or why it can't run).
+function cellHtml(op, c, r, best) {
+  const support = c.support(op);
+  if (support !== "ok") return `<span class="missing" title="${esc(support)}">not registered</span>`;
+  let inner = `<button class="run" ${state.running ? "disabled" : ""} data-op="${esc(op.name)}" data-col="${c.key}" title="run">▶</button>`;
+  if (r && r.error) inner += `<span class="err" title="${esc(r.error)}">error</span>`;
+  else if (r && r.pending) inner += '<span class="r">running…</span>';
+  else if (r) inner += `<span class="t">${fmtMs(r.median_ms)}</span><span class="r">${fmtRate(r.rate, r.rate_unit)}${r.size !== scaleSize(op) ? " @" + fmtSize(r.size) : ""}</span>`;
+  return `<div class="cell ${r && best != null && r.median_ms === best ? "best" : ""}">${inner}</div>`;
+}
+function renderKernels() {
+  if (!state.info) { $("k-table").innerHTML = ""; return; }
+  const cols = columns();
+  const extra = ["SIMD", "threads", "total"];
+  const filter = $("k-filter").value.trim().toLowerCase();
+  const others = cols.slice(3);
+  const head = (c) => `<span class="sw" style="background:${c.color}"></span>${esc(c.label)}${c.detail ? `<div class="note" style="font-weight:400">${esc(c.detail)}</div>` : ""}`;
+  let html = `<thead><tr><th rowspan="2">op</th><th rowspan="2">size</th>` +
+    `<th colspan="3" style="text-align:center;border-bottom:0"><span class="sw" style="background:${css("--cpu")}"></span>cpu:0</th>` +
+    others.map((c) => `<th rowspan="2">${head(c)}</th>`).join("") +
+    `<th colspan="3" style="text-align:center;border-bottom:0">gain</th></tr><tr>` +
+    cols.slice(0, 3).map((c) => `<th>${head(c)}</th>`).join("") +
+    extra.map((x) => `<th class="num">${x}</th>`).join("") + "</tr></thead><tbody>";
+  let group = "";
+  const off = state.running ? "disabled" : "";
+  for (const op of state.ops) {
+    if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
+    if (op.group !== group) {
+      group = op.group;
+      const g = esc(group);
+      html += `<tr class="group"><td colspan="2"><span style="display:inline-flex;align-items:center;gap:8px">${g}<button class="run grun" ${off} data-group="${g}" title="run every ${g} op in every column">▶ run group</button></span></td>` +
+        cols.map((c) => `<td><button class="run grun" ${off} data-group="${g}" data-col="${c.key}" title="run every ${g} op: ${esc(c.label)}">▶ ${esc(c.label)}</button></td>`).join("") +
+        extra.map(() => "<td></td>").join("") + "</tr>";
+    }
+    const cells = cols.map((c) => cellResult(op, c.key));
+    const times = cells.filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
+    const best = times.length > 1 ? Math.min(...times) : null;
+    html += `<tr><td class="opcell" data-op="${esc(op.name)}"><a class="op" data-op="${esc(op.name)}">${esc(op.name)}</a></td><td class="mono">${fmtSize(scaleSize(op))}</td>`;
+    cols.forEach((c, i) => { html += `<td>${cellHtml(op, c, cells[i], best)}</td>`; });
+    html += gain(cells[0], cells[1]) + gain(cells[1], cells[2]) + gain(cells[0], cells[2]);
+    html += "</tr>";
+  }
+  $("k-table").innerHTML = html + "</tbody>";
+}
+// Re-renders every view that shows result cells.
+function renderCells() { renderKernels(); renderOpResults(); renderSidebar(); }
+async function runCell(opName, colKey) {
+  const op = state.ops.find((o) => o.name === opName);
+  const key = opName + "|" + colKey;
+  state.results[key] = { pending: true };
+  renderCells();
+  try {
+    const data = await runRequest(opName, column(colKey), [scaleSize(op)]);
+    keep(key, data.results[0]);
+    state.history.push(data);
+  } catch (e) { state.results[key] = { error: e.message }; }
+  renderCells();
+}
+$("k-table").addEventListener("click", (e) => {
+  const group = e.target.closest(".grun");
+  if (group) return runJobs(group.dataset.group, group.dataset.col);
+  const run = e.target.closest(".run");
+  if (run && !state.running) return runCell(run.dataset.op, run.dataset.col);
+  const link = e.target.closest("a.op");
+  if (link) location.hash = "#op/" + encodeURIComponent(link.dataset.op);
+});
+// Runs [op name, column] jobs one after another; `progress` is the element that reports them.
+async function runQueue(jobs, progress, what) {
+  if (state.running) return;
+  state.running = true; state.stop = false;
+  for (const id of ["k-run-all", "o-run-all", "o-run-devices", "o-run-versions"]) $(id).disabled = true;
+  $("k-stop").disabled = false; $("o-stop").disabled = false;
+  for (let i = 0; i < jobs.length && !state.stop; i++) {
+    progress.textContent = `${i + 1} / ${jobs.length}: ${jobs[i][0]} · ${jobs[i][1].label}`;
+    await runCell(jobs[i][0], jobs[i][1].key);
+  }
+  progress.textContent = state.stop ? "stopped" : `done${what ? " (" + what + ")" : ""}, ${jobs.length} runs`;
+  state.running = false;
+  for (const id of ["k-run-all", "o-run-all", "o-run-devices", "o-run-versions"]) $(id).disabled = false;
+  $("k-stop").disabled = true; $("o-stop").disabled = true;
+  renderCells();
+}
+// Runs every supported (op, column) cell that passes the filter, optionally only one group and/or column.
+function runJobs(onlyGroup, onlyCol) {
+  const filter = $("k-filter").value.trim().toLowerCase();
+  const jobs = [];
+  for (const op of state.ops) {
+    if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
+    if (onlyGroup && op.group !== onlyGroup) continue;
+    for (const c of columns()) if (c.support(op) === "ok" && (!onlyCol || c.key === onlyCol)) jobs.push([op.name, c]);
+  }
+  return runQueue(jobs, $("k-progress"), [onlyGroup, onlyCol && column(onlyCol).label].filter(Boolean).join(" · "));
+}
+$("k-run-all").addEventListener("click", () => runJobs());
+$("k-stop").addEventListener("click", () => { state.stop = true; });
+// Hovering an op shows its signature and full description.
+$("k-table").addEventListener("mouseover", (e) => {
+  const cell = e.target.closest(".opcell");
+  if (!cell) return;
+  const op = state.ops.find((o) => o.name === cell.dataset.op);
+  if (op && op.doc) cell.onmousemove = (m) => showTip(m, docHtml(op));
+  cell.onmouseleave = hideTip;
+});
+$("k-scale").addEventListener("change", () => { renderKernels(); renderOpResults(); });
+$("k-filter").addEventListener("input", renderKernels);
+$("threads").addEventListener("input", () => { renderKernels(); renderOpResults(); });
+
+// ---------- power-of-two size pickers ----------
+// Sizes are picked as 2^k toggles: several for a sweep (data-multi), one for a call breakdown.
+function exponentRange(op) {
+  if (op.unit.includes("batch")) return [1, 10];   // matrix side, batch of 16
+  if (op.unit.startsWith("matrix")) return [3, 12]; // matrix side N
+  return [6, 26];                                   // elements: 64 to 64M
+}
+function setPow2(id, op, selected) {
+  const el = $(id), [lo, hi] = exponentRange(op);
+  const on = new Set(selected.map(Number));
+  el.dataset.defaults = op.sizes.join(",");
+  let html = "";
+  for (let k = lo; k <= hi; k++) {
+    const v = 2 ** k;
+    html += `<button type="button" class="p2 ${on.has(v) ? "on" : ""}" data-v="${v}" title="${v.toLocaleString()} (${fmtSize(v)})" aria-pressed="${on.has(v)}">2<sup>${k}</sup></button>`;
+  }
+  el.innerHTML = html;
+}
+function getPow2(id) {
+  return [...$(id).querySelectorAll(".p2.on")].map((b) => Number(b.dataset.v));
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".p2");
+  if (b) {
+    const group = b.parentElement;
+    if (!group.dataset.multi) group.querySelectorAll(".p2.on").forEach((x) => { x.classList.remove("on"); x.setAttribute("aria-pressed", "false"); });
+    b.classList.toggle("on");
+    b.setAttribute("aria-pressed", String(b.classList.contains("on")));
+    return;
+  }
+  const tool = e.target.closest("[data-p2-set]");
+  if (tool) {
+    const el = $(tool.dataset.p2);
+    const pick = tool.dataset.p2Set === "default" ? new Set(el.dataset.defaults.split(",").map(Number)) : new Set();
+    el.querySelectorAll(".p2").forEach((x) => {
+      const on = pick.has(Number(x.dataset.v));
+      x.classList.toggle("on", on); x.setAttribute("aria-pressed", String(on));
+    });
+  }
+});
+
+// ---------- sweep tab ----------
+let sweepData = [];
+function onSweepOp() {
+  const op = state.ops.find((o) => o.name === $("s-op").value);
+  if (!op) return;
+  $("s-unit").textContent = op.unit;
+  const last = sweepData.filter((d) => d.op === op.name).pop();
+  setPow2("s-sizes", op, last ? last.results.map((r) => r.size) : op.sizes);
+  // Devices are checked by default. The two single-thread CPU versions can be added to compare against cpu:0.
+  const choices = [...deviceColumns(), ...versionColumns().filter((c) => c.variant !== "threaded")];
+  $("s-devices").innerHTML = choices.map((c) => {
+    const support = c.support(op), ok = support === "ok", on = ok && !c.variant;
+    const name = c.variant ? `cpu:0 ${c.label} (${c.detail})` : c.label;
+    return `<label class="chip" title="${ok ? "" : esc(support)}"><input type="checkbox" value="${c.key}" ${on ? "checked" : ""} ${ok ? "" : "disabled"}> ${esc(name)}</label>`;
+  }).join("");
+}
+$("s-op").addEventListener("change", onSweepOp);
+$("s-run").addEventListener("click", async () => {
+  const op = $("s-op").value;
+  const sizes = getPow2("s-sizes");
+  const devices = [...$("s-devices").querySelectorAll("input:checked")].map((i) => column(i.value));
+  const execution = $("s-exec").value;
+  if (!sizes.length || !devices.length) return;
+  $("s-run").disabled = true;
+  for (const col of devices) {
+    $("s-progress").textContent = `running ${op}: ${col.variant ? "cpu:0 " : ""}${col.label}…`;
+    try {
+      // CPU versions run on cpu:0 whatever the execution setting.
+      const data = await runRequest(op, col, sizes, col.variant ? "default" : execution, "sweep");
+      state.history.push(data);
+      addSweep(data);
+    } catch (e) { $("s-progress").textContent = "error: " + e.message; }
+  }
+  $("s-run").disabled = false; $("s-progress").textContent = "";
+  renderSweep();
+});
+// Adds a sweep result (fresh or restored from the store), replacing the previous one for the same
+// op, column and execution.
+function addSweep(data) {
+  const col = column(data.col) || column(data.device);
+  if (!col) return;
+  data.col = col.key;
+  data.label = col.variant ? `cpu:0 ${col.label} (${data.threads === 1 ? "1 thread" : data.threads + " threads"}${col.variant === "scalar" ? ", no SIMD" : ""})` :
+    data.execution === "cpu" ? `${data.device} (cpu, ${data.threads} threads)` : `${data.device} (${data.execution})`;
+  data.color = col.color;
+  sweepData = sweepData.filter((s) => !(s.op === data.op && s.col === data.col && s.execution === data.execution));
+  sweepData.push(data);
+}
+function renderSweep() {
+  const op = $("s-op").value;
+  const runs = sweepData.filter((s) => s.op === op);
+  const series = (field) => runs.map((r) => ({
+    name: r.label, color: r.color, dash: !r.col.startsWith("v:") && r.execution !== (r.device.startsWith("cpu") ? "cpu" : "gpu"),
+    points: r.results.filter((x) => x[field] != null).map((x) => [x.size, x[field]]),
+  }));
+  const unit = runs.flatMap((r) => r.results).find((x) => x.rate_unit)?.rate_unit || "GB/s";
+  const xlabel = runs[0] ? runs[0].unit : "size";
+  lineChart($("s-rate"), series("rate"), { xlog: true, ylog: false, xlabel, fmtX: fmtSize, fmtY: (v) => fmtRate(v, unit) });
+  lineChart($("s-time"), series("median_ms"), { xlog: true, ylog: true, xlabel, fmtX: fmtSize, fmtY: fmtMs });
+  let html = '<thead><tr><th>run</th><th class="num">threads</th><th class="num">size</th><th>inputs</th><th class="num">calls</th><th class="num">p10</th><th class="num">median</th><th class="num">p90</th><th class="num">rate</th><th>traced call (self time)</th></tr></thead><tbody>';
+  for (const r of runs) for (const x of r.results) {
+    if (x.error) { html += `<tr><td>${esc(r.label)}</td><td class="num">${r.threads}</td><td class="num">${fmtSize(x.size)}</td><td colspan="7" class="err">${esc(x.error)}</td></tr>`; continue; }
+    const traced = !r.tracing ? '<span class="missing">tracing off</span>' :
+      selfSummary(x.trace || []) || '<span class="missing">no dispatch</span>';
+    html += `<tr><td><span class="sw" style="background:${r.color}"></span>${esc(r.label)}</td><td class="num">${r.threads}</td><td class="num mono">${fmtSize(x.size)}</td><td class="mono">${shapes(x.inputs)}</td><td class="num">${x.calls}</td><td class="num">${fmtMs(x.p10_ms)}</td><td class="num"><b>${fmtMs(x.median_ms)}</b></td><td class="num">${fmtMs(x.p90_ms)}</td><td class="num">${fmtRate(x.rate, x.rate_unit)}</td><td>${traced}</td></tr>`;
+  }
+  $("s-table").innerHTML = html + "</tbody>";
+}
+
+// ---------- span trees (shared by the call, sweep and trace views) ----------
+const STEP_INFO = {
+  "call": "whole call, until the result can be read",
+  "read result": "reads one element of the result, which waits for the device to finish",
+  "kernel": "the backend kernel (on a GPU it may return once the work is queued)",
+  "Tensor::empty": "allocate a tensor",
+  "Tensor::to": "copy a tensor to another device",
+  "Tensor::copy_to_host": "read tensor memory into host memory",
+  "Tensor::copy_from": "copy into an existing tensor",
+  "Tensor::from_host": "make a tensor from host data",
+  "Tensor::contiguous": "pack a strided view into a new tensor",
+};
+function stepInfo(e) {
+  if (STEP_INFO[e.name]) return STEP_INFO[e.name];
+  if (e.args?.device === "client") return "the op function: argument checks, output allocation, then dispatch";
+  return "dispatcher: picks the device, looks up the kernel, moves data if it runs elsewhere";
+}
+// Nests events (one thread) by time. Sets e._parent, e._depth, e._self (µs).
+function nest(events) {
+  const sorted = [...events].sort((a, b) => a.ts - b.ts || b.dur - a.dur);
+  const stack = [];
+  for (const e of sorted) {
+    while (stack.length && stack[stack.length - 1].ts + stack[stack.length - 1].dur < e.ts + e.dur - 1e-3) stack.pop();
+    e._parent = stack[stack.length - 1] || null;
+    e._depth = stack.length;
+    e._self = e.dur;
+    if (e._parent) e._parent._self -= e.dur;
+    stack.push(e);
+  }
+  for (const e of sorted) e._self = Math.max(e._self, 0);
+  return sorted;
+}
+function nestByThread(events) {
+  const lanes = {};
+  for (const e of events) (lanes[e.tid] = lanes[e.tid] || []).push(e);
+  return Object.values(lanes).flatMap(nest);
+}
+function rankColors(totals) {
+  const rank = Object.keys(totals).sort((a, b) => totals[b] - totals[a]);
+  return (name) => OP_COLORS[Math.max(rank.indexOf(name), 0) % OP_COLORS.length];
+}
+// "kernel 233 µs · dispatch 1.6 µs · Tensor::empty 0.5 µs": self time per step of one traced call.
+function selfSummary(events) {
+  const self = {};
+  for (const e of nest(events)) self[e.name] = (self[e.name] || 0) + e._self;
+  return Object.entries(self).sort((a, b) => b[1] - a[1])
+    .map(([n, v]) => `<div class="mono"><span class="sw" style="background:${n === "kernel" ? css("--good") : opColor(n)}"></span>${esc(n)} · ${fmtUs(v)}</div>`).join("");
+}
+
+// ---------- call tab ----------
+let callData = null;
+function onCallOp() {
+  const op = state.ops.find((o) => o.name === $("c-op").value);
+  if (!op) return;
+  $("c-unit").textContent = op.unit;
+  setPow2("c-size", op, [op.sizes[Math.floor(op.sizes.length / 2)]]);
+  $("c-device").innerHTML = state.info.devices.map((d) => `<option ${op.support[d] === "ok" ? "" : "disabled"}>${d}</option>`).join("");
+  // This op's last breakdown, with the settings it was traced with.
+  callData = state.calls[op.name] || null;
+  if (callData) {
+    $("c-device").value = callData.device; setPow2("c-size", op, [callData.size]);
+    $("c-exec").value = callData.execution === (callData.device.startsWith("cpu") ? "cpu" : "gpu") ? "default" : callData.execution;
+  }
+  fillCallPick();
+}
+$("c-op").addEventListener("change", onCallOp);
+$("c-run").addEventListener("click", async () => {
+  $("c-run").disabled = true; $("c-progress").textContent = "running…";
+  try {
+    setCallData(await api("/api/call", { op: $("c-op").value, device: $("c-device").value, execution: $("c-exec").value,
+      size: getPow2("c-size")[0] || null, calls: Number($("c-calls").value) || 25, threads: Number($("threads").value) || null }));
+    $("c-progress").textContent = "";
+  } catch (e) { $("c-progress").textContent = "error: " + e.message; }
+  $("c-run").disabled = false;
+  renderCall();
+});
+$("c-pick").addEventListener("change", renderCall);
+// Stores a call breakdown under its op (fresh or restored); shows it when that op's page is open.
+function setCallData(data) {
+  data.calls.forEach((c) => nest(c.events));
+  const order = data.calls.map((c, i) => i).sort((a, b) => data.calls[a].total_ms - data.calls[b].total_ms);
+  data.median = order[Math.floor(order.length / 2)];
+  state.calls[data.op] = data;
+  if (data.op === $("c-op").value) { callData = data; fillCallPick(); }
+}
+function fillCallPick() {
+  $("c-pick").innerHTML = !callData ? "" : callData.calls.map((c, i) => `<option value="${i}" ${i === callData.median ? "selected" : ""}>#${i + 1} · ${fmtMs(c.total_ms)}${i === callData.median ? " (median)" : ""}</option>`).join("");
+}
+function renderCall() {
+  if (!callData) {
+    $("c-flame").innerHTML = '<p class="note">Not traced yet: pick a device and size and press Trace calls.</p>';
+    for (const id of ["c-stats", "c-stack", "c-table"]) $(id).innerHTML = "";
+    return;
+  }
+  const d = callData;
+  if (!d.tracing) { $("c-flame").innerHTML = '<p class="note">Tracing is off in this build: only the client spans are shown. Configure with -DMENSURFLOW_ENABLE_TRACING=ON.</p>'; }
+  // mean self time per step over all calls
+  const agg = {};
+  for (const c of d.calls) for (const e of c.events) {
+    const a = (agg[e.name] = agg[e.name] || { self: 0, total: 0, n: 0, info: stepInfo(e), parents: new Set(), device: new Set() });
+    a.self += e._self; a.total += e.dur; a.n++;
+    if (e._parent) a.parents.add(e._parent.name);
+    if (e.args?.device && e.args.device !== "client") a.device.add(e.args.device);
+  }
+  const calls = d.calls.length;
+  const totals = Object.fromEntries(Object.entries(agg).map(([k, a]) => [k, a.self]));
+  const color = rankColors(totals);
+  const callMean = (agg.call ? agg.call.total : 0) / calls;
+  const overhead = d.traced_median_ms - d.untraced_median_ms;
+  $("c-stats").innerHTML = [
+    [fmtMs(d.untraced_median_ms), "median call, untraced"],
+    [fmtMs(d.traced_median_ms), "median call, traced"],
+    [(overhead >= 0 ? "+" : "−") + fmtMs(Math.abs(overhead)), "tracing overhead"],
+    [d.calls.length, "calls"],
+    [`${d.op} on ${d.device} (${d.execution})`, shapes(d.inputs)],
+  ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span class="mono">${esc(l)}</span></div>`).join("");
+
+  // flame chart of the chosen call
+  const c = d.calls[Number($("c-pick").value) || d.median];
+  const ev = c.events;
+  const span = Math.max(...ev.map((e) => e.ts + e.dur), 1e-3);
+  const depth = Math.max(...ev.map((e) => e._depth)) + 1;
+  const W = Math.max($("c-flame").clientWidth, 400), rowH = 26, L = 4, R = 4;
+  const X = (t) => L + t / span * (W - L - R);
+  let svg = `<svg width="${W}" height="${depth * rowH + 24}">`;
+  for (const v of linTicks(0, span)) svg += `<line class="grid" x1="${X(v)}" x2="${X(v)}" y1="16" y2="${depth * rowH + 24}"/><text x="${X(v)}" y="11" text-anchor="${v === 0 ? "start" : "middle"}">${fmtUs(v)}</text>`;
+  ev.forEach((e, i) => {
+    const x = X(e.ts), w = Math.max(X(e.ts + e.dur) - x, 1.5), y = 20 + e._depth * rowH;
+    const fill = e.name === "kernel" ? css("--good") : e.args?.device === "client" ? css("--muted") : color(e.name);
+    svg += `<rect x="${x}" y="${y}" width="${w}" height="${rowH - 4}" rx="3" fill="${fill}" fill-opacity="${e.args?.device === "client" ? 0.35 : 0.9}" data-i="${i}"/>`;
+    const label = `${e.name} ${fmtUs(e.dur)}`;
+    if (w > label.length * 6.2 + 8) svg += `<text x="${x + 5}" y="${y + 15}" style="fill:${e.args?.device === "client" ? "var(--ink)" : "#fff"};pointer-events:none">${esc(label)}</text>`;
+    else if (w > 30) svg += `<text x="${x + 4}" y="${y + 15}" style="fill:${e.args?.device === "client" ? "var(--ink)" : "#fff"};pointer-events:none">${esc(e.name.replace("Tensor::", "").slice(0, Math.floor(w / 6.5)))}</text>`;
+  });
+  $("c-flame").innerHTML = svg + "</svg>";
+  $("c-flame").querySelectorAll("rect").forEach((r) => {
+    const e = ev[Number(r.dataset.i)];
+    r.addEventListener("mousemove", (m) => showTip(m, `<b>${esc(e.name)}</b> · ${fmtUs(e.dur)} (self ${fmtUs(e._self)})<br>${esc(stepInfo(e))}<br>${e.args?.device && e.args.device !== "client" ? esc(e.args.device + " " + (e.args.dtype || "")) + "<br>" : ""}<span class="mono">${e.args?.inputs?.length ? shapes(e.args.inputs) + " → " : ""}${shapes(e.args?.outputs)}</span><br>starts at ${fmtUs(e.ts)}`));
+    r.addEventListener("mouseleave", hideTip);
+  });
+
+  // stacked self-time bar + table
+  const rows = Object.entries(agg).sort((a, b) => b[1].self - a[1].self);
+  const sumSelf = rows.reduce((s, [, a]) => s + a.self, 0) || 1;
+  $("c-stack").innerHTML = '<div style="display:flex;height:22px;border-radius:4px;overflow:hidden;margin:4px 0 12px">' +
+    rows.filter(([, a]) => a.self / sumSelf > 0.002).map(([n, a]) => `<div title="${esc(n)}: ${fmtUs(a.self / calls)}" style="width:${(100 * a.self / sumSelf).toFixed(2)}%;background:${n === "kernel" ? css("--good") : color(n)}"></div>`).join("") + "</div>";
+  $("c-table").innerHTML = '<thead><tr><th>step</th><th>what it is</th><th class="num">per call</th><th class="num">self time</th><th class="num">share</th><th class="num">incl. inner</th><th>inside</th><th>device</th></tr></thead><tbody>' +
+    rows.map(([n, a]) => `<tr><td class="mono"><span class="sw" style="background:${n === "kernel" ? css("--good") : color(n)}"></span>${esc(n)}</td><td class="note">${esc(a.info)}</td><td class="num">${(a.n / calls).toFixed(a.n % calls ? 1 : 0)}×</td><td class="num"><b>${fmtUs(a.self / calls)}</b></td><td class="num">${(100 * a.self / sumSelf).toFixed(1)}%</td><td class="num">${fmtUs(a.total / calls)}</td><td class="mono">${esc([...a.parents].join(", "))}</td><td class="mono">${esc([...a.device].join(", "))}</td></tr>`).join("") +
+    `<tr><td><b>sum</b></td><td></td><td></td><td class="num"><b>${fmtUs(sumSelf / calls)}</b></td><td></td><td class="num">${fmtUs(callMean)}</td><td></td><td></td></tr></tbody>`;
+}
+
+// ---------- trace tab ----------
+// Which span names a line of the demo calls: identifiers followed by "(", matched to dispatch spans by name
+// ("sum" also matches "sum_axis").
+function lineOps(text) {
+  return [...text.matchAll(/([A-Za-z_]\w*)\s*\(/g)].map((m) => m[1]);
+}
+function spanMatchesLine(e, ops) {
+  const top = e.name === "kernel" && e._parent ? e._parent.name : e.name;
+  return ops.some((op) => top === op || top.startsWith(op + "_"));
+}
+function renderSource() {
+  const src = state.traceMeta?.source;
+  $("t-code-panel").hidden = !src;
+  if (!src) return;
+  $("t-code-file").textContent = `${src.file}, lines ${src.first_line}–${src.first_line + src.lines.length - 1}`;
+  const names = new Set(state.trace.map((e) => e.name));
+  $("t-code").innerHTML = src.lines.map((text, i) => {
+    const ops = lineOps(text).filter((op) => [...names].some((n) => n === op || n.startsWith(op + "_")));
+    const html = esc(text).replace(/([A-Za-z_]\w*)(\s*\()/g, (m, id, paren) => (ops.includes(id) ? `<b>${id}</b>${paren}` : m));
+    return `<div class="${ops.length ? "hit" : ""}" data-ops="${ops.join(" ")}"><i>${src.first_line + i}</i>${html || " "}</div>`;
+  }).join("");
+  $("t-code").querySelectorAll("div.hit").forEach((line) => {
+    const ops = line.dataset.ops.split(" ");
+    line.addEventListener("mouseenter", () => {
+      line.classList.add("on");
+      $("timeline").querySelectorAll("rect").forEach((r) => r.classList.toggle("dim", !spanMatchesLine(state.trace[Number(r.dataset.i)], ops)));
+    });
+    line.addEventListener("mouseleave", () => {
+      line.classList.remove("on");
+      $("timeline").querySelectorAll("rect").forEach((r) => r.classList.remove("dim"));
+    });
+  });
+}
+function markLineFor(e) {
+  $("t-code").querySelectorAll("div.hit").forEach((line) => line.classList.toggle("on", !!e && spanMatchesLine(e, line.dataset.ops.split(" "))));
+}
+function setTrace(events, meta) {
+  state.trace = (events || []).filter((e) => e.ph === "X" || e.dur != null);
+  state.traceMeta = meta || {};
+  renderTrace();
+}
+function renderTrace() {
+  const ev = state.trace;
+  nestByThread(ev);
+  // A kernel span is shown under its dispatcher's name: "matmul · kernel".
+  const label = (e) => (e.name === "kernel" && e._parent ? e._parent.name + " · kernel" : e.name);
+  const totals = {};
+  for (const e of ev) totals[label(e)] = (totals[label(e)] || 0) + e._self;
+  const color = rankColors(totals);
+  if (!ev.length) {
+    $("timeline").innerHTML = `<p class="note" style="padding:12px">${state.info && !state.info.tracing ? "Tracing is off in this build. Configure with -DMENSURFLOW_ENABLE_TRACING=ON and rebuild observe." : "No events yet. Trace the demo program or open a trace file."}</p>`;
+    $("t-stats").innerHTML = ""; $("t-agg").innerHTML = ""; $("t-events").innerHTML = ""; renderSource(); return;
+  }
+  const t0 = Math.min(...ev.map((e) => e.ts)), t1 = Math.max(...ev.map((e) => e.ts + e.dur));
+  const span = Math.max(t1 - t0, 1e-3);
+  // lanes: one per thread, extra rows for nested spans
+  const byTid = {};
+  for (const e of ev) {
+    const lane = (byTid[e.tid] = byTid[e.tid] || { rows: 1, items: [] });
+    lane.rows = Math.max(lane.rows, e._depth + 1); lane.items.push([e, e._depth]);
+  }
+  const zoom = Number($("t-zoom").value);
+  const L = 70, rowH = 22, width = Math.max($("timeline").clientWidth - 2, 400) * zoom;
+  const X = (t) => L + (t - t0) / span * (width - L - 10);
+  let y = 26, body = "";
+  const tids = Object.keys(byTid).sort((a, b) => a - b);
+  for (const tid of tids) {
+    const lane = byTid[tid];
+    body += `<text x="6" y="${y + 15}">thread ${tid}</text>`;
+    for (const [e, depth] of lane.items) {
+      const x = X(e.ts), w = Math.max(X(e.ts + e.dur) - x, 1), yy = y + depth * rowH;
+      body += `<rect x="${x}" y="${yy + 2}" width="${w}" height="${rowH - 4}" rx="2" fill="${color(label(e))}" data-i="${ev.indexOf(e)}"/>`;
+      if (w > 40) body += `<text x="${x + 4}" y="${yy + 15}" style="fill:#fff;pointer-events:none">${esc(e.name.replace("Tensor::", ""))}</text>`;
+    }
+    y += lane.rows * rowH + 8;
+  }
+  let axis = "";
+  for (const v of linTicks(0, span)) axis += `<line class="grid" x1="${X(t0 + v)}" x2="${X(t0 + v)}" y1="18" y2="${y}"/><text x="${X(t0 + v)}" y="13" text-anchor="middle">${fmtUs(v)}</text>`;
+  $("timeline").innerHTML = `<svg width="${width}" height="${y}">${axis}${body}</svg>`;
+  $("timeline").querySelectorAll("rect").forEach((r) => {
+    const e = ev[Number(r.dataset.i)];
+    r.addEventListener("mouseenter", () => markLineFor(e));
+    r.addEventListener("mouseleave", () => markLineFor(null));
+    r.addEventListener("mousemove", (m) => showTip(m, `<b>${esc(label(e))}</b> · ${fmtUs(e.dur)} (self ${fmtUs(e._self)})<br>${esc(e.args?.device || "")} ${esc(e.args?.dtype || "")}<br><span class="mono">${shapes(e.args?.inputs)} → ${shapes(e.args?.outputs)}</span><br>at ${fmtUs(e.ts - t0)}`));
+    r.addEventListener("mouseleave", hideTip);
+  });
+  // stats + aggregate
+  const busy = ev.filter((e) => !e._parent).reduce((s, e) => s + e.dur, 0);
+  const dispatches = ev.filter((e) => e.name === "kernel").length;
+  const meta = state.traceMeta;
+  $("t-stats").innerHTML = [
+    [dispatches, "kernel calls"], [ev.length, "spans"], [fmtUs(span), "first to last"], [fmtUs(busy), "inside the library"],
+    [(100 * busy / span).toFixed(0) + "%", "library share of span"],
+    ...(meta.total_ms ? [[fmtMs(meta.total_ms), "program wall time"]] : []),
+    ...(meta.label ? [[meta.label, "source"]] : []),
+  ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span>${l}</span></div>`).join("") +
+    (meta.error ? `<div class="err">${esc(meta.error)}</div>` : "");
+  const agg = {};
+  for (const e of ev) {
+    const a = (agg[label(e)] = agg[label(e)] || { n: 0, total: 0, self: 0, max: 0, devices: new Set() });
+    a.n++; a.total += e.dur; a.self += e._self; a.max = Math.max(a.max, e.dur); if (e.args?.device) a.devices.add(e.args.device);
+  }
+  $("t-agg").innerHTML = '<thead><tr><th>span</th><th class="num">count</th><th class="num">self time</th><th class="num">incl. inner</th><th class="num">mean</th><th class="num">max</th><th>share (self)</th><th>devices</th></tr></thead><tbody>' +
+    Object.entries(agg).sort((a, b) => b[1].self - a[1].self).map(([name, a]) =>
+      `<tr><td><span class="sw" style="background:${color(name)}"></span>${esc(name)}</td><td class="num">${a.n}</td><td class="num"><b>${fmtUs(a.self)}</b></td><td class="num">${fmtUs(a.total)}</td><td class="num">${fmtUs(a.total / a.n)}</td><td class="num">${fmtUs(a.max)}</td><td style="min-width:180px"><div style="display:flex;align-items:center;gap:8px"><div style="flex:1"><div style="background:${color(name)};height:8px;border-radius:2px;width:${(100 * a.self / busy).toFixed(1)}%"></div></div><span class="note" style="width:44px;text-align:right">${(100 * a.self / busy).toFixed(1)}%</span></div></td><td class="mono">${[...a.devices].join(", ")}</td></tr>`).join("") + "</tbody>";
+  renderSource();
+  $("t-events").innerHTML = '<thead><tr><th class="num">start</th><th class="num">duration</th><th>span</th><th>device</th><th>dtype</th><th>inputs</th><th>outputs</th><th class="num">thread</th></tr></thead><tbody>' +
+    ev.slice(0, 2000).map((e) => `<tr><td class="num">${fmtUs(e.ts - t0)}</td><td class="num">${fmtUs(e.dur)}</td><td>${"· ".repeat(e._depth)}${esc(label(e))}</td><td>${esc(e.args?.device || "")}</td><td>${esc(e.args?.dtype || "")}</td><td class="mono">${shapes(e.args?.inputs)}</td><td class="mono">${shapes(e.args?.outputs)}</td><td class="num">${e.tid}</td></tr>`).join("") + "</tbody>";
+}
+$("t-zoom").addEventListener("input", renderTrace);
+function showProgram(data) {
+  setTrace(data.traceEvents, { total_ms: data.total_ms, error: data.error, label: `demo on ${data.device} (${data.execution})`, source: data.source });
+}
+$("t-run").addEventListener("click", async () => {
+  $("t-run").disabled = true; $("t-progress").textContent = "running…";
+  try {
+    const data = await api("/api/program", { device: $("t-device").value, execution: $("t-exec").value,
+      iterations: Number($("t-iter").value) || 3, threads: Number($("threads").value) || null });
+    showProgram(data);
+    $("t-progress").textContent = "";
+  } catch (e) { $("t-progress").textContent = "error: " + e.message; }
+  $("t-run").disabled = false;
+});
+$("t-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    setTrace(Array.isArray(data) ? data : data.traceEvents, { label: file.name, total_ms: data.total_ms, error: data.error });
+  } catch (err) { $("t-progress").textContent = "could not read " + file.name + ": " + err.message; }
+  e.target.value = "";
+});
+
+// ---------- history tab ----------
+function historyRows() {
+  const rows = [];
+  for (const run of state.history) for (const r of run.results || []) {
+    if (r.error || r.median_ms == null) continue;
+    const device = run.variant ? `${run.device} ${VERSIONS.find((v) => v.variant === run.variant)?.label || run.variant}` : run.device;
+    rows.push({ time: run.time, op: run.op, device, execution: run.execution, threads: run.threads, ...r });
+  }
+  return rows;
+}
+function renderHistory() {
+  const rows = historyRows();
+  const opSel = $("h-op"), devSel = $("h-device"), op = opSel.value, dev = devSel.value;
+  const ops = [...new Set(rows.map((r) => r.op))].sort(), devs = [...new Set(rows.map((r) => r.device))].sort();
+  opSel.innerHTML = '<option value="">all</option>' + ops.map((o) => `<option ${o === op ? "selected" : ""}>${esc(o)}</option>`).join("");
+  devSel.innerHTML = '<option value="">all</option>' + devs.map((d) => `<option ${d === dev ? "selected" : ""}>${d}</option>`).join("");
+  const shown = rows.filter((r) => (!op || r.op === op) && (!dev || r.device === dev));
+  const groups = {};
+  for (const r of shown) (groups[`${r.op} · ${r.device} · ${fmtSize(r.size)}`] = groups[`${r.op} · ${r.device} · ${fmtSize(r.size)}`] || []).push(r);
+  const keys = Object.keys(groups).filter((k) => groups[k].length > 1).slice(0, 12);
+  const el = $("h-chart");
+  if (!keys.length) el.innerHTML = '<p class="note">Run the same op, device and size more than once to see a trend.</p>';
+  else lineChart(el, keys.map((k, i) => ({ name: k, color: OP_COLORS[i % OP_COLORS.length], points: groups[k].map((r, j) => [j + 1, r.median_ms]) })),
+    { xlog: false, ylog: true, xlabel: "run #", fmtX: (v) => (Number.isInteger(v) ? String(v) : ""), fmtY: fmtMs });
+  $("h-table").innerHTML = '<thead><tr><th>when</th><th>op</th><th>device</th><th>exec</th><th class="num">threads</th><th class="num">size</th><th class="num">median</th><th class="num">min</th><th class="num">rate</th></tr></thead><tbody>' +
+    shown.slice().reverse().slice(0, 1000).map((r) => `<tr><td class="mono">${r.time ? new Date(r.time * 1000).toLocaleString() : "now"}</td><td>${esc(r.op)}</td><td>${r.device}</td><td>${r.execution}</td><td class="num">${r.threads ?? ""}</td><td class="num mono">${fmtSize(r.size)}</td><td class="num"><b>${fmtMs(r.median_ms)}</b></td><td class="num">${fmtMs(r.min_ms)}</td><td class="num">${fmtRate(r.rate, r.rate_unit)}</td></tr>`).join("") + "</tbody>";
+}
+async function loadHistory() {
+  try { state.history = await api("/api/history"); } catch { state.history = []; }
+  // Sweeps come back as the latest result per op, column and execution; the Sweep tab opens on the
+  // op swept last.
+  sweepData = [];
+  for (const run of state.history) if (run.tab === "sweep") addSweep(run);
+  // Each op's last call breakdown and the last program trace.
+  state.calls = {};
+  try {
+    const latest = await api("/api/latest");
+    for (const data of Object.values(latest.calls || {})) setCallData(data);
+    if (latest.program) showProgram(latest.program);
+  } catch { /* nothing stored yet */ }
+  // Fill the kernel matrix with the latest result per op and device (data where it lives).
+  for (const run of state.history) {
+    if (run.variant) {
+      // Threaded SIMD is the plain cpu:0 run (an older view stored it separately).
+      const key = run.variant === "threaded" ? "cpu:0" : "v:" + run.variant;
+      for (const r of run.results || []) if (!r.error) keep(run.op + "|" + key, r);
+      continue;
+    }
+    const native = run.device && run.execution === (run.device.startsWith("cpu") ? "cpu" : "gpu");
+    if (!native) continue;
+    for (const r of run.results || []) if (!r.error) keep(run.op + "|" + run.device, r);
+  }
+}
+$("h-op").addEventListener("change", renderHistory);
+$("h-device").addEventListener("change", renderHistory);
+$("h-reload").addEventListener("click", async () => { await loadHistory(); renderHistory(); });
+$("h-clear").addEventListener("click", async () => {
+  if (!confirm("Delete every stored result (observability/results/observe.db)?")) return;
+  await api("/api/history/clear", {});
+  state.history = []; state.results = {}; state.sized = {}; state.calls = {}; sweepData = []; callData = null; setTrace([], {});
+  renderHistory(); renderCells();
+});
+
+// ---------- op page ----------
+const opByName = (name) => state.ops.find((o) => o.name === name);
+function renderOpPage() {
+  const op = opByName(state.current);
+  if (!op) return;
+  $("op-name").textContent = op.name;
+  $("op-group").textContent = op.group;
+  $("op-unit").textContent = "size = " + op.unit;
+  $("op-doc").hidden = !op.doc;
+  $("op-doc").innerHTML = docHtml(op);
+  renderOpResults();
+  renderSweep();
+  renderCall();
+}
+// Every device and CPU version for the current op, one row each, plus the gains between the versions.
+function renderOpResults() {
+  const op = opByName(state.current);
+  if (!op || !state.info) return;
+  const cols = columns();
+  const cells = cols.map((c) => cellResult(op, c.key));
+  const times = cells.filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
+  const best = times.length > 1 ? Math.min(...times) : null;
+  const how = (c) => c.detail || (c.device.startsWith("cpu") ? "Execution::CPU" : "Execution::GPU");
+  const row = (c, i) => `<tr><td><span class="sw" style="background:${c.color}"></span>${i < 3 ? "cpu:0 " : ""}${esc(c.label)}</td><td class="note">${esc(how(c))}</td><td>${cellHtml(op, c, cells[i], best)}</td></tr>`;
+  const gains = `<tr><td colspan="2" class="note">gain: SIMD · threads · total</td><td><table style="width:auto"><tr>${gain(cells[0], cells[1])}${gain(cells[1], cells[2])}${gain(cells[0], cells[2])}</tr></table></td></tr>`;
+  $("o-table").innerHTML = `<thead><tr><th>where</th><th>how</th><th>result at ${fmtSize(scaleSize(op))}</th></tr></thead><tbody>` +
+    cols.map(row).join("") + gains + "</tbody>";
+}
+$("o-table").addEventListener("click", (e) => {
+  const run = e.target.closest(".run");
+  if (run && !state.running) runCell(run.dataset.op, run.dataset.col);
+});
+function runOp(cols, what) {
+  const op = opByName(state.current);
+  return runQueue(cols.filter((c) => c.support(op) === "ok").map((c) => [op.name, c]), $("o-progress"), what);
+}
+$("o-run-all").addEventListener("click", () => runOp(columns(), "everything"));
+$("o-run-devices").addEventListener("click", () => runOp(otherDeviceColumns(), "GPU devices"));
+$("o-run-versions").addEventListener("click", () => runOp(cpuColumns(), "CPU three ways"));
+$("o-stop").addEventListener("click", () => { state.stop = true; });
+
+// ---------- sidebar ----------
+// One link per op, by group. The dots show which devices have a result for the op.
+function renderSidebar() {
+  if (!state.info) return;
+  const filter = $("side-filter").value.trim().toLowerCase();
+  let html = "", group = "";
+  for (const op of state.ops) {
+    if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
+    if (op.group !== group) { group = op.group; html += `<div class="side-group">${esc(group)}</div>`; }
+    const dots = state.info.devices.filter((d) => state.results[op.name + "|" + d]?.median_ms != null)
+      .map((d) => `<i style="background:${deviceColor(d)}" title="${d}"></i>`).join("");
+    html += `<a class="side-op ${op.name === state.current && currentPage() === "op" ? "active" : ""}" href="#op/${encodeURIComponent(op.name)}">${esc(op.name)}<span class="dots">${dots}</span></a>`;
+  }
+  $("side-ops").innerHTML = html || '<p class="note" style="margin:8px">No op matches.</p>';
+}
+$("side-filter").addEventListener("input", renderSidebar);
+
+// ---------- pages + routing ----------
+// #kernels, #programs, #history, or #op/<name>.
+function currentPage() {
+  const hash = decodeURIComponent(location.hash.slice(1));
+  if (hash.startsWith("op/")) return "op";
+  return hash === "programs" ? "trace" : hash === "history" ? "history" : "kernels";
+}
+function showTab(name) {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== name));
+  if (name === "op") renderOpPage();
+  if (name === "kernels") renderKernels();
+  if (name === "trace") renderTrace();
+  if (name === "history") renderHistory();
+  renderSidebar();
+}
+function route() {
+  const page = currentPage();
+  if (page === "op") {
+    const name = decodeURIComponent(location.hash.slice(4));
+    if (!opByName(name)) { location.hash = "#kernels"; return; }
+    if (name !== state.current) {
+      state.current = name;
+      $("s-op").value = name; onSweepOp();
+      $("c-op").value = name; onCallOp();
+    }
+    window.scrollTo(0, 0);
+  }
+  showTab(page);
+}
+window.addEventListener("hashchange", route);
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) location.hash = "#" + (b.dataset.tab === "trace" ? "programs" : b.dataset.tab);
+});
+window.addEventListener("resize", () => {
+  const page = currentPage();
+  if (page === "op") { renderSweep(); renderCall(); } else if (page === "trace") renderTrace(); else if (page === "history") renderHistory();
+});
+
+(async function start() {
+  try {
+    $("k-progress").textContent = "probing ops on every device…";
+    state.info = await api("/api/list");
+    // Keep each group together, in the order the groups first appear.
+    const order = [...new Set(state.info.ops.map((o) => o.group))];
+    state.ops = state.info.ops.slice().sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
+    $("k-progress").textContent = "";
+  } catch (e) {
+    $("k-progress").textContent = "";
+    $("banner").innerHTML = `<div class="banner">No runner: start the server with <span class="mono">python3 observability/serve.py</span> and open the page it prints. Trace files can still be opened on the Programs page. (${esc(e.message)})</div>`;
+    renderChips(); showTab("trace"); return;
+  }
+  renderChips();
+  $("s-op").innerHTML = state.ops.map((o) => `<option>${esc(o.name)}</option>`).join("");
+  $("c-op").innerHTML = state.ops.map((o) => `<option>${esc(o.name)}</option>`).join("");
+  $("t-device").innerHTML = state.info.devices.map((d) => `<option>${d}</option>`).join("");
+  await loadHistory();
+  route();
+})();
+</script>
+</body>
+</html>

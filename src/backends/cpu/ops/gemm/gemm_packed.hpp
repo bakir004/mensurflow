@@ -52,6 +52,34 @@ struct PackedGemmBlocking {
                                  // (either SMT half), 2 to one hardware thread of it, 3 only a preference
                                  // for that core (the OS may still move the thread). See affinity.hpp
     std::int64_t profile = 0;    // 1 = record where the threads spend their time (packed_gemm_profile)
+    std::int64_t pool = 0;       // strategies 4 and 5: 0 run the team in an OpenMP region, 1 on the
+                                 // library's own thread pool (thread_pool.hpp)
+    std::int64_t private_b = 0;  // strategies 4 and 5: 0 B is packed into the shared KC x NC buffer,
+                                 // 1 each thread packs the few B panels of its tile into its own
+                                 // L2-sized buffer right before multiplying them (only A is shared),
+                                 // 2 choose by the shape: 1 for products with few rows, where the
+                                 // shared buffer makes packing a memory-bandwidth problem
+    std::int64_t b_chunk = 0;    // private_b: B panels per tile (0 = as many as fit in half the L2)
+    std::int64_t static_items = 0; // strategies 4 and 5: 0 work items are handed out first come first
+                                 // served, 1 each thread owns a fixed run of them and takes from the
+                                 // others only when it is done (the same thread then reads the same
+                                 // columns of B and writes the same part of C on every call)
+    std::int64_t private_a = 0;  // private B, one depth step and a small A: 1 = each thread also packs
+                                 // its own copy of A, and the team runs without any barrier
+    std::int64_t fine_rows = 0;  // shared B: 0 a tile is MC rows (the last block what is left), 1 the
+                                 // rows are split into equal blocks, and into more of them when
+                                 // there are too few B panels for tiles_per_thread tiles per thread
+    std::int64_t split_rows = 0; // chiplet split with few B panels: 1 = the groups divide the rows of C
+                                 // (each packs its own rows of A once) instead of the columns
+    std::int64_t independent_rows = 0; // many rows, few B panels, one depth step and a B that fits
+                                 // in half the L2: 1 = each thread packs its own copy of B and its
+                                 // own rows of A, block by block; nothing is shared and the team
+                                 // has no barrier
+    std::int64_t tile_fit = 0;   // shared B, short depth: 1 = a tile is no wider than the B panels
+                                 // that fit in the L2 together with its rows of A
+    std::int64_t narrow = 0;     // outputs narrower than the 16-column tile: 1 = computed as the
+                                 // transposed product C^T = B^T * A^T, so the n columns lie along
+                                 // the 6-row side of the tile and the m rows fill its 16 columns
 };
 // Sizes in bytes of this CPU's level-1 data, level-2 (per core) and level-3 caches as CPUID reports
 // them; 0 when unknown. The L3 is usually shared by several cores.
@@ -115,4 +143,50 @@ void matmul_f32_packed_parallel_strided(const float* a, std::int64_t rsa, std::i
                                         std::int64_t ldc, std::int64_t m, std::int64_t n,
                                         std::int64_t k);
 
+
+// B packed once, for many products with the same B: the weights of a layer that is only evaluated
+// (in training the weights change every step, and packing again each time gains nothing). Every
+// product otherwise copies B into the layout the micro-kernel reads; with few rows that copy is a
+// large part of the call (41% of the threads' time at 16 x 512 x 784, 11% at 256 rows).
+//
+//   PackedB weights = pack_b_f32(w, n, 1, k, n);          // once; w can be freed or changed after
+//   matmul_f32_prepacked(x, k, 1, weights, y, n, batch);   // any number of times, any batch
+//
+// The object owns its copy (k * n floats, n rounded up to the tile width) and is move-only. It is
+// tied to the kernel tile and depth block in force when it was made: matmul_f32_prepacked uses the
+// stored depth block, and throws std::invalid_argument if PackedGemmBlocking::shape has since been
+// changed to another tile width. On a CPU without the packed kernel it holds a plain copy and the
+// product runs the plain loops.
+class PackedB;
+PackedB pack_b_f32(const float* b, std::int64_t rsb, std::int64_t csb, std::int64_t k,
+                   std::int64_t n);
+// C[m,n] = A[m,k] * B, with A and C strided as in matmul_f32_packed_strided, on max_threads()
+// threads. The same results as matmul_f32_packed_parallel_strided up to rounding (one row is summed
+// in four partial sums).
+void matmul_f32_prepacked(const float* a, std::int64_t rsa, std::int64_t csa, const PackedB& b,
+                          float* c, std::int64_t ldc, std::int64_t m);
+
+class PackedB {
+public:
+    PackedB() = default;
+    ~PackedB();
+    PackedB(const PackedB&) = delete;
+    PackedB& operator=(const PackedB&) = delete;
+    PackedB(PackedB&& other) noexcept;
+    PackedB& operator=(PackedB&& other) noexcept;
+
+    bool empty() const { return data_ == nullptr; }
+    std::int64_t depth() const { return k_; } // k: rows of B
+    std::int64_t cols() const { return n_; }  // n: columns of B
+
+private:
+    friend PackedB pack_b_f32(const float*, std::int64_t, std::int64_t, std::int64_t, std::int64_t);
+    friend void matmul_f32_prepacked(const float*, std::int64_t, std::int64_t, const PackedB&,
+                                     float*, std::int64_t, std::int64_t);
+    float* data_ = nullptr;
+    std::int64_t k_ = 0;
+    std::int64_t n_ = 0;
+    std::int64_t kc_ = 0; // depth block of the packed layout; 0 = a plain row-major copy
+    std::int64_t nr_ = 0; // tile width of the packed layout
+};
 } // namespace mensurflow::cpu

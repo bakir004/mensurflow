@@ -68,6 +68,7 @@ The available CMake options are:
 | `MENSURFLOW_OPENMP` | `ON`, `OFF` | `ON` |
 | `MENSURFLOW_NATIVE` | `ON`, `OFF` | `OFF` |
 | `MENSURFLOW_TORCH_BENCHMARK` | `ON`, `OFF` | `OFF` |
+| `MENSURFLOW_ENABLE_TRACING` | `ON`, `OFF` | `OFF` |
 
 `AUTO` enables a backend when its development SDK is found. `ON` requires the
 backend SDK and fails configuration when it is unavailable. `OFF` disables the
@@ -306,6 +307,93 @@ same machine, compiler, build type, thread count, and tensor shapes.
 Benchmark results and instructions are documented in
 [`docs/benchmarks/README.md`](docs/benchmarks/README.md).
 
+## Observability dashboard
+
+`observability/` holds a dashboard for the kernels, which you open in a browser. It can run any public op on
+any device, sweep sizes, break one call into its steps, and show a timeline of every kernel call. It needs
+Python 3 (standard library only) and no other packages.
+
+### Run it
+
+Linux and macOS:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMENSURFLOW_ENABLE_TRACING=ON
+cmake --build build --target observe observe_scalar
+python3 observability/serve.py
+```
+
+Windows (x64 Developer Command Prompt):
+
+```powershell
+cmake -S . -B build -DMENSURFLOW_ENABLE_TRACING=ON
+cmake --build build --config Release --target observe
+python observability\serve.py
+```
+
+Then open <http://localhost:8765>. `serve.py` looks for the `observe` binary under `build/`. Point it
+somewhere else with `--bin <path>`, or change the port with `--port <n>`. Stop it with Ctrl+C. On macOS with
+Homebrew's libomp, add `-DOpenMP_ROOT=/opt/homebrew/opt/libomp` to the configure line.
+
+`MENSURFLOW_ENABLE_TRACING=ON` compiles the trace spans into the library. Without it the dashboard still
+times everything, but the call breakdowns and the Programs page have no library spans.
+
+### Use it
+
+The thread count (`OMP_NUM_THREADS`), the size and the minimum time per size are set in the sidebar and apply to
+every run.
+
+The page has a sidebar and four kinds of pages. The sidebar has the **Kernels / Programs / History** tabs at the
+top, the settings shared by every run below them (size, threads, minimum time per size), and every op listed by
+group. The dots next to an op show which devices have a result for it.
+
+| Page | What it shows |
+|---|---|
+| **Kernels** | Every op on every device at one size: median time and rate (GB/s, or GFLOP/s for matrix products). The fastest device is marked, and cells without a registered kernel are greyed out. The CPU has three columns: *sequential*, *SIMD* and *threaded SIMD* (the normal cpu:0 run), followed by the other devices and the SIMD, thread and total gains. Use *Run all*, a group's *▶ run group* (or a column's button in that row), or ▶ for a single cell. Click an op to open its page. |
+| **Op page** (click an op) | Everything about one op. **Results**: the same cells, one row each (the CPU three ways, then the other devices), with run buttons and the gains. **Sweep**: chosen devices or CPU versions over a list of sizes, with rate and time charts, p10/median/p90 and each call's self-time breakdown. **Call breakdown**: a flame chart of one call (op function, dispatcher, `kernel`, allocations, copies, waiting for the result), each step's self time averaged over N calls, and the tracing overhead. |
+| **Programs** | A timeline of a whole program: *Trace demo program* runs an MLP training step, with its code shown below. Hover a line to light up its spans. *Open trace file* loads a trace saved by your own program. |
+| **History** | Every run made from the dashboard, filterable, with trends over repeated runs. |
+
+The CPU versions are *sequential* (1 thread, the library built without auto-vectorization by `observe_scalar`),
+*SIMD* (1 thread) and *threaded SIMD* (the Threads setting). They aren't available with MSVC, which can't turn
+auto-vectorization off. *Execution* in a sweep or call breakdown can differ from where the data is: data on
+`cpu:0` with `gpu` execution measures the copy path.
+
+All results (kernel runs, sweeps, the last call breakdown and the last program trace) are stored in
+`observability/results/observe.db`, a SQLite file of zlib-compressed JSON that isn't committed. The dashboard
+restores them after a page reload or a server restart. *Clear history* deletes them.
+
+Each op's description in the dashboard is the comment above its declaration in
+`include/mensurflow/ops/*.hpp`, so documenting an op there also documents it in the dashboard.
+
+### Trace your own program
+
+Add `observability/` to the include path, build with tracing on, and write a trace file. You can open it in
+the Programs page, in chrome://tracing or in <https://ui.perfetto.dev>:
+
+```cpp
+#include "trace_collector.hpp"
+
+observe::TraceCollector trace;      // starts collecting
+// ... mensurflow calls ...
+trace.write("run.trace.json");
+```
+
+### How tracing works
+
+`include/mensurflow/trace.hpp` defines one macro, `MENSURFLOW_TRACE(...)`. When tracing is on, it opens a
+span that lasts until the end of the scope and passes the span (name, device, dtype, shapes, times) to a hook
+that the collector sets. When tracing is off, it expands to nothing. The library places it in `dispatch()`
+(the dispatch and the kernel call) and in the `Tensor` functions that allocate and copy. To trace something
+else, add one line:
+
+```cpp
+MENSURFLOW_TRACE("my_step", device, inputs, outputs);
+```
+
+`observe` uses only the public API. More details are in
+[`observability/README.md`](observability/README.md).
+
 ## Formatting
 
 The project uses `.clang-format` for C++, CUDA, and Objective-C++ sources.
@@ -336,6 +424,7 @@ src/backends/cuda/        CUDA backend
 src/backends/metal/       Metal backend
 tests/                    Correctness tests
 benchmarks/               Performance benchmarks
+observability/            Tracing collector, runner and browser dashboard
 docs/plan/                Architecture and future roadmap
 ```
 
