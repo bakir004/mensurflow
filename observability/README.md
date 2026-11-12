@@ -42,8 +42,8 @@ python3 observability/serve.py                          # or --bin <path to obse
 # open http://localhost:8765
 ```
 
-Tracing is off by default. Without it the dashboard still times everything, but the trace columns and the
-Trace tab are empty. Turning it on adds about one atomic load per op call while no collector is attached.
+Tracing is off by default. Without it the dashboard still times everything, but the call breakdowns and the
+Programs page are empty. Turning it on adds about one atomic load per op call while no collector is attached.
 
 ## Stored results
 
@@ -66,16 +66,20 @@ sqlite3 observability/results/observe.db "select datetime(time, 'unixepoch'), ki
 
 An op's description is the comment directly above its declaration in `include/mensurflow/ops/*.hpp`.
 `serve.py` reads those comments every time the page loads. Hover an op in the Kernels table to see the
-signature, the full comment and the file and line as a tooltip; Sweep and Call show it under the toolbar. To change a description, edit the
+signature, the full comment and the file and line as a tooltip. The op's page shows the same at the top. To change a description, edit the
 header comment. A comment that applies to a whole section of a header is separated from the declarations by a
 blank line, so it isn't attached to the first one.
 
-## Tabs
+## Pages
+
+The sidebar holds the **Kernels / Programs / History** tabs, the settings that apply to every run (size,
+threads (`OMP_NUM_THREADS`), minimum time per size), and every op by group. Each op links to its own page. The
+address bar keeps the page (`#kernels`, `#programs`, `#history`, `#op/<name>`), so reloading or going back works.
 
 - **Kernels**: every op × every device at one size (small, medium or large), with median time and rate (GB/s
   of inputs + output, or GFLOP/s for matrix products). The fastest device per op is marked, and cells without a
   registered kernel are greyed out. Support is found by calling each op once at a tiny size on each device
-  when the page loads. *Run all* goes through the whole matrix (or the filtered rows). Each group row (blas, elementwise,
+  when the page loads. Clicking an op opens its page. *Run all* goes through the whole matrix (or the filtered rows). Each group row (blas, elementwise,
   reduction, ...) has *▶ run group* for every device and *▶ <device>* for one device. *Stop* cancels after the current
   cell.
 - **Kernels, CPU versions** (the *Columns* select): every CPU kernel run three ways, plus the speedups between
@@ -89,24 +93,28 @@ blank line, so it isn't attached to the first one.
   Hand-written intrinsics (the x86 AVX2 GEMM micro-kernel) and libc's `memcpy` stay vectorized even in the
   sequential build. MSVC has no switch to turn auto-vectorization off, so there the sequential column is
   unavailable. Gains are only shown when all three results are at the same size.
-- **Sweep**: one op, chosen devices and sizes. The two single-thread CPU versions can be checked next to the
+- **Op page** (`#op/<name>`): everything about one op, in three sections:
+  - **Results**: the op's Kernels cells for every device and every CPU version, one row each, with *Run all*,
+    *Devices*, *CPU versions* and *Stop*, and the SIMD, thread and total gains.
+  - **Sweep** and **Call breakdown**, described in the next two items.
+
+  Each op keeps its own last sweep and call breakdown, so switching ops doesn't lose them.
+- **Sweep** (on the op page): chosen devices and sizes. The two single-thread CPU versions can be checked next to the
   devices to plot all three versions against size. It shows rate and time charts, p10/median/p90, and the kernels
   the call dispatched (from the trace). *Execution* can differ from where the data is: data on `cpu:0` with
   `gpu` execution measures the copy-to-GPU-and-back path.
-- **Call**: where the time of one call goes. The runner calls the op N times and wraps each call in its own
+- **Call breakdown** (on the op page): where the time of one call goes. The runner calls the op N times and wraps each call in its own
   spans: `call` (from entering the op until the result can be read), `<op>()` (until the function returns)
-  and `read result` (waiting for the device). The library's spans sit inside them. The tab shows one call as
+  and `read result` (waiting for the device). The library's spans sit inside them. The section shows one call as
   a flame chart (the median call by default; any call can be picked), and a table of each step's *self time*
   (its time minus the spans inside it) averaged over the calls. That separates argument checks and setup (the
   op function's self time), dispatch, allocation, host-device copies, the kernel, and waiting for the result.
   It also times the same calls with tracing detached, which shows the tracing overhead.
-- **Trace**: a timeline of kernel calls, one lane per thread, with totals per op. *Trace demo program* runs an
+- **Programs**: a timeline of kernel calls, one lane per thread, with totals per op. *Trace demo program* runs an
   MLP training step (forward, backward, concat, pad, dropout) on the chosen device. *Open trace file* loads any
   file written by `TraceCollector::write()`. The same files also open in chrome://tracing and in
   https://ui.perfetto.dev.
 - **History**: every run, filterable by op and device, with the median of repeated runs over time.
-
-Threads (`OMP_NUM_THREADS`) and the minimum time per size are set in the Kernels tab and apply to every run.
 
 ## Timing rules
 
@@ -121,5 +129,5 @@ GPU spans measure the time spent in the call, and the GPU may still be working w
 #include "trace_collector.hpp"            // add observability/ to the include path
 observe::TraceCollector trace;            // starts collecting
 // ... mensurflow calls ...
-trace.write("run.trace.json");           // open it in the Trace tab
+trace.write("run.trace.json");           // open it on the Programs page
 ```

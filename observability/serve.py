@@ -148,6 +148,11 @@ class Store:
                               (kind,)).fetchone()
         return json.loads(zlib.decompress(row[0])) if row else None
 
+    def latest_per_op(self, kind):
+        rows = self.db.execute("SELECT op, payload FROM results WHERE id IN"
+                               " (SELECT MAX(id) FROM results WHERE kind = ? GROUP BY op)", (kind,))
+        return {op: json.loads(zlib.decompress(payload)) for op, payload in rows}
+
     def clear(self):
         self.db.execute("DELETE FROM results")
         self.db.commit()
@@ -186,8 +191,8 @@ def make_handler(runner, store):
             elif self.path == "/api/history":
                 self.send(200, store.all("run"))
             elif self.path == "/api/latest":
-                # What the Call and Trace tabs showed last, so a reload brings them back.
-                self.send(200, {"call": store.latest("call"), "program": store.latest("program")})
+                # Each op's last call breakdown and the last program trace, so a reload brings them back.
+                self.send(200, {"calls": store.latest_per_op("call"), "program": store.latest("program")})
             else:
                 self.send(404, {"fatal": "not found"})
 

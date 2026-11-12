@@ -27,18 +27,42 @@
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 20px;
-  border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  border-bottom: 1px solid var(--line); background: var(--panel); }
 header h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
 header h1 span { color: var(--muted); font-weight: 450; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font: 12px var(--mono); padding: 2px 8px; border-radius: 999px; background: var(--soft);
   border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .chip.on { color: var(--good); } .chip.off { color: var(--bad); }
-nav { display: flex; gap: 2px; margin-left: auto; }
-nav button { background: none; border: 0; padding: 6px 12px; border-radius: 6px; color: var(--muted);
-  font: inherit; cursor: pointer; }
-nav button.active { background: var(--soft); color: var(--ink); font-weight: 600; }
-main { padding: 18px 20px 60px; max-width: 1400px; margin: 0 auto; }
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); align-items: start; }
+aside { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--panel);
+  border-right: 1px solid var(--line); padding: 14px 12px 30px; display: flex; flex-direction: column; gap: 14px; }
+nav { display: flex; gap: 2px; background: var(--soft); padding: 3px; border-radius: 8px; }
+nav button { flex: 1; background: none; border: 0; padding: 6px 4px; border-radius: 6px; color: var(--muted);
+  font: inherit; font-size: 13px; cursor: pointer; }
+nav button.active { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.settings label.f:first-child { grid-column: 1 / -1; }
+.settings input[type=number] { width: 100%; }
+#side-filter { width: 100%; }
+.side-group { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+  margin: 10px 8px 3px; }
+.side-op { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 3px 8px;
+  border-radius: 5px; color: var(--ink); text-decoration: none; font-size: 13px; }
+.side-op:hover { background: var(--soft); }
+.side-op.active { background: var(--soft); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.side-op .dots { display: flex; gap: 3px; }
+.side-op .dots i { width: 6px; height: 6px; border-radius: 50%; display: block; }
+main { padding: 18px 24px 60px; min-width: 0; max-width: 1400px; }
+h2.sec { font-size: 16px; margin: 26px 0 10px; font-weight: 650; letter-spacing: -0.01em; }
+.op-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.op-head h1 { margin: 0; font: 600 22px var(--mono); }
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; }
+  aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  #side-ops { max-height: 240px; overflow-y: auto; }
+  main { padding: 14px 16px 40px; }
+}
 section[hidden] { display: none; }
 .bar { display: flex; flex-wrap: wrap; align-items: end; gap: 10px 14px; margin-bottom: 14px; }
 label.f { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
@@ -78,12 +102,12 @@ tr.group td { background: var(--soft); font-weight: 600; font-size: 12px; color:
 .run:hover { color: var(--ink); border-color: var(--muted); }
 .run:disabled { opacity: .4; cursor: default; }
 .grun { text-transform: none; letter-spacing: 0; font-weight: 500; padding: 1px 8px; background: var(--panel); }
-.doc { margin: -4px 0 14px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--panel);
+.doc { margin: 0 0 14px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--panel);
   border-radius: 0 6px 6px 0; font-size: 13px; }
 .doc code { font: 12px var(--mono); }
 a.op { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: pointer; }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
-@media (max-width: 520px) { .charts { grid-template-columns: 1fr; } main { padding: 14px 16px 40px; } }
+@media (max-width: 520px) { .charts { grid-template-columns: 1fr; } }
 svg text { fill: var(--muted); font-size: 11px; }
 svg .grid { stroke: var(--line); }
 .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
@@ -108,37 +132,53 @@ svg .grid { stroke: var(--line); }
 #timeline rect.dim { opacity: .15; }
 details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .progress { font-size: 12px; color: var(--muted); }
+.p2s { display: flex; flex-wrap: wrap; gap: 4px; }
+.p2 { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 5px;
+  padding: 3px 7px; font: 12px var(--mono); cursor: pointer; min-width: 38px; }
+.p2:hover { border-color: var(--muted); color: var(--ink); }
+.p2.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.p2 sup { font-size: 9px; }
+.p2-tools { display: inline-flex; gap: 8px; margin-left: 8px; }
+.p2-tools a { color: var(--accent); cursor: pointer; font-size: 12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>mensurflow <span>observe</span></h1>
   <div class="chips" id="chips"></div>
+</header>
+<div class="layout">
+<aside>
   <nav id="tabs">
     <button data-tab="kernels" class="active">Kernels</button>
-    <button data-tab="sweep">Sweep</button>
-    <button data-tab="call">Call</button>
-    <button data-tab="trace">Trace</button>
+    <button data-tab="trace">Programs</button>
     <button data-tab="history">History</button>
   </nav>
-</header>
+  <div class="settings">
+    <label class="f">Size<select id="k-scale">
+      <option value="0">small (16K elems, N=64)</option>
+      <option value="1" selected>medium (1M elems, N=256)</option>
+      <option value="2">large (16M elems, N=1024)</option>
+    </select></label>
+    <label class="f">Threads<input type="number" id="threads" min="1" placeholder="all"></label>
+    <label class="f">Min time (s)<input type="number" id="min-time" value="0.25" step="0.05" min="0.02"></label>
+  </div>
+  <div>
+    <input type="text" id="side-filter" placeholder="Find an op">
+    <div id="side-ops"></div>
+  </div>
+</aside>
 <main>
   <div id="banner"></div>
 
   <!-- Kernels: every op on every device at one size -->
   <section id="kernels">
+    <h2 class="sec" style="margin-top:0">Kernels</h2>
     <div class="bar">
-      <label class="f">Size<select id="k-scale">
-        <option value="0">small (16K elems, N=64)</option>
-        <option value="1" selected>medium (1M elems, N=256)</option>
-        <option value="2">large (16M elems, N=1024)</option>
-      </select></label>
       <label class="f">Columns<select id="k-view">
         <option value="devices">devices</option>
         <option value="versions">CPU versions: sequential, SIMD, threaded SIMD</option>
       </select></label>
-      <label class="f">Threads<input type="number" id="threads" min="1" placeholder="all"></label>
-      <label class="f">Min time / size (s)<input type="number" id="min-time" value="0.25" step="0.05" min="0.02"></label>
       <label class="f">Filter<input type="text" id="k-filter" placeholder="op or group"></label>
       <button class="b primary" id="k-run-all">Run all</button>
       <button class="b" id="k-stop" disabled>Stop</button>
@@ -150,7 +190,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     <p class="note">Each cell is the median time of one public call with data on that device (GPU devices
       run with <span class="mono">Execution::GPU</span>), and the rate it implies: GB/s of inputs + output for
       memory-bound ops, GFLOP/s for matrix products. The fastest device per op is marked. Greyed cells have no
-      registered kernel. Click an op to sweep sizes.<br>
+      registered kernel. Click an op for its page: results, size sweep and call breakdown.<br>
       <b>CPU versions</b> runs each CPU kernel three ways: <i>sequential</i> (1 thread, from a copy of the library
       built without auto-vectorization, <span class="mono">observe_scalar</span>), <i>SIMD</i> (1 thread, normal
       build) and <i>threaded SIMD</i> (the Threads setting, default all). The gain columns divide their times.
@@ -158,44 +198,59 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       even in the sequential build.</p>
   </section>
 
-  <!-- Sweep: one op, several devices and sizes -->
-  <section id="sweep" hidden>
+  <!-- One op: its results on every device and CPU version, a size sweep and a call breakdown -->
+  <section id="op" hidden>
+    <div class="op-head"><h1 id="op-name"></h1><span class="chip" id="op-group"></span><span class="chip" id="op-unit"></span></div>
+    <div class="doc" id="op-doc"></div>
+
+    <h2 class="sec">Results</h2>
     <div class="bar">
-      <label class="f">Op<select id="s-op"></select></label>
+      <button class="b primary" id="o-run-all">Run all</button>
+      <button class="b" id="o-run-devices">Devices</button>
+      <button class="b" id="o-run-versions">CPU versions</button>
+      <button class="b" id="o-stop" disabled>Stop</button>
+      <span class="progress" id="o-progress"></span>
+    </div>
+    <div class="panel scroll"><table id="o-table"></table></div>
+    <p class="note">The same cells as the Kernels table, at the size set in the sidebar: one call with data on each
+      device, and the CPU kernel three ways (<i>sequential</i>: 1 thread, built without auto-vectorization;
+      <i>SIMD</i>: 1 thread; <i>threaded SIMD</i>: the Threads setting).</p>
+
+    <h2 class="sec">Sweep</h2>
+    <div class="bar">
+      <select id="s-op" hidden></select>
       <label class="f">Devices<span id="s-devices" class="chips"></span></label>
       <label class="f">Execution<select id="s-exec">
         <option value="default">where the data is</option>
         <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
       </select></label>
-      <label class="f" style="flex:1;min-width:220px"><span>Sizes, <span id="s-unit">elements</span></span>
-        <input type="text" id="s-sizes"></label>
+      <div class="f" style="flex-basis:100%"><label class="f"><span>Sizes, <span id="s-unit">elements</span> (2<sup>k</sup>, pick any)
+        <span class="p2-tools"><a data-p2="s-sizes" data-p2-set="default">default</a><a data-p2="s-sizes" data-p2-set="none">none</a></span></span></label>
+        <div class="p2s" id="s-sizes" data-multi="1"></div></div>
       <button class="b primary" id="s-run">Run sweep</button>
       <span class="progress" id="s-progress"></span>
     </div>
-    <div class="doc" id="s-doc" hidden></div>
     <div class="charts">
       <div class="panel"><h2>Rate</h2><div id="s-rate"></div></div>
       <div class="panel"><h2>Median time per call</h2><div id="s-time"></div></div>
     </div>
     <div class="panel scroll"><h2>Results</h2><table id="s-table"></table></div>
-  </section>
 
-  <!-- Call: where the time of one call goes -->
-  <section id="call" hidden>
+    <h2 class="sec">Call breakdown</h2>
     <div class="bar">
-      <label class="f">Op<select id="c-op"></select></label>
+      <select id="c-op" hidden></select>
       <label class="f">Device (data)<select id="c-device"></select></label>
       <label class="f">Execution<select id="c-exec">
         <option value="default">where the data is</option>
         <option value="auto">auto</option><option value="cpu">cpu</option><option value="gpu">gpu</option>
       </select></label>
-      <label class="f"><span>Size, <span id="c-unit">elements</span></span><input type="text" id="c-size" style="width:110px"></label>
+      <div class="f" style="flex-basis:100%"><label class="f"><span>Size, <span id="c-unit">elements</span> (2<sup>k</sup>, pick one)</span></label>
+        <div class="p2s" id="c-size"></div></div>
       <label class="f">Calls<input type="number" id="c-calls" value="25" min="1" max="500"></label>
       <button class="b primary" id="c-run">Trace calls</button>
       <label class="f">Show call<select id="c-pick"></select></label>
       <span class="progress" id="c-progress"></span>
     </div>
-    <div class="doc" id="c-doc" hidden></div>
     <div class="panel">
       <div class="stats" id="c-stats"></div>
       <h2>One call</h2>
@@ -216,6 +271,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 
   <!-- Trace: timeline of every traced kernel call -->
   <section id="trace" hidden>
+    <h2 class="sec" style="margin-top:0">Programs</h2>
     <div class="bar">
       <label class="f">Device<select id="t-device"></select></label>
       <label class="f">Execution<select id="t-exec">
@@ -249,6 +305,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 
   <!-- History: everything run through the dashboard -->
   <section id="history" hidden>
+    <h2 class="sec" style="margin-top:0">History</h2>
     <div class="bar">
       <label class="f">Op<select id="h-op"><option value="">all</option></select></label>
       <label class="f">Device<select id="h-device"><option value="">all</option></select></label>
@@ -260,12 +317,14 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     <div class="panel scroll"><table id="h-table"></table></div>
   </section>
 </main>
+</div>
 <div id="tooltip"></div>
 
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { info: null, ops: [], results: {}, sized: {}, history: [], running: false, stop: false, trace: [] };
+const state = { info: null, ops: [], results: {}, sized: {}, history: [], running: false, stop: false, trace: [],
+  calls: {}, current: null };
 // Latest result per op|column (any size) and per op|column|size.
 function keep(key, r) { state.results[key] = r; if (r && r.size != null) state.sized[key + "|" + r.size] = r; }
 function cellResult(op, colKey) {
@@ -411,11 +470,6 @@ function docHtml(op) {
   return `<code>${esc(d.signature)}</code><div style="margin-top:6px">${esc(d.text)}</div>` +
     `<div class="note mono" style="margin-top:6px">${esc(d.file)}:${d.line}</div>`;
 }
-function showDoc(el, opName) {
-  const op = state.ops.find((o) => o.name === opName);
-  el.hidden = !(op && op.doc);
-  el.innerHTML = docHtml(op);
-}
 
 // ---------- kernels tab ----------
 function scaleSize(op) {
@@ -450,6 +504,16 @@ function gain(a, b) {
   const tone = g >= 1.5 ? "var(--good)" : g < 0.95 ? "var(--bad)" : "var(--muted)";
   return `<td class="num" style="color:${tone};font-weight:600">${g >= 10 ? g.toFixed(0) : g.toFixed(1)}×</td>`;
 }
+// One result cell: run button, median time and rate (or why it can't run).
+function cellHtml(op, c, r, best) {
+  const support = c.support(op);
+  if (support !== "ok") return `<span class="missing" title="${esc(support)}">not registered</span>`;
+  let inner = `<button class="run" ${state.running ? "disabled" : ""} data-op="${esc(op.name)}" data-col="${c.key}" title="run">▶</button>`;
+  if (r && r.error) inner += `<span class="err" title="${esc(r.error)}">error</span>`;
+  else if (r && r.pending) inner += '<span class="r">running…</span>';
+  else if (r) inner += `<span class="t">${fmtMs(r.median_ms)}</span><span class="r">${fmtRate(r.rate, r.rate_unit)}${r.size !== scaleSize(op) ? " @" + fmtSize(r.size) : ""}</span>`;
+  return `<div class="cell ${r && best != null && r.median_ms === best ? "best" : ""}">${inner}</div>`;
+}
 function renderKernels() {
   if (!state.info) { $("k-table").innerHTML = ""; return; }
   const cols = columns();
@@ -474,32 +538,25 @@ function renderKernels() {
     const times = cells.filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
     const best = times.length > 1 ? Math.min(...times) : null;
     html += `<tr><td class="opcell" data-op="${esc(op.name)}"><a class="op" data-op="${esc(op.name)}">${esc(op.name)}</a></td><td class="mono">${fmtSize(scaleSize(op))}</td>`;
-    cols.forEach((c, i) => {
-      const support = c.support(op);
-      if (support !== "ok") { html += `<td><span class="missing" title="${esc(support)}">not registered</span></td>`; return; }
-      const r = cells[i];
-      let inner = `<button class="run" data-op="${esc(op.name)}" data-col="${c.key}" title="run">▶</button>`;
-      if (r && r.error) inner += `<span class="err" title="${esc(r.error)}">error</span>`;
-      else if (r && r.pending) inner += '<span class="r">running…</span>';
-      else if (r) inner += `<span class="t">${fmtMs(r.median_ms)}</span><span class="r">${fmtRate(r.rate, r.rate_unit)}${r.size !== scaleSize(op) ? " @" + fmtSize(r.size) : ""}</span>`;
-      html += `<td><div class="cell ${r && r.median_ms === best ? "best" : ""}">${inner}</div></td>`;
-    });
+    cols.forEach((c, i) => { html += `<td>${cellHtml(op, c, cells[i], best)}</td>`; });
     if (versions) html += gain(cells[0], cells[1]) + gain(cells[1], cells[2]) + gain(cells[0], cells[2]);
     html += "</tr>";
   }
   $("k-table").innerHTML = html + "</tbody>";
 }
+// Re-renders every view that shows result cells.
+function renderCells() { renderKernels(); renderOpResults(); renderSidebar(); }
 async function runCell(opName, colKey) {
   const op = state.ops.find((o) => o.name === opName);
   const key = opName + "|" + colKey;
   state.results[key] = { pending: true };
-  renderKernels();
+  renderCells();
   try {
     const data = await runRequest(opName, column(colKey), [scaleSize(op)]);
     keep(key, data.results[0]);
     state.history.push(data);
   } catch (e) { state.results[key] = { error: e.message }; }
-  renderKernels();
+  renderCells();
 }
 $("k-table").addEventListener("click", (e) => {
   const group = e.target.closest(".grun");
@@ -507,30 +564,34 @@ $("k-table").addEventListener("click", (e) => {
   const run = e.target.closest(".run");
   if (run && !state.running) return runCell(run.dataset.op, run.dataset.col);
   const link = e.target.closest("a.op");
-  if (link) { $("s-op").value = link.dataset.op; onSweepOp(); showTab("sweep"); }
+  if (link) location.hash = "#op/" + encodeURIComponent(link.dataset.op);
 });
-// Runs every supported (op, column) cell that passes the filter, optionally only one group and/or column.
-async function runJobs(onlyGroup, onlyCol) {
+// Runs [op name, column] jobs one after another; `progress` is the element that reports them.
+async function runQueue(jobs, progress, what) {
   if (state.running) return;
   state.running = true; state.stop = false;
-  $("k-run-all").disabled = true; $("k-stop").disabled = false;
-  $("k-table").querySelectorAll(".grun").forEach((b) => (b.disabled = true));
+  for (const id of ["k-run-all", "o-run-all", "o-run-devices", "o-run-versions"]) $(id).disabled = true;
+  $("k-stop").disabled = false; $("o-stop").disabled = false;
+  for (let i = 0; i < jobs.length && !state.stop; i++) {
+    progress.textContent = `${i + 1} / ${jobs.length}: ${jobs[i][0]} · ${jobs[i][1].label}`;
+    await runCell(jobs[i][0], jobs[i][1].key);
+  }
+  progress.textContent = state.stop ? "stopped" : `done${what ? " (" + what + ")" : ""}, ${jobs.length} runs`;
+  state.running = false;
+  for (const id of ["k-run-all", "o-run-all", "o-run-devices", "o-run-versions"]) $(id).disabled = false;
+  $("k-stop").disabled = true; $("o-stop").disabled = true;
+  renderCells();
+}
+// Runs every supported (op, column) cell that passes the filter, optionally only one group and/or column.
+function runJobs(onlyGroup, onlyCol) {
   const filter = $("k-filter").value.trim().toLowerCase();
-  const cols = columns();
   const jobs = [];
   for (const op of state.ops) {
     if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
     if (onlyGroup && op.group !== onlyGroup) continue;
-    for (const c of cols) if (c.support(op) === "ok" && (!onlyCol || c.key === onlyCol)) jobs.push([op.name, c]);
+    for (const c of columns()) if (c.support(op) === "ok" && (!onlyCol || c.key === onlyCol)) jobs.push([op.name, c]);
   }
-  for (let i = 0; i < jobs.length && !state.stop; i++) {
-    $("k-progress").textContent = `${i + 1} / ${jobs.length}: ${jobs[i][0]} · ${jobs[i][1].label}`;
-    await runCell(jobs[i][0], jobs[i][1].key);
-  }
-  const what = [onlyGroup, onlyCol && column(onlyCol).label].filter(Boolean).join(" · ");
-  $("k-progress").textContent = state.stop ? "stopped" : `done${what ? " (" + what + ")" : ""}, ${jobs.length} runs`;
-  state.running = false; $("k-run-all").disabled = false; $("k-stop").disabled = true;
-  renderKernels();
+  return runQueue(jobs, $("k-progress"), [onlyGroup, onlyCol && column(onlyCol).label].filter(Boolean).join(" · "));
 }
 $("k-run-all").addEventListener("click", () => runJobs());
 $("k-stop").addEventListener("click", () => { state.stop = true; });
@@ -542,10 +603,51 @@ $("k-table").addEventListener("mouseover", (e) => {
   if (op && op.doc) cell.onmousemove = (m) => showTip(m, docHtml(op));
   cell.onmouseleave = hideTip;
 });
-$("k-scale").addEventListener("change", renderKernels);
+$("k-scale").addEventListener("change", () => { renderKernels(); renderOpResults(); });
 $("k-filter").addEventListener("input", renderKernels);
 $("k-view").addEventListener("change", renderKernels);
-$("threads").addEventListener("input", () => { if ($("k-view").value === "versions") renderKernels(); });
+$("threads").addEventListener("input", () => { renderKernels(); renderOpResults(); });
+
+// ---------- power-of-two size pickers ----------
+// Sizes are picked as 2^k toggles: several for a sweep (data-multi), one for a call breakdown.
+function exponentRange(op) {
+  if (op.unit.includes("batch")) return [1, 10];   // matrix side, batch of 16
+  if (op.unit.startsWith("matrix")) return [3, 12]; // matrix side N
+  return [6, 26];                                   // elements: 64 to 64M
+}
+function setPow2(id, op, selected) {
+  const el = $(id), [lo, hi] = exponentRange(op);
+  const on = new Set(selected.map(Number));
+  el.dataset.defaults = op.sizes.join(",");
+  let html = "";
+  for (let k = lo; k <= hi; k++) {
+    const v = 2 ** k;
+    html += `<button type="button" class="p2 ${on.has(v) ? "on" : ""}" data-v="${v}" title="${v.toLocaleString()} (${fmtSize(v)})" aria-pressed="${on.has(v)}">2<sup>${k}</sup></button>`;
+  }
+  el.innerHTML = html;
+}
+function getPow2(id) {
+  return [...$(id).querySelectorAll(".p2.on")].map((b) => Number(b.dataset.v));
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".p2");
+  if (b) {
+    const group = b.parentElement;
+    if (!group.dataset.multi) group.querySelectorAll(".p2.on").forEach((x) => { x.classList.remove("on"); x.setAttribute("aria-pressed", "false"); });
+    b.classList.toggle("on");
+    b.setAttribute("aria-pressed", String(b.classList.contains("on")));
+    return;
+  }
+  const tool = e.target.closest("[data-p2-set]");
+  if (tool) {
+    const el = $(tool.dataset.p2);
+    const pick = tool.dataset.p2Set === "default" ? new Set(el.dataset.defaults.split(",").map(Number)) : new Set();
+    el.querySelectorAll(".p2").forEach((x) => {
+      const on = pick.has(Number(x.dataset.v));
+      x.classList.toggle("on", on); x.setAttribute("aria-pressed", String(on));
+    });
+  }
+});
 
 // ---------- sweep tab ----------
 let sweepData = [];
@@ -553,8 +655,8 @@ function onSweepOp() {
   const op = state.ops.find((o) => o.name === $("s-op").value);
   if (!op) return;
   $("s-unit").textContent = op.unit;
-  showDoc($("s-doc"), op.name);
-  $("s-sizes").value = op.sizes.join(", ");
+  const last = sweepData.filter((d) => d.op === op.name).pop();
+  setPow2("s-sizes", op, last ? last.results.map((r) => r.size) : op.sizes);
   // Devices are checked by default. The two single-thread CPU versions can be added to compare against cpu:0.
   const choices = [...deviceColumns(), ...versionColumns().filter((c) => c.variant !== "threaded")];
   $("s-devices").innerHTML = choices.map((c) => {
@@ -566,7 +668,7 @@ function onSweepOp() {
 $("s-op").addEventListener("change", onSweepOp);
 $("s-run").addEventListener("click", async () => {
   const op = $("s-op").value;
-  const sizes = $("s-sizes").value.split(/[\s,]+/).filter(Boolean).map(Number).filter((n) => n > 0);
+  const sizes = getPow2("s-sizes");
   const devices = [...$("s-devices").querySelectorAll("input:checked")].map((i) => column(i.value));
   const execution = $("s-exec").value;
   if (!sizes.length || !devices.length) return;
@@ -671,31 +773,45 @@ function onCallOp() {
   const op = state.ops.find((o) => o.name === $("c-op").value);
   if (!op) return;
   $("c-unit").textContent = op.unit;
-  showDoc($("c-doc"), op.name);
-  $("c-size").value = op.sizes[Math.floor(op.sizes.length / 2)];
+  setPow2("c-size", op, [op.sizes[Math.floor(op.sizes.length / 2)]]);
   $("c-device").innerHTML = state.info.devices.map((d) => `<option ${op.support[d] === "ok" ? "" : "disabled"}>${d}</option>`).join("");
+  // This op's last breakdown, with the settings it was traced with.
+  callData = state.calls[op.name] || null;
+  if (callData) {
+    $("c-device").value = callData.device; setPow2("c-size", op, [callData.size]);
+    $("c-exec").value = callData.execution === (callData.device.startsWith("cpu") ? "cpu" : "gpu") ? "default" : callData.execution;
+  }
+  fillCallPick();
 }
 $("c-op").addEventListener("change", onCallOp);
 $("c-run").addEventListener("click", async () => {
   $("c-run").disabled = true; $("c-progress").textContent = "running…";
   try {
     setCallData(await api("/api/call", { op: $("c-op").value, device: $("c-device").value, execution: $("c-exec").value,
-      size: Number($("c-size").value) || null, calls: Number($("c-calls").value) || 25, threads: Number($("threads").value) || null }));
+      size: getPow2("c-size")[0] || null, calls: Number($("c-calls").value) || 25, threads: Number($("threads").value) || null }));
     $("c-progress").textContent = "";
   } catch (e) { $("c-progress").textContent = "error: " + e.message; }
   $("c-run").disabled = false;
   renderCall();
 });
 $("c-pick").addEventListener("change", renderCall);
+// Stores a call breakdown under its op (fresh or restored); shows it when that op's page is open.
 function setCallData(data) {
-  callData = data;
-  callData.calls.forEach((c) => nest(c.events));
-  const order = callData.calls.map((c, i) => i).sort((a, b) => callData.calls[a].total_ms - callData.calls[b].total_ms);
-  callData.median = order[Math.floor(order.length / 2)];
-  $("c-pick").innerHTML = callData.calls.map((c, i) => `<option value="${i}" ${i === callData.median ? "selected" : ""}>#${i + 1} · ${fmtMs(c.total_ms)}${i === callData.median ? " (median)" : ""}</option>`).join("");
+  data.calls.forEach((c) => nest(c.events));
+  const order = data.calls.map((c, i) => i).sort((a, b) => data.calls[a].total_ms - data.calls[b].total_ms);
+  data.median = order[Math.floor(order.length / 2)];
+  state.calls[data.op] = data;
+  if (data.op === $("c-op").value) { callData = data; fillCallPick(); }
+}
+function fillCallPick() {
+  $("c-pick").innerHTML = !callData ? "" : callData.calls.map((c, i) => `<option value="${i}" ${i === callData.median ? "selected" : ""}>#${i + 1} · ${fmtMs(c.total_ms)}${i === callData.median ? " (median)" : ""}</option>`).join("");
 }
 function renderCall() {
-  if (!callData) { $("c-flame").innerHTML = '<p class="note">Pick an op and trace it.</p>'; return; }
+  if (!callData) {
+    $("c-flame").innerHTML = '<p class="note">Not traced yet: pick a device and size and press Trace calls.</p>';
+    for (const id of ["c-stats", "c-stack", "c-table"]) $(id).innerHTML = "";
+    return;
+  }
   const d = callData;
   if (!d.tracing) { $("c-flame").innerHTML = '<p class="note">Tracing is off in this build: only the client spans are shown. Configure with -DMENSURFLOW_ENABLE_TRACING=ON.</p>'; }
   // mean self time per step over all calls
@@ -917,18 +1033,12 @@ async function loadHistory() {
   // Sweeps come back as the latest result per op, column and execution; the Sweep tab opens on the
   // op swept last.
   sweepData = [];
-  let lastSweep = null;
-  for (const run of state.history) if (run.tab === "sweep") { addSweep(run); lastSweep = run; }
-  if (lastSweep) { $("s-op").value = lastSweep.op; onSweepOp(); }
-  // The Call and Trace tabs show what they showed last.
+  for (const run of state.history) if (run.tab === "sweep") addSweep(run);
+  // Each op's last call breakdown and the last program trace.
+  state.calls = {};
   try {
     const latest = await api("/api/latest");
-    if (latest.call) {
-      setCallData(latest.call);
-      $("c-op").value = latest.call.op; onCallOp();
-      $("c-device").value = latest.call.device; $("c-size").value = latest.call.size;
-      $("c-exec").value = latest.call.execution === (latest.call.device.startsWith("cpu") ? "cpu" : "gpu") ? "default" : latest.call.execution;
-    }
+    for (const data of Object.values(latest.calls || {})) setCallData(data);
     if (latest.program) showProgram(latest.program);
   } catch { /* nothing stored yet */ }
   // Fill the kernel matrix with the latest result per op and device (data where it lives).
@@ -948,23 +1058,109 @@ $("h-reload").addEventListener("click", async () => { await loadHistory(); rende
 $("h-clear").addEventListener("click", async () => {
   if (!confirm("Delete every stored result (observability/results/observe.db)?")) return;
   await api("/api/history/clear", {});
-  state.history = []; state.results = {}; state.sized = {}; sweepData = []; callData = null; setTrace([], {});
-  renderHistory(); renderKernels();
+  state.history = []; state.results = {}; state.sized = {}; state.calls = {}; sweepData = []; callData = null; setTrace([], {});
+  renderHistory(); renderCells();
 });
 
-// ---------- tabs + startup ----------
+// ---------- op page ----------
+const opByName = (name) => state.ops.find((o) => o.name === name);
+function renderOpPage() {
+  const op = opByName(state.current);
+  if (!op) return;
+  $("op-name").textContent = op.name;
+  $("op-group").textContent = op.group;
+  $("op-unit").textContent = "size = " + op.unit;
+  $("op-doc").hidden = !op.doc;
+  $("op-doc").innerHTML = docHtml(op);
+  renderOpResults();
+  renderSweep();
+  renderCall();
+}
+// Every device and CPU version for the current op, one row each, plus the gains between the versions.
+function renderOpResults() {
+  const op = opByName(state.current);
+  if (!op || !state.info) return;
+  const devices = deviceColumns(), versions = versionColumns();
+  const row = (c, best) => `<tr><td><span class="sw" style="background:${c.color}"></span>${c.variant ? "cpu:0 " : ""}${esc(c.label)}</td><td class="note">${esc(c.detail || (c.device.startsWith("cpu") ? "Execution::CPU" : "Execution::GPU"))}</td><td>${cellHtml(op, c, cellResult(op, c.key), best)}</td></tr>`;
+  const bestOf = (cols) => {
+    const t = cols.map((c) => cellResult(op, c.key)).filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
+    return t.length > 1 ? Math.min(...t) : null;
+  };
+  const v = versions.map((c) => cellResult(op, c.key));
+  const gains = `<tr><td colspan="2" class="note">gains: SIMD · threads · total</td><td><table style="width:auto"><tr>${gain(v[0], v[1])}${gain(v[1], v[2])}${gain(v[0], v[2])}</tr></table></td></tr>`;
+  $("o-table").innerHTML = `<thead><tr><th>where</th><th>how</th><th>result at ${fmtSize(scaleSize(op))}</th></tr></thead><tbody>` +
+    `<tr class="group"><td colspan="3">devices</td></tr>` + devices.map((c) => row(c, bestOf(devices))).join("") +
+    `<tr class="group"><td colspan="3">CPU versions</td></tr>` + versions.map((c) => row(c, bestOf(versions))).join("") +
+    gains + "</tbody>";
+}
+$("o-table").addEventListener("click", (e) => {
+  const run = e.target.closest(".run");
+  if (run && !state.running) runCell(run.dataset.op, run.dataset.col);
+});
+function runOp(cols, what) {
+  const op = opByName(state.current);
+  return runQueue(cols.filter((c) => c.support(op) === "ok").map((c) => [op.name, c]), $("o-progress"), what);
+}
+$("o-run-all").addEventListener("click", () => runOp([...deviceColumns(), ...versionColumns()], "devices and CPU versions"));
+$("o-run-devices").addEventListener("click", () => runOp(deviceColumns(), "devices"));
+$("o-run-versions").addEventListener("click", () => runOp(versionColumns(), "CPU versions"));
+$("o-stop").addEventListener("click", () => { state.stop = true; });
+
+// ---------- sidebar ----------
+// One link per op, by group. The dots show which devices have a result for the op.
+function renderSidebar() {
+  if (!state.info) return;
+  const filter = $("side-filter").value.trim().toLowerCase();
+  let html = "", group = "";
+  for (const op of state.ops) {
+    if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
+    if (op.group !== group) { group = op.group; html += `<div class="side-group">${esc(group)}</div>`; }
+    const dots = state.info.devices.filter((d) => state.results[op.name + "|" + d]?.median_ms != null)
+      .map((d) => `<i style="background:${deviceColor(d)}" title="${d}"></i>`).join("");
+    html += `<a class="side-op ${op.name === state.current && currentPage() === "op" ? "active" : ""}" href="#op/${encodeURIComponent(op.name)}">${esc(op.name)}<span class="dots">${dots}</span></a>`;
+  }
+  $("side-ops").innerHTML = html || '<p class="note" style="margin:8px">No op matches.</p>';
+}
+$("side-filter").addEventListener("input", renderSidebar);
+
+// ---------- pages + routing ----------
+// #kernels, #programs, #history, or #op/<name>.
+function currentPage() {
+  const hash = decodeURIComponent(location.hash.slice(1));
+  if (hash.startsWith("op/")) return "op";
+  return hash === "programs" ? "trace" : hash === "history" ? "history" : "kernels";
+}
 function showTab(name) {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll("main > section").forEach((s) => (s.hidden = s.id !== name));
-  if (name === "sweep") renderSweep();
-  if (name === "call") renderCall();
+  if (name === "op") renderOpPage();
+  if (name === "kernels") renderKernels();
   if (name === "trace") renderTrace();
   if (name === "history") renderHistory();
+  renderSidebar();
 }
-$("tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); });
+function route() {
+  const page = currentPage();
+  if (page === "op") {
+    const name = decodeURIComponent(location.hash.slice(4));
+    if (!opByName(name)) { location.hash = "#kernels"; return; }
+    if (name !== state.current) {
+      state.current = name;
+      $("s-op").value = name; onSweepOp();
+      $("c-op").value = name; onCallOp();
+    }
+    window.scrollTo(0, 0);
+  }
+  showTab(page);
+}
+window.addEventListener("hashchange", route);
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) location.hash = "#" + (b.dataset.tab === "trace" ? "programs" : b.dataset.tab);
+});
 window.addEventListener("resize", () => {
-  const active = document.querySelector("#tabs button.active").dataset.tab;
-  if (active === "sweep") renderSweep(); else if (active === "call") renderCall(); else if (active === "trace") renderTrace(); else if (active === "history") renderHistory();
+  const page = currentPage();
+  if (page === "op") { renderSweep(); renderCall(); } else if (page === "trace") renderTrace(); else if (page === "history") renderHistory();
 });
 
 (async function start() {
@@ -977,19 +1173,15 @@ window.addEventListener("resize", () => {
     $("k-progress").textContent = "";
   } catch (e) {
     $("k-progress").textContent = "";
-    $("banner").innerHTML = `<div class="banner">No runner: start the server with <span class="mono">python3 observability/serve.py</span> and open the page it prints. Trace files can still be opened in the Trace tab. (${esc(e.message)})</div>`;
+    $("banner").innerHTML = `<div class="banner">No runner: start the server with <span class="mono">python3 observability/serve.py</span> and open the page it prints. Trace files can still be opened on the Programs page. (${esc(e.message)})</div>`;
     renderChips(); showTab("trace"); return;
   }
   renderChips();
   $("s-op").innerHTML = state.ops.map((o) => `<option>${esc(o.name)}</option>`).join("");
   $("c-op").innerHTML = state.ops.map((o) => `<option>${esc(o.name)}</option>`).join("");
-  $("c-op").value = "dot";
-  onCallOp();
   $("t-device").innerHTML = state.info.devices.map((d) => `<option>${d}</option>`).join("");
-  onSweepOp();
   await loadHistory();
-  renderKernels();
-  if (location.hash) showTab(location.hash.slice(1));
+  route();
 })();
 </script>
 </body>
