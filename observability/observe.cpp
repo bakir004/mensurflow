@@ -469,6 +469,11 @@ std::string header_json() {
     out += observe::TraceCollector::enabled() ? "true" : "false";
     out += ",\"threads\":" + std::to_string(threads());
     out += ",\"hardware_threads\":" + std::to_string(std::thread::hardware_concurrency());
+#ifdef OBSERVE_SCALAR_BUILD
+    out += ",\"build\":\"scalar\""; // library compiled without auto-vectorization
+#else
+    out += ",\"build\":\"simd\"";
+#endif
     out += ",\"devices\":[";
     const std::vector<Device> devices = list_devices();
     for (std::size_t i = 0; i < devices.size(); ++i) {

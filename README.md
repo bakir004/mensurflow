@@ -319,7 +319,7 @@ Linux and macOS:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMENSURFLOW_ENABLE_TRACING=ON
-cmake --build build --target observe
+cmake --build build --target observe observe_scalar
 python3 observability/serve.py
 ```
 
@@ -345,11 +345,19 @@ every run.
 
 | Tab | What it shows |
 |---|---|
-| **Kernels** | Every op on every device at one size: median time and rate (GB/s, or GFLOP/s for matrix products). The fastest device is marked, and cells without a registered kernel are greyed out. Use *Run all* or ▶ for a single cell. Click an op name to sweep it. |
-| **Sweep** | One op on chosen devices over a list of sizes: rate and time charts, p10/median/p90, and each call's self-time breakdown. *Execution* can differ from where the data is (data on `cpu:0` with `gpu` measures the copy path). |
+| **Kernels** | Every op on every device at one size: median time and rate (GB/s, or GFLOP/s for matrix products). The fastest device is marked, and cells without a registered kernel are greyed out. Use *Run all*, a group's *▶ run group* (or *▶ cpu:0* in its row, for one device), or ▶ for a single cell. Click an op name to sweep it. |
+| **Kernels → Columns: CPU versions** | Each CPU kernel three ways: *sequential* (1 thread, library built without auto-vectorization by `observe_scalar`), *SIMD* (1 thread) and *threaded SIMD* (the Threads setting). Also shows SIMD gain, thread gain and total gain. Group buttons work here too. Not on MSVC, which can't turn auto-vectorization off. |
+| **Sweep** | One op on chosen devices, or the CPU versions, over a list of sizes: rate and time charts, p10/median/p90, and each call's self-time breakdown. *Execution* can differ from where the data is (data on `cpu:0` with `gpu` measures the copy path). |
 | **Call** | Where the time of one call goes. A flame chart of one call: the op function, the dispatcher, the `kernel`, allocations (`Tensor::empty`), copies (`Tensor::to`, `copy_to_host`, ...) and waiting for the result. Also a table of each step's self time averaged over N calls, and the tracing overhead (traced vs untraced median). |
 | **Trace** | A timeline of a whole program: *Trace demo program* runs an MLP training step, with its code shown below. Hover a line to light up its spans. *Open trace file* loads a trace saved by your own program. |
-| **History** | Every run made from the dashboard (`observability/results/history.jsonl`, not committed), filterable, with trends over repeated runs. |
+| **History** | Every run made from the dashboard, filterable, with trends over repeated runs. |
+
+All results (kernel runs, sweeps, the last call breakdown and the last program trace) are stored in
+`observability/results/observe.db`, a SQLite file of zlib-compressed JSON that isn't committed. The dashboard
+restores them after a page reload or a server restart. *Clear history* deletes them.
+
+Each op's description in the dashboard is the comment above its declaration in
+`include/mensurflow/ops/*.hpp`, so documenting an op there also documents it in the dashboard.
 
 ### Trace your own program
 

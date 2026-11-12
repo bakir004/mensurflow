@@ -26,18 +26,18 @@ name, add `MENSURFLOW_TRACE(__func__, device, inputs, outputs);` at its start.
 
 | file | what it does |
 |---|---|
-| `CMakeLists.txt` | the `MENSURFLOW_ENABLE_TRACING` option and the `observe` target |
+| `CMakeLists.txt` | the `MENSURFLOW_ENABLE_TRACING` option, the `observe` target, and `observe_scalar` (the runner linked to a copy of the library built without auto-vectorization) |
 | `trace_collector.hpp` | header-only collector: sets the hook, stores events, writes Chrome trace JSON |
 | `observe.cpp` | the runner: a table of every public op with input builders, timing and tracing; prints JSON |
 | `serve.py` | standard-library HTTP server: serves the page and runs `observe` for it |
 | `index.html` | the dashboard (no external scripts) |
-| `results/history.jsonl` | every run made from the dashboard (created on first run, not committed) |
+| `results/observe.db` | every result, stored by `serve.py` (created on first run, not committed) |
 
 ## Run it
 
 ```sh
 cmake -S . -B build -DMENSURFLOW_ENABLE_TRACING=ON      # add -DOpenMP_ROOT=/opt/homebrew/opt/libomp on macOS
-cmake --build build --target observe
+cmake --build build --target observe observe_scalar
 python3 observability/serve.py                          # or --bin <path to observe> --port 8765
 # open http://localhost:8765
 ```
@@ -45,13 +45,52 @@ python3 observability/serve.py                          # or --bin <path to obse
 Tracing is off by default. Without it the dashboard still times everything, but the trace columns and the
 Trace tab are empty. Turning it on adds about one atomic load per op call while no collector is attached.
 
+## Stored results
+
+`serve.py` stores every result in `results/observe.db`, a SQLite file. Each row holds the time, the kind, the
+op, the device, and the full result as zlib-compressed JSON. The kinds are `run` (Kernels and Sweep cells,
+tagged with the tab and column), `call` and `program`. When the page loads, it restores:
+- the Kernels cells: the latest result per op, column and size
+- the sweeps: the latest per op, column and execution
+- the last call breakdown
+- the last demo trace
+
+*Clear history* empties the file. An older `results/history.jsonl` is imported once and renamed. To look at the
+data outside the dashboard:
+
+```sh
+sqlite3 observability/results/observe.db "select datetime(time, 'unixepoch'), kind, op, device from results"
+```
+
+## Op descriptions
+
+An op's description is the comment directly above its declaration in `include/mensurflow/ops/*.hpp`.
+`serve.py` reads those comments every time the page loads. Hover an op in the Kernels table to see the
+signature, the full comment and the file and line as a tooltip; Sweep and Call show it under the toolbar. To change a description, edit the
+header comment. A comment that applies to a whole section of a header is separated from the declarations by a
+blank line, so it isn't attached to the first one.
+
 ## Tabs
 
 - **Kernels**: every op × every device at one size (small, medium or large), with median time and rate (GB/s
   of inputs + output, or GFLOP/s for matrix products). The fastest device per op is marked, and cells without a
   registered kernel are greyed out. Support is found by calling each op once at a tiny size on each device
-  when the page loads. *Run all* goes through the whole matrix (or the filtered rows).
-- **Sweep**: one op, chosen devices and sizes. It shows rate and time charts, p10/median/p90, and the kernels
+  when the page loads. *Run all* goes through the whole matrix (or the filtered rows). Each group row (blas, elementwise,
+  reduction, ...) has *▶ run group* for every device and *▶ <device>* for one device. *Stop* cancels after the current
+  cell.
+- **Kernels, CPU versions** (the *Columns* select): every CPU kernel run three ways, plus the speedups between
+  them:
+  - *sequential*: 1 thread, `observe_scalar`. Same sources, compiled with `-fno-vectorize -fno-slp-vectorize`
+    (Clang) or `-fno-tree-vectorize` (GCC).
+  - *SIMD*: 1 thread, the normal build.
+  - *threaded SIMD*: the Threads setting (default all), the normal build.
+
+  The thread count is set through `OMP_NUM_THREADS`, which every kernel (and the GEMM's own thread team) reads.
+  Hand-written intrinsics (the x86 AVX2 GEMM micro-kernel) and libc's `memcpy` stay vectorized even in the
+  sequential build. MSVC has no switch to turn auto-vectorization off, so there the sequential column is
+  unavailable. Gains are only shown when all three results are at the same size.
+- **Sweep**: one op, chosen devices and sizes. The two single-thread CPU versions can be checked next to the
+  devices to plot all three versions against size. It shows rate and time charts, p10/median/p90, and the kernels
   the call dispatched (from the trace). *Execution* can differ from where the data is: data on `cpu:0` with
   `gpu` execution measures the copy-to-GPU-and-back path.
 - **Call**: where the time of one call goes. The runner calls the op N times and wraps each call in its own

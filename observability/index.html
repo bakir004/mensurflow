@@ -76,6 +76,11 @@ tr.group td { background: var(--soft); font-weight: 600; font-size: 12px; color:
 .run { border: 1px solid var(--line); background: none; border-radius: 4px; cursor: pointer; padding: 0 6px;
   color: var(--muted); font-size: 12px; }
 .run:hover { color: var(--ink); border-color: var(--muted); }
+.run:disabled { opacity: .4; cursor: default; }
+.grun { text-transform: none; letter-spacing: 0; font-weight: 500; padding: 1px 8px; background: var(--panel); }
+.doc { margin: -4px 0 14px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--panel);
+  border-radius: 0 6px 6px 0; font-size: 13px; }
+.doc code { font: 12px var(--mono); }
 a.op { color: var(--ink); text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: pointer; }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
 @media (max-width: 520px) { .charts { grid-template-columns: 1fr; } main { padding: 14px 16px 40px; } }
@@ -87,7 +92,7 @@ svg .grid { stroke: var(--line); }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 #tooltip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
   border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.15);
-  display: none; z-index: 20; max-width: 360px; }
+  display: none; z-index: 20; max-width: 480px; }
 #timeline { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
 .stats { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 12px; }
 .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
@@ -128,6 +133,10 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
         <option value="1" selected>medium (1M elems, N=256)</option>
         <option value="2">large (16M elems, N=1024)</option>
       </select></label>
+      <label class="f">Columns<select id="k-view">
+        <option value="devices">devices</option>
+        <option value="versions">CPU versions: sequential, SIMD, threaded SIMD</option>
+      </select></label>
       <label class="f">Threads<input type="number" id="threads" min="1" placeholder="all"></label>
       <label class="f">Min time / size (s)<input type="number" id="min-time" value="0.25" step="0.05" min="0.02"></label>
       <label class="f">Filter<input type="text" id="k-filter" placeholder="op or group"></label>
@@ -141,7 +150,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     <p class="note">Each cell is the median time of one public call with data on that device (GPU devices
       run with <span class="mono">Execution::GPU</span>), and the rate it implies: GB/s of inputs + output for
       memory-bound ops, GFLOP/s for matrix products. The fastest device per op is marked. Greyed cells have no
-      registered kernel. Click an op to sweep sizes.</p>
+      registered kernel. Click an op to sweep sizes.<br>
+      <b>CPU versions</b> runs each CPU kernel three ways: <i>sequential</i> (1 thread, from a copy of the library
+      built without auto-vectorization, <span class="mono">observe_scalar</span>), <i>SIMD</i> (1 thread, normal
+      build) and <i>threaded SIMD</i> (the Threads setting, default all). The gain columns divide their times.
+      Hand-written intrinsics (the x86 AVX2 GEMM kernel) and libc's <span class="mono">memcpy</span> stay vectorized
+      even in the sequential build.</p>
   </section>
 
   <!-- Sweep: one op, several devices and sizes -->
@@ -158,6 +172,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       <button class="b primary" id="s-run">Run sweep</button>
       <span class="progress" id="s-progress"></span>
     </div>
+    <div class="doc" id="s-doc" hidden></div>
     <div class="charts">
       <div class="panel"><h2>Rate</h2><div id="s-rate"></div></div>
       <div class="panel"><h2>Median time per call</h2><div id="s-time"></div></div>
@@ -180,6 +195,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       <label class="f">Show call<select id="c-pick"></select></label>
       <span class="progress" id="c-progress"></span>
     </div>
+    <div class="doc" id="c-doc" hidden></div>
     <div class="panel">
       <div class="stats" id="c-stats"></div>
       <h2>One call</h2>
@@ -249,7 +265,13 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { info: null, ops: [], results: {}, history: [], running: false, stop: false, trace: [] };
+const state = { info: null, ops: [], results: {}, sized: {}, history: [], running: false, stop: false, trace: [] };
+// Latest result per op|column (any size) and per op|column|size.
+function keep(key, r) { state.results[key] = r; if (r && r.size != null) state.sized[key + "|" + r.size] = r; }
+function cellResult(op, colKey) {
+  const key = op.name + "|" + colKey, r = state.results[key];
+  return r && (r.pending || r.error) ? r : state.sized[key + "|" + scaleSize(op)] || r;
+}
 
 // ---------- formatting ----------
 function fmtMs(ms) {
@@ -289,10 +311,12 @@ async function api(path, body) {
   if (data && data.fatal) throw new Error(data.fatal);
   return data;
 }
-function runRequest(op, device, sizes, execution) {
+// `col` is a column from columns(): a device, or one of the CPU versions (which sets threads and the binary).
+function runRequest(op, col, sizes, execution, tab = "kernels") {
   return api("/api/run", {
-    op, device, sizes, execution: execution || "default",
-    threads: Number($("threads").value) || null, min_time: Number($("min-time").value) || 0.25,
+    op, device: col.device, sizes, execution: execution || "default", variant: col.variant || null, tab, col: col.key,
+    threads: col.threads ? col.threads() : Number($("threads").value) || null,
+    min_time: Number($("min-time").value) || 0.25,
   });
 }
 
@@ -308,9 +332,10 @@ function hideTip() { tip.style.display = "none"; }
 
 // ---------- line chart (SVG, log axes) ----------
 function lineChart(el, series, o) {
-  const W = Math.max(el.clientWidth, 300), H = 260, L = 58, R = 12, T = 10, B = 34;
+  const W = Math.max(el.clientWidth, 300), H = 260, R = 12, T = 10, B = 34;
   const pts = series.flatMap((s) => s.points).filter((p) => p[1] > 0 && isFinite(p[1]));
   if (!pts.length) { el.innerHTML = '<p class="note">No data yet.</p>'; return; }
+  let L = 58; // widened below to fit the longest y label
   const tx = o.xlog ? Math.log10 : (v) => v, ty = o.ylog ? Math.log10 : (v) => v;
   let x0 = Math.min(...pts.map((p) => tx(p[0]))), x1 = Math.max(...pts.map((p) => tx(p[0])));
   let y0 = Math.min(...pts.map((p) => ty(p[1]))), y1 = Math.max(...pts.map((p) => ty(p[1])));
@@ -318,10 +343,11 @@ function lineChart(el, series, o) {
   if (x0 === x1) { x0 -= 0.5; x1 += 0.5; }
   if (y0 === y1) { y0 -= 0.5; y1 += 0.5; }
   const pad = (y1 - y0) * 0.06; y1 += pad; if (o.ylog) y0 -= pad;
+  const yticks = o.ylog ? logTicks(y0, y1) : linTicks(y0, y1);
+  L = Math.max(L, 12 + 6.4 * Math.max(...yticks.map((v) => String(o.fmtY(v)).length)));
   const X = (v) => L + (tx(v) - x0) / (x1 - x0) * (W - L - R);
   const Y = (v) => T + (1 - (ty(v) - y0) / (y1 - y0)) * (H - T - B);
   let svg = `<svg width="${W}" height="${H}" role="img">`;
-  const yticks = o.ylog ? logTicks(y0, y1) : linTicks(y0, y1);
   for (const v of yticks) {
     const y = Y(v);
     svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${y}" y2="${y}"/><text x="${L - 6}" y="${y + 4}" text-anchor="end">${o.fmtY(v)}</text>`;
@@ -378,6 +404,19 @@ function renderChips() {
   $("chips").innerHTML = chips.join("");
 }
 
+// ---------- op descriptions (read by serve.py from the comments in include/mensurflow/ops/*.hpp) ----------
+function docHtml(op) {
+  const d = op && op.doc;
+  if (!d) return "";
+  return `<code>${esc(d.signature)}</code><div style="margin-top:6px">${esc(d.text)}</div>` +
+    `<div class="note mono" style="margin-top:6px">${esc(d.file)}:${d.line}</div>`;
+}
+function showDoc(el, opName) {
+  const op = state.ops.find((o) => o.name === opName);
+  el.hidden = !(op && op.doc);
+  el.innerHTML = docHtml(op);
+}
+
 // ---------- kernels tab ----------
 function scaleSize(op) {
   const k = Number($("k-scale").value);
@@ -385,71 +424,128 @@ function scaleSize(op) {
   if (op.unit.startsWith("matrix")) return [64, 256, 1024][k];
   return [1 << 14, 1 << 20, 1 << 24][k];
 }
+// The three CPU versions: the same kernels without SIMD on one thread, with SIMD on one thread, and with
+// SIMD on all threads (or the Threads setting).
+const VERSIONS = [
+  { key: "v:scalar", variant: "scalar", label: "sequential", detail: "1 thread, no SIMD", color: "#a0674b", threads: () => 1 },
+  { key: "v:simd", variant: "simd", label: "SIMD", detail: "1 thread", color: "#c9a227", threads: () => 1 },
+  { key: "v:threaded", variant: "threaded", label: "threaded SIMD", detail: "", color: null, threads: () => Number($("threads").value) || null },
+];
+function versionColumns() {
+  return VERSIONS.map((v) => ({
+    ...v, device: "cpu:0", color: v.color || css("--cpu"),
+    detail: v.detail || `${Number($("threads").value) || state.info.threads} threads`,
+    support: (op) => (v.variant === "scalar" && !state.info.scalar_build ? "observe_scalar is not built" : op.support["cpu:0"]),
+  }));
+}
+function deviceColumns() {
+  return state.info.devices.map((d) => ({ key: d, device: d, label: d, detail: "", color: deviceColor(d), support: (op) => op.support[d] }));
+}
+function columns() { return $("k-view").value === "versions" ? versionColumns() : deviceColumns(); }
+function column(key) { return [...deviceColumns(), ...versionColumns()].find((c) => c.key === key); }
+function gain(a, b) {
+  if (!a || !b || a.median_ms == null || b.median_ms == null) return "<td></td>";
+  if (a.size !== b.size) return `<td class="num note" title="measured at different sizes">–</td>`;
+  const g = a.median_ms / b.median_ms;
+  const tone = g >= 1.5 ? "var(--good)" : g < 0.95 ? "var(--bad)" : "var(--muted)";
+  return `<td class="num" style="color:${tone};font-weight:600">${g >= 10 ? g.toFixed(0) : g.toFixed(1)}×</td>`;
+}
 function renderKernels() {
   if (!state.info) { $("k-table").innerHTML = ""; return; }
-  const devices = state.info.devices;
+  const cols = columns();
+  const versions = $("k-view").value === "versions";
+  const extra = versions ? ["SIMD gain", "thread gain", "total gain"] : [];
   const filter = $("k-filter").value.trim().toLowerCase();
-  let html = "<thead><tr><th>op</th><th>size</th>" + devices.map((d) => `<th><span class="sw" style="background:${deviceColor(d)}"></span>${d}</th>`).join("") + "</tr></thead><tbody>";
+  let html = "<thead><tr><th>op</th><th>size</th>" +
+    cols.map((c) => `<th><span class="sw" style="background:${c.color}"></span>${esc(c.label)}${c.detail ? `<div class="note" style="font-weight:400">${esc(c.detail)}</div>` : ""}</th>`).join("") +
+    extra.map((x) => `<th class="num">${x}</th>`).join("") + "</tr></thead><tbody>";
   let group = "";
+  const off = state.running ? "disabled" : "";
   for (const op of state.ops) {
     if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
-    if (op.group !== group) { group = op.group; html += `<tr class="group"><td colspan="${devices.length + 2}">${group}</td></tr>`; }
-    const cells = devices.map((d) => state.results[op.name + "|" + d]);
+    if (op.group !== group) {
+      group = op.group;
+      const g = esc(group);
+      html += `<tr class="group"><td colspan="2"><span style="display:inline-flex;align-items:center;gap:8px">${g}<button class="run grun" ${off} data-group="${g}" title="run every ${g} op in every column">▶ run group</button></span></td>` +
+        cols.map((c) => `<td><button class="run grun" ${off} data-group="${g}" data-col="${c.key}" title="run every ${g} op: ${esc(c.label)}">▶ ${esc(c.label)}</button></td>`).join("") +
+        extra.map(() => "<td></td>").join("") + "</tr>";
+    }
+    const cells = cols.map((c) => cellResult(op, c.key));
     const times = cells.filter((r) => r && r.median_ms != null).map((r) => r.median_ms);
     const best = times.length > 1 ? Math.min(...times) : null;
-    html += `<tr><td><a class="op" data-op="${esc(op.name)}">${esc(op.name)}</a></td><td class="mono">${fmtSize(scaleSize(op))}</td>`;
-    devices.forEach((d, i) => {
-      const support = op.support[d];
+    html += `<tr><td class="opcell" data-op="${esc(op.name)}"><a class="op" data-op="${esc(op.name)}">${esc(op.name)}</a></td><td class="mono">${fmtSize(scaleSize(op))}</td>`;
+    cols.forEach((c, i) => {
+      const support = c.support(op);
       if (support !== "ok") { html += `<td><span class="missing" title="${esc(support)}">not registered</span></td>`; return; }
       const r = cells[i];
-      let inner = `<button class="run" data-op="${esc(op.name)}" data-device="${d}" title="run">▶</button>`;
+      let inner = `<button class="run" data-op="${esc(op.name)}" data-col="${c.key}" title="run">▶</button>`;
       if (r && r.error) inner += `<span class="err" title="${esc(r.error)}">error</span>`;
       else if (r && r.pending) inner += '<span class="r">running…</span>';
       else if (r) inner += `<span class="t">${fmtMs(r.median_ms)}</span><span class="r">${fmtRate(r.rate, r.rate_unit)}${r.size !== scaleSize(op) ? " @" + fmtSize(r.size) : ""}</span>`;
       html += `<td><div class="cell ${r && r.median_ms === best ? "best" : ""}">${inner}</div></td>`;
     });
+    if (versions) html += gain(cells[0], cells[1]) + gain(cells[1], cells[2]) + gain(cells[0], cells[2]);
     html += "</tr>";
   }
   $("k-table").innerHTML = html + "</tbody>";
 }
-async function runCell(opName, device) {
+async function runCell(opName, colKey) {
   const op = state.ops.find((o) => o.name === opName);
-  const key = opName + "|" + device;
+  const key = opName + "|" + colKey;
   state.results[key] = { pending: true };
   renderKernels();
   try {
-    const data = await runRequest(opName, device, [scaleSize(op)]);
-    state.results[key] = data.results[0];
+    const data = await runRequest(opName, column(colKey), [scaleSize(op)]);
+    keep(key, data.results[0]);
     state.history.push(data);
   } catch (e) { state.results[key] = { error: e.message }; }
   renderKernels();
 }
 $("k-table").addEventListener("click", (e) => {
+  const group = e.target.closest(".grun");
+  if (group) return runJobs(group.dataset.group, group.dataset.col);
   const run = e.target.closest(".run");
-  if (run && !state.running) return runCell(run.dataset.op, run.dataset.device);
+  if (run && !state.running) return runCell(run.dataset.op, run.dataset.col);
   const link = e.target.closest("a.op");
   if (link) { $("s-op").value = link.dataset.op; onSweepOp(); showTab("sweep"); }
 });
-$("k-run-all").addEventListener("click", async () => {
+// Runs every supported (op, column) cell that passes the filter, optionally only one group and/or column.
+async function runJobs(onlyGroup, onlyCol) {
   if (state.running) return;
   state.running = true; state.stop = false;
   $("k-run-all").disabled = true; $("k-stop").disabled = false;
+  $("k-table").querySelectorAll(".grun").forEach((b) => (b.disabled = true));
   const filter = $("k-filter").value.trim().toLowerCase();
+  const cols = columns();
   const jobs = [];
   for (const op of state.ops) {
     if (filter && !op.name.includes(filter) && !op.group.includes(filter)) continue;
-    for (const d of state.info.devices) if (op.support[d] === "ok") jobs.push([op.name, d]);
+    if (onlyGroup && op.group !== onlyGroup) continue;
+    for (const c of cols) if (c.support(op) === "ok" && (!onlyCol || c.key === onlyCol)) jobs.push([op.name, c]);
   }
   for (let i = 0; i < jobs.length && !state.stop; i++) {
-    $("k-progress").textContent = `${i + 1} / ${jobs.length}: ${jobs[i][0]} on ${jobs[i][1]}`;
-    await runCell(...jobs[i]);
+    $("k-progress").textContent = `${i + 1} / ${jobs.length}: ${jobs[i][0]} · ${jobs[i][1].label}`;
+    await runCell(jobs[i][0], jobs[i][1].key);
   }
-  $("k-progress").textContent = state.stop ? "stopped" : `done, ${jobs.length} runs`;
+  const what = [onlyGroup, onlyCol && column(onlyCol).label].filter(Boolean).join(" · ");
+  $("k-progress").textContent = state.stop ? "stopped" : `done${what ? " (" + what + ")" : ""}, ${jobs.length} runs`;
   state.running = false; $("k-run-all").disabled = false; $("k-stop").disabled = true;
-});
+  renderKernels();
+}
+$("k-run-all").addEventListener("click", () => runJobs());
 $("k-stop").addEventListener("click", () => { state.stop = true; });
+// Hovering an op shows its signature and full description.
+$("k-table").addEventListener("mouseover", (e) => {
+  const cell = e.target.closest(".opcell");
+  if (!cell) return;
+  const op = state.ops.find((o) => o.name === cell.dataset.op);
+  if (op && op.doc) cell.onmousemove = (m) => showTip(m, docHtml(op));
+  cell.onmouseleave = hideTip;
+});
 $("k-scale").addEventListener("change", renderKernels);
 $("k-filter").addEventListener("input", renderKernels);
+$("k-view").addEventListener("change", renderKernels);
+$("threads").addEventListener("input", () => { if ($("k-view").value === "versions") renderKernels(); });
 
 // ---------- sweep tab ----------
 let sweepData = [];
@@ -457,49 +553,65 @@ function onSweepOp() {
   const op = state.ops.find((o) => o.name === $("s-op").value);
   if (!op) return;
   $("s-unit").textContent = op.unit;
+  showDoc($("s-doc"), op.name);
   $("s-sizes").value = op.sizes.join(", ");
-  $("s-devices").innerHTML = state.info.devices.map((d) => {
-    const ok = op.support[d] === "ok";
-    return `<label class="chip" title="${ok ? "" : esc(op.support[d])}"><input type="checkbox" value="${d}" ${ok ? "checked" : ""}> ${d}</label>`;
+  // Devices are checked by default. The two single-thread CPU versions can be added to compare against cpu:0.
+  const choices = [...deviceColumns(), ...versionColumns().filter((c) => c.variant !== "threaded")];
+  $("s-devices").innerHTML = choices.map((c) => {
+    const support = c.support(op), ok = support === "ok", on = ok && !c.variant;
+    const name = c.variant ? `cpu:0 ${c.label} (${c.detail})` : c.label;
+    return `<label class="chip" title="${ok ? "" : esc(support)}"><input type="checkbox" value="${c.key}" ${on ? "checked" : ""} ${ok ? "" : "disabled"}> ${esc(name)}</label>`;
   }).join("");
 }
 $("s-op").addEventListener("change", onSweepOp);
 $("s-run").addEventListener("click", async () => {
   const op = $("s-op").value;
   const sizes = $("s-sizes").value.split(/[\s,]+/).filter(Boolean).map(Number).filter((n) => n > 0);
-  const devices = [...$("s-devices").querySelectorAll("input:checked")].map((i) => i.value);
+  const devices = [...$("s-devices").querySelectorAll("input:checked")].map((i) => column(i.value));
   const execution = $("s-exec").value;
   if (!sizes.length || !devices.length) return;
   $("s-run").disabled = true;
-  for (const d of devices) {
-    $("s-progress").textContent = `running ${op} on ${d}…`;
+  for (const col of devices) {
+    $("s-progress").textContent = `running ${op}: ${col.variant ? "cpu:0 " : ""}${col.label}…`;
     try {
-      const data = await runRequest(op, d, sizes, execution);
+      // CPU versions run on cpu:0 whatever the execution setting.
+      const data = await runRequest(op, col, sizes, col.variant ? "default" : execution, "sweep");
       state.history.push(data);
-      sweepData = sweepData.filter((s) => !(s.op === op && s.device === d && s.execution === data.execution));
-      sweepData.push(data);
+      addSweep(data);
     } catch (e) { $("s-progress").textContent = "error: " + e.message; }
   }
   $("s-run").disabled = false; $("s-progress").textContent = "";
   renderSweep();
 });
+// Adds a sweep result (fresh or restored from the store), replacing the previous one for the same
+// op, column and execution.
+function addSweep(data) {
+  const col = column(data.col) || column(data.device);
+  if (!col) return;
+  data.col = col.key;
+  data.label = col.variant ? `cpu:0 ${col.label} (${data.threads === 1 ? "1 thread" : data.threads + " threads"}${col.variant === "scalar" ? ", no SIMD" : ""})` :
+    data.execution === "cpu" ? `${data.device} (cpu, ${data.threads} threads)` : `${data.device} (${data.execution})`;
+  data.color = col.color;
+  sweepData = sweepData.filter((s) => !(s.op === data.op && s.col === data.col && s.execution === data.execution));
+  sweepData.push(data);
+}
 function renderSweep() {
   const op = $("s-op").value;
   const runs = sweepData.filter((s) => s.op === op);
   const series = (field) => runs.map((r) => ({
-    name: `${r.device} (${r.execution})`, color: deviceColor(r.device), dash: r.execution !== (r.device.startsWith("cpu") ? "cpu" : "gpu"),
+    name: r.label, color: r.color, dash: !r.col.startsWith("v:") && r.execution !== (r.device.startsWith("cpu") ? "cpu" : "gpu"),
     points: r.results.filter((x) => x[field] != null).map((x) => [x.size, x[field]]),
   }));
   const unit = runs.flatMap((r) => r.results).find((x) => x.rate_unit)?.rate_unit || "GB/s";
   const xlabel = runs[0] ? runs[0].unit : "size";
   lineChart($("s-rate"), series("rate"), { xlog: true, ylog: false, xlabel, fmtX: fmtSize, fmtY: (v) => fmtRate(v, unit) });
   lineChart($("s-time"), series("median_ms"), { xlog: true, ylog: true, xlabel, fmtX: fmtSize, fmtY: fmtMs });
-  let html = '<thead><tr><th>device</th><th>exec</th><th class="num">size</th><th>inputs</th><th class="num">calls</th><th class="num">p10</th><th class="num">median</th><th class="num">p90</th><th class="num">rate</th><th>traced call (self time)</th></tr></thead><tbody>';
+  let html = '<thead><tr><th>run</th><th class="num">threads</th><th class="num">size</th><th>inputs</th><th class="num">calls</th><th class="num">p10</th><th class="num">median</th><th class="num">p90</th><th class="num">rate</th><th>traced call (self time)</th></tr></thead><tbody>';
   for (const r of runs) for (const x of r.results) {
-    if (x.error) { html += `<tr><td>${r.device}</td><td>${r.execution}</td><td class="num">${fmtSize(x.size)}</td><td colspan="7" class="err">${esc(x.error)}</td></tr>`; continue; }
+    if (x.error) { html += `<tr><td>${esc(r.label)}</td><td class="num">${r.threads}</td><td class="num">${fmtSize(x.size)}</td><td colspan="7" class="err">${esc(x.error)}</td></tr>`; continue; }
     const traced = !r.tracing ? '<span class="missing">tracing off</span>' :
       selfSummary(x.trace || []) || '<span class="missing">no dispatch</span>';
-    html += `<tr><td><span class="sw" style="background:${deviceColor(r.device)}"></span>${r.device}</td><td>${r.execution}</td><td class="num mono">${fmtSize(x.size)}</td><td class="mono">${shapes(x.inputs)}</td><td class="num">${x.calls}</td><td class="num">${fmtMs(x.p10_ms)}</td><td class="num"><b>${fmtMs(x.median_ms)}</b></td><td class="num">${fmtMs(x.p90_ms)}</td><td class="num">${fmtRate(x.rate, x.rate_unit)}</td><td>${traced}</td></tr>`;
+    html += `<tr><td><span class="sw" style="background:${r.color}"></span>${esc(r.label)}</td><td class="num">${r.threads}</td><td class="num mono">${fmtSize(x.size)}</td><td class="mono">${shapes(x.inputs)}</td><td class="num">${x.calls}</td><td class="num">${fmtMs(x.p10_ms)}</td><td class="num"><b>${fmtMs(x.median_ms)}</b></td><td class="num">${fmtMs(x.p90_ms)}</td><td class="num">${fmtRate(x.rate, x.rate_unit)}</td><td>${traced}</td></tr>`;
   }
   $("s-table").innerHTML = html + "</tbody>";
 }
@@ -559,6 +671,7 @@ function onCallOp() {
   const op = state.ops.find((o) => o.name === $("c-op").value);
   if (!op) return;
   $("c-unit").textContent = op.unit;
+  showDoc($("c-doc"), op.name);
   $("c-size").value = op.sizes[Math.floor(op.sizes.length / 2)];
   $("c-device").innerHTML = state.info.devices.map((d) => `<option ${op.support[d] === "ok" ? "" : "disabled"}>${d}</option>`).join("");
 }
@@ -566,18 +679,21 @@ $("c-op").addEventListener("change", onCallOp);
 $("c-run").addEventListener("click", async () => {
   $("c-run").disabled = true; $("c-progress").textContent = "running…";
   try {
-    callData = await api("/api/call", { op: $("c-op").value, device: $("c-device").value, execution: $("c-exec").value,
-      size: Number($("c-size").value) || null, calls: Number($("c-calls").value) || 25, threads: Number($("threads").value) || null });
-    callData.calls.forEach((c) => nest(c.events));
-    const order = callData.calls.map((c, i) => i).sort((a, b) => callData.calls[a].total_ms - callData.calls[b].total_ms);
-    callData.median = order[Math.floor(order.length / 2)];
-    $("c-pick").innerHTML = callData.calls.map((c, i) => `<option value="${i}" ${i === callData.median ? "selected" : ""}>#${i + 1} · ${fmtMs(c.total_ms)}${i === callData.median ? " (median)" : ""}</option>`).join("");
+    setCallData(await api("/api/call", { op: $("c-op").value, device: $("c-device").value, execution: $("c-exec").value,
+      size: Number($("c-size").value) || null, calls: Number($("c-calls").value) || 25, threads: Number($("threads").value) || null }));
     $("c-progress").textContent = "";
   } catch (e) { $("c-progress").textContent = "error: " + e.message; }
   $("c-run").disabled = false;
   renderCall();
 });
 $("c-pick").addEventListener("change", renderCall);
+function setCallData(data) {
+  callData = data;
+  callData.calls.forEach((c) => nest(c.events));
+  const order = callData.calls.map((c, i) => i).sort((a, b) => callData.calls[a].total_ms - callData.calls[b].total_ms);
+  callData.median = order[Math.floor(order.length / 2)];
+  $("c-pick").innerHTML = callData.calls.map((c, i) => `<option value="${i}" ${i === callData.median ? "selected" : ""}>#${i + 1} · ${fmtMs(c.total_ms)}${i === callData.median ? " (median)" : ""}</option>`).join("");
+}
 function renderCall() {
   if (!callData) { $("c-flame").innerHTML = '<p class="note">Pick an op and trace it.</p>'; return; }
   const d = callData;
@@ -747,12 +863,15 @@ function renderTrace() {
     ev.slice(0, 2000).map((e) => `<tr><td class="num">${fmtUs(e.ts - t0)}</td><td class="num">${fmtUs(e.dur)}</td><td>${"· ".repeat(e._depth)}${esc(label(e))}</td><td>${esc(e.args?.device || "")}</td><td>${esc(e.args?.dtype || "")}</td><td class="mono">${shapes(e.args?.inputs)}</td><td class="mono">${shapes(e.args?.outputs)}</td><td class="num">${e.tid}</td></tr>`).join("") + "</tbody>";
 }
 $("t-zoom").addEventListener("input", renderTrace);
+function showProgram(data) {
+  setTrace(data.traceEvents, { total_ms: data.total_ms, error: data.error, label: `demo on ${data.device} (${data.execution})`, source: data.source });
+}
 $("t-run").addEventListener("click", async () => {
   $("t-run").disabled = true; $("t-progress").textContent = "running…";
   try {
     const data = await api("/api/program", { device: $("t-device").value, execution: $("t-exec").value,
       iterations: Number($("t-iter").value) || 3, threads: Number($("threads").value) || null });
-    setTrace(data.traceEvents, { total_ms: data.total_ms, error: data.error, label: `demo on ${data.device} (${data.execution})`, source: data.source });
+    showProgram(data);
     $("t-progress").textContent = "";
   } catch (e) { $("t-progress").textContent = "error: " + e.message; }
   $("t-run").disabled = false;
@@ -771,7 +890,8 @@ function historyRows() {
   const rows = [];
   for (const run of state.history) for (const r of run.results || []) {
     if (r.error || r.median_ms == null) continue;
-    rows.push({ time: run.time, op: run.op, device: run.device, execution: run.execution, threads: run.threads_requested || run.threads, ...r });
+    const device = run.variant ? `${run.device} ${VERSIONS.find((v) => v.variant === run.variant)?.label || run.variant}` : run.device;
+    rows.push({ time: run.time, op: run.op, device, execution: run.execution, threads: run.threads, ...r });
   }
   return rows;
 }
@@ -794,19 +914,42 @@ function renderHistory() {
 }
 async function loadHistory() {
   try { state.history = await api("/api/history"); } catch { state.history = []; }
+  // Sweeps come back as the latest result per op, column and execution; the Sweep tab opens on the
+  // op swept last.
+  sweepData = [];
+  let lastSweep = null;
+  for (const run of state.history) if (run.tab === "sweep") { addSweep(run); lastSweep = run; }
+  if (lastSweep) { $("s-op").value = lastSweep.op; onSweepOp(); }
+  // The Call and Trace tabs show what they showed last.
+  try {
+    const latest = await api("/api/latest");
+    if (latest.call) {
+      setCallData(latest.call);
+      $("c-op").value = latest.call.op; onCallOp();
+      $("c-device").value = latest.call.device; $("c-size").value = latest.call.size;
+      $("c-exec").value = latest.call.execution === (latest.call.device.startsWith("cpu") ? "cpu" : "gpu") ? "default" : latest.call.execution;
+    }
+    if (latest.program) showProgram(latest.program);
+  } catch { /* nothing stored yet */ }
   // Fill the kernel matrix with the latest result per op and device (data where it lives).
   for (const run of state.history) {
+    if (run.variant) {
+      for (const r of run.results || []) if (!r.error) keep(run.op + "|v:" + run.variant, r);
+      continue;
+    }
     const native = run.device && run.execution === (run.device.startsWith("cpu") ? "cpu" : "gpu");
     if (!native) continue;
-    for (const r of run.results || []) if (!r.error) state.results[run.op + "|" + run.device] = r;
+    for (const r of run.results || []) if (!r.error) keep(run.op + "|" + run.device, r);
   }
 }
 $("h-op").addEventListener("change", renderHistory);
 $("h-device").addEventListener("change", renderHistory);
 $("h-reload").addEventListener("click", async () => { await loadHistory(); renderHistory(); });
 $("h-clear").addEventListener("click", async () => {
-  if (!confirm("Delete observability/results/history.jsonl?")) return;
-  await api("/api/history/clear", {}); state.history = []; renderHistory();
+  if (!confirm("Delete every stored result (observability/results/observe.db)?")) return;
+  await api("/api/history/clear", {});
+  state.history = []; state.results = {}; state.sized = {}; sweepData = []; callData = null; setTrace([], {});
+  renderHistory(); renderKernels();
 });
 
 // ---------- tabs + startup ----------
