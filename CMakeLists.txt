@@ -52,6 +52,7 @@ add_library(mensurflow
     src/backends/cpu/thread_pool.cpp
     src/backends/cpu/ops/blas/blas.cpp
     src/backends/cpu/ops/conv/conv2d.cpp
+    src/backends/cpu/ops/conv/pooling.cpp
     src/backends/cpu/ops/gemm/gemm_batched.cpp
     src/backends/cpu/ops/gemm/gemm_packed.cpp
     src/backends/cpu/ops/elementwise/parallel_cutoffs.cpp
@@ -161,6 +162,7 @@ mensurflow_add_test(activation_movement_test tests/ops/activation_movement_test.
 mensurflow_add_test(random_test tests/ops/random_test.cpp)
 mensurflow_add_test(indexing_test tests/ops/indexing_test.cpp)
 mensurflow_add_test(conv2d_test tests/ops/conv2d_test.cpp)
+mensurflow_add_test(max_pool2d_test tests/ops/max_pool2d_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.

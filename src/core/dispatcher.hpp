@@ -94,7 +94,9 @@ enum class OpId {
     Conv2d,
     Conv2dBackwardData,
     Conv2dBackwardWeight,
-    Conv2dBackwardBias
+    Conv2dBackwardBias,
+    MaxPool2d,
+    MaxPool2dBackward
 };
 
 const char* op_name(OpId op);
@@ -127,6 +129,8 @@ struct OpArgs {
     std::vector<std::int64_t> padding{};
     // conv2d and pooling: the window step {stride_h, stride_w}.
     std::vector<std::int64_t> stride{};
+    // Pooling: the window size {kernel_h, kernel_w} (conv2d takes it from the weight's shape).
+    std::vector<std::int64_t> kernel_size{};
     // Counter-based random generation: offset counts output elements, not threads.
     std::uint64_t seed = 0;
     std::uint64_t offset = 0;

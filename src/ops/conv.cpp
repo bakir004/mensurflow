@@ -107,6 +107,47 @@ detail::OpArgs window_args(std::vector<Tensor> inputs, Tensor out, Size2d stride
     return args;
 }
 
+// A pooling window with the default stride resolved.
+struct PoolWindow {
+    Size2d kernel, stride, padding;
+};
+
+PoolWindow pool_window(Size2d kernel, Size2d stride, Size2d padding, const std::string& op) {
+    if (kernel[0] < 1 || kernel[1] < 1) {
+        throw std::invalid_argument(op + ": kernel_size must be at least 1, got " +
+                                    pair_string(kernel));
+    }
+    if (stride[0] == 0 && stride[1] == 0) {
+        stride = kernel;
+    }
+    require_window(stride, padding, op);
+    if (padding[0] > kernel[0] / 2 || padding[1] > kernel[1] / 2) {
+        throw std::invalid_argument(op + ": padding " + pair_string(padding) +
+                                    " must be at most half of kernel_size " + pair_string(kernel));
+    }
+    return {kernel, stride, padding};
+}
+
+// [N, C, H_out, W_out] for an input of shape x [N, C, H, W]; H and W must be at least 1.
+Shape pool_output_shape(const Shape& x, const PoolWindow& window, const std::string& op) {
+    if (x[2] < 1 || x[3] < 1) {
+        throw std::invalid_argument(op + ": input height and width must be at least 1, got " +
+                                    to_string(x));
+    }
+    return {x[0], x[1],
+            output_size(x[2], window.kernel[0], window.stride[0], window.padding[0], op, "height"),
+            output_size(x[3], window.kernel[1], window.stride[1], window.padding[1], op, "width")};
+}
+
+detail::OpArgs pool_args(std::vector<Tensor> inputs, std::vector<Tensor> outputs,
+                         const PoolWindow& window) {
+    detail::OpArgs args{std::move(inputs), std::move(outputs)};
+    args.kernel_size = {window.kernel[0], window.kernel[1]};
+    args.stride = {window.stride[0], window.stride[1]};
+    args.padding = {window.padding[0], window.padding[1]};
+    return args;
+}
+
 } // namespace
 
 Tensor conv2d(const Tensor& x, const Tensor& weight, const Tensor* bias, Size2d stride,
@@ -211,6 +252,66 @@ Tensor conv2d_backward_bias(const Tensor& grad_output, Execution execution) {
     Tensor out = Tensor::empty({grad_output.size(1)}, grad_output.dtype(), grad_output.device());
     detail::dispatch(detail::OpId::Conv2dBackwardBias, {{grad_output.contiguous()}, {out}},
                      execution);
+    return out;
+}
+
+MaxPool2dResult max_pool2d(const Tensor& x, Size2d kernel_size, Size2d stride, Size2d padding,
+                           Execution execution) {
+    const std::string op = "max_pool2d";
+    require_tensor(x, op, "x", 4);
+    const PoolWindow window = pool_window(kernel_size, stride, padding, op);
+    const Shape out_shape = pool_output_shape(x.shape(), window, op);
+    Tensor out = Tensor::empty(out_shape, x.dtype(), x.device());
+    Tensor indices = Tensor::empty(out_shape, DType::I64, x.device());
+    detail::dispatch(detail::OpId::MaxPool2d, pool_args({x.contiguous()}, {out, indices}, window),
+                     execution);
+    if (x.requires_grad() && detail::autograd::enabled()) {
+        // A private copy: the caller may change the returned indices before backward runs.
+        const Tensor saved = Tensor::from_vector(indices.to_vector<std::int64_t>(), out_shape,
+                                                 indices.device());
+        detail::AutogradAccess::record(out, {x}, [x, saved, execution](const Tensor& gradient) {
+            detail::autograd::NoGradGuard guard;
+            detail::autograd::propagate(x,
+                                        max_pool2d_backward(gradient, saved, x.shape(), execution));
+        });
+    }
+    return {out, indices};
+}
+
+Tensor max_pool2d_backward(const Tensor& grad_output, const Tensor& indices,
+                           const Shape& input_shape, Execution execution) {
+    const std::string op = "max_pool2d_backward";
+    require_tensor(grad_output, op, "grad_output", 4);
+    require_tensor(indices, op, "indices", 4);
+    if (indices.dtype() != DType::I64) {
+        throw std::invalid_argument(op + ": indices must be I64, got " +
+                                    dtype_name(indices.dtype()));
+    }
+    if (indices.device() != grad_output.device()) {
+        throw std::invalid_argument(op + ": grad_output and indices are on different devices");
+    }
+    if (indices.shape() != grad_output.shape()) {
+        throw std::invalid_argument(op + ": indices have shape " + to_string(indices.shape()) +
+                                    ", grad_output " + to_string(grad_output.shape()));
+    }
+    require_shape(input_shape, op, "input_shape");
+    if (input_shape[0] != grad_output.size(0) || input_shape[1] != grad_output.size(1)) {
+        throw std::invalid_argument(op + ": input_shape " + to_string(input_shape) +
+                                    " does not match grad_output " +
+                                    to_string(grad_output.shape()) + " in N and C");
+    }
+    // Checked here: the kernel writes where the indices point.
+    const std::int64_t plane = input_shape[2] * input_shape[3];
+    for (const std::int64_t index : indices.to_vector<std::int64_t>()) {
+        if (index < 0 || index >= plane) {
+            throw std::invalid_argument(op + ": index " + std::to_string(index) +
+                                        " is outside the [H, W] plane of " +
+                                        std::to_string(plane) + " cells");
+        }
+    }
+    Tensor out = Tensor::empty(input_shape, grad_output.dtype(), grad_output.device());
+    detail::dispatch(detail::OpId::MaxPool2dBackward,
+                     {{grad_output.contiguous(), indices.contiguous()}, {out}}, execution);
     return out;
 }
 

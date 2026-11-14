@@ -6,6 +6,7 @@
 
 #include "backends/cpu/ops/blas/blas.hpp"
 #include "backends/cpu/ops/conv/conv2d.hpp"
+#include "backends/cpu/ops/conv/pooling.hpp"
 #include "backends/cpu/ops/elementwise/cast.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/ops/gemm/gemm_batched.hpp"
@@ -271,6 +272,50 @@ void conv2d_backward_bias_kernel(const OpArgs& args, Stream&) {
     s.h_out = grad_y.size(2);
     s.w_out = grad_y.size(3);
     cpu::conv2d_backward_bias_f32_sequential(data<float>(grad_y), data<float>(args.outputs[0]), s);
+}
+
+// The pooling's sizes from the input's [n, c, h, w] shape, args.kernel_size, args.stride and
+// args.padding. Ops have checked that the output is at least 1 x 1.
+cpu::Pool2dShape pool2d_shape(const Shape& input, const OpArgs& args) {
+    cpu::Pool2dShape s;
+    s.n = input[0];
+    s.c = input[1];
+    s.h = input[2];
+    s.w = input[3];
+    s.kh = args.kernel_size[0];
+    s.kw = args.kernel_size[1];
+    s.stride_h = args.stride[0];
+    s.stride_w = args.stride[1];
+    s.pad_h = args.padding[0];
+    s.pad_w = args.padding[1];
+    s.h_out = (s.h + 2 * s.pad_h - s.kh) / s.stride_h + 1;
+    s.w_out = (s.w + 2 * s.pad_w - s.kw) / s.stride_w + 1;
+    return s;
+}
+
+// Input x; outputs y (F32) and indices (I64).
+void max_pool2d_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    cpu::max_pool2d_f32_sequential(data<float>(x), data<float>(args.outputs[0]),
+                                   data<std::int64_t>(args.outputs[1]),
+                                   pool2d_shape(x.shape(), args));
+}
+
+// Inputs grad_y and indices (both of the output's shape); the output has the input's shape. The
+// indices hold the windows, so only the output size is needed.
+void max_pool2d_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& grad_y = args.inputs[0];
+    const Tensor& grad_x = args.outputs[0];
+    cpu::Pool2dShape s;
+    s.n = grad_x.size(0);
+    s.c = grad_x.size(1);
+    s.h = grad_x.size(2);
+    s.w = grad_x.size(3);
+    s.h_out = grad_y.size(2);
+    s.w_out = grad_y.size(3);
+    cpu::max_pool2d_backward_f32_sequential(data<float>(grad_y),
+                                            data<std::int64_t>(args.inputs[1]),
+                                            data<float>(grad_x), s);
 }
 
 // ---- Data movement -------------------------------------------------------------------------
@@ -622,6 +667,8 @@ class CpuBackend final : public Backend {
         add(OpId::Conv2dBackwardData, conv2d_backward_data_kernel);
         add(OpId::Conv2dBackwardWeight, conv2d_backward_weight_kernel);
         add(OpId::Conv2dBackwardBias, conv2d_backward_bias_kernel);
+        add(OpId::MaxPool2d, max_pool2d_kernel);
+        add(OpId::MaxPool2dBackward, max_pool2d_backward_kernel);
     }
 
   private:

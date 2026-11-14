@@ -1,7 +1,7 @@
 // Convolution and pooling over images. The last argument says where the op runs (see
 // execution.hpp); the result is on the inputs' device. Only float32, and only CPU kernels so far.
 //
-// Layout and conventions for conv2d:
+// Layout and conventions for conv2d (pooling's are further down):
 // * NCHW: input x[N, C_in, H, W], weight[C_out, C_in, kH, kW], optional bias[C_out], output
 //   y[N, C_out, H_out, W_out]. Inputs may be views; they are packed before the kernel runs.
 // * Separate stride {stride_h, stride_w} >= 1 and zero padding {pad_h, pad_w} >= 0 per dimension.
@@ -52,5 +52,38 @@ Tensor conv2d_backward_weight(const Tensor& grad_output, const Tensor& x,
 // The gradient of conv2d with respect to its bias: grad_output [N, C_out, H_out, W_out] summed over
 // N, H_out and W_out (in double), giving [C_out].
 Tensor conv2d_backward_bias(const Tensor& grad_output, Execution execution = Execution::Auto);
+
+// ---- Pooling -------------------------------------------------------------------------------
+//
+// Conventions shared by max_pool2d and avg_pool2d:
+// * NCHW input x[N, C, H, W] with H, W >= 1; each channel is pooled on its own; output
+//   [N, C, H_out, W_out]. Inputs may be views.
+// * kernel_size {kH, kW}, each at least 1. stride {stride_h, stride_w}, each at least 1, or
+//   {0, 0} (the default) for stride = kernel_size. Zero padding {pad_h, pad_w} with
+//   0 <= pad <= kernel / 2 in each dimension (PyTorch's rule), so every window holds at least one
+//   input cell.
+// * H_out = floor((H + 2 * pad_h - kH) / stride_h) + 1 and W_out likewise (ceil_mode = false). An
+//   output size below 1 is rejected. Dilation is always 1.
+
+struct MaxPool2dResult {
+    Tensor output;  // F32 [N, C, H_out, W_out]
+    Tensor indices; // I64 [N, C, H_out, W_out]
+};
+
+// Max pooling. indices holds, for every output element, the position ih * W + iw of the chosen
+// cell within its own [H, W] plane (as PyTorch). Padded cells are never chosen. Ties go to the
+// first cell of the window in row-major order. NaN follows argmax and max: a NaN beats every
+// number, the first NaN of the window is chosen and the output is NaN. Records autograd for x
+// with a private copy of the indices (changing the returned indices does not change the
+// gradient); the backward pass is max_pool2d_backward.
+MaxPool2dResult max_pool2d(const Tensor& x, Size2d kernel_size, Size2d stride = {0, 0},
+                           Size2d padding = {0, 0}, Execution execution = Execution::Auto);
+
+// The gradient of max_pool2d with respect to an input of shape input_shape [N, C, H, W]: every
+// element of grad_output is added to the input cell its index names (a cell chosen by several
+// overlapping windows gets the sum); all other cells are 0. indices must be I64 with
+// grad_output's shape and values in [0, H * W).
+Tensor max_pool2d_backward(const Tensor& grad_output, const Tensor& indices,
+                           const Shape& input_shape, Execution execution = Execution::Auto);
 
 } // namespace mensurflow

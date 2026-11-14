@@ -164,6 +164,10 @@ const char* op_name(OpId op) {
         return "conv2d_backward_weight";
     case OpId::Conv2dBackwardBias:
         return "conv2d_backward_bias";
+    case OpId::MaxPool2d:
+        return "max_pool2d";
+    case OpId::MaxPool2dBackward:
+        return "max_pool2d_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }

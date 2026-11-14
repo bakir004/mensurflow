@@ -36,7 +36,7 @@ dispatcher where to run. CPU kernels are in
 `src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
-by Asja (`conv2d`) have only a `*_sequential` kernel so far: it is the correctness baseline the
+by Asja (`conv2d`, `max_pool2d`) have only a `*_sequential` kernel so far: it is the correctness baseline the
 parallel version will be tested and benchmarked against.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
@@ -70,6 +70,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`one_hot`|OpenMP, I64 indices and output; arbitrary-rank indices, explicit class count; forward only|—|—|
 |`embedding`|OpenMP, F32 weights/output and I64 indices; forward/backward and CPU autograd; repeated-index gradients accumulate deterministically|—|—|
 |`conv2d`|sequential only (`*_sequential`), float32 NCHW; im2col + single-threaded packed GEMM per image; stride and zero padding per dimension, optional bias; dilation 1 and groups 1 only; forward, backward (data via col2im, weight, bias) and CPU autograd; see [CPU convolution and pooling](#cpu-convolution-and-pooling)|—|—|
+|`max_pool2d`|sequential only (`*_sequential`), float32 NCHW; kernel, stride (default = kernel) and zero padding per dimension; I64 indices saved per output element; forward, backward (scatter-add through the indices) and CPU autograd|—|—|
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
@@ -173,6 +174,32 @@ packed before the kernel runs.
   `C_in = 0` gives the bias, or zeros.
 * Tested against a direct-loop double reference (`tests/reference/conv.hpp`) and with central
   finite differences for all three gradients (`tests/ops/conv2d_test.cpp`).
+
+**Pooling, shared conventions**
+
+* NCHW input `[N, C, H, W]` with `H, W >= 1`; each channel is pooled on its own; output
+  `[N, C, H_out, W_out]`.
+* `kernel_size = {kH, kW}` (at least 1); `stride` at least 1 per dimension, or `{0, 0}` (the
+  default) for `stride = kernel_size`; zero `padding` with `0 <= pad <= kernel / 2` per dimension
+  (PyTorch's rule), so every window holds at least one input cell.
+* `H_out = floor((H + 2 * pad_h - kH) / stride_h) + 1` (`ceil_mode = false`); an output size below
+  1 is rejected. Dilation is always 1.
+
+**`max_pool2d(x, kernel_size, stride, padding)`** returns `{output, indices}`.
+
+* `indices` are I64 with the output's shape: the position `ih * W + iw` of the chosen cell within
+  its own `[H, W]` plane, as in PyTorch.
+* Padded cells are never chosen (an all-negative input stays negative next to the padding).
+* Ties go to the first cell of the window in row-major order.
+* NaN as in `argmax` and `max`: a NaN beats every number, including `+inf`; the first NaN of the
+  window is chosen and the output is NaN.
+* `max_pool2d_backward(grad_output, indices, input_shape)` adds each output gradient to the cell
+  its index names; a cell chosen by several overlapping windows gets the sum. Indices are checked
+  to lie in `[0, H * W)`. Autograd keeps a private copy of the indices, so changing the returned
+  ones does not move the gradient.
+* Tests: `tests/ops/max_pool2d_test.cpp` against `tests/reference/pooling.hpp`, including the tie,
+  padding and NaN rules, overlapping windows and a finite-difference check on inputs whose values
+  are 0.1 apart (so a small step cannot change which cell wins).
 
 ## P0 — Minimum useful dense inference library
 
@@ -405,7 +432,8 @@ in `tests/reference/conv.hpp`.
 matrix is `C_in * kH * kW` by `H_out * W_out` floats, one image at a time.
 `col2im` is its inverse, used by transposed convolution and backward.
 * \[ ] Max pooling (returning indices, for backward and `max\_unpool`) and average
-pooling.
+pooling. Max pooling done (`max_pool2d`, CPU float32, forward and backward); average pooling
+remains.
 * \[ ] Adaptive / global average pooling — classifier heads, e.g. ResNet. Also
 global max pooling and Lp pooling.
 * \[ ] `conv1d` — audio and sequence models, e.g. Whisper's front end and Mamba's
