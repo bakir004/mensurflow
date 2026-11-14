@@ -2,6 +2,7 @@
 // references at several thread counts and sizes around the parallel cutoff, finite-difference checks
 // of the reference gradients, bit-for-bit equality across thread counts, numerical edge cases, the
 // public API (views, empty inputs, errors that leave the state untouched) and autograd.
+#include "backends/cpu/ops/optimizer.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/autograd.hpp"
 #include "mensurflow/mensurflow.hpp"
@@ -282,6 +283,55 @@ void test_optimizer_kernels() {
                     test::require(same_bits(bits, final_bits[0]),
                                   "optimizers: same bits at every thread count, " + where);
                 }
+            }
+        }
+    }
+}
+
+// The AVX2 kernels do the same operations in the same order as the portable loops (no FMA), so with
+// AVX2 on or off the results are identical bit for bit. Sizes with and without a tail of fewer than 8
+// elements, around the parallel cutoff, at several thread counts. Skipped when the CPU has no AVX2.
+void test_optimizer_avx2_matches_portable() {
+    if (!cpu::optimizer_avx2_available()) {
+        std::cout << "AVX2 not available on this CPU: skipping the AVX2 comparison\n";
+        return;
+    }
+
+    struct Restore {
+        ~Restore() {
+            cpu::set_optimizer_avx2(true);
+            cpu::set_max_threads(all_threads);
+        }
+    } restore;
+
+    const std::int64_t sizes[] = {1, 7, 8, 9, 63, 1000, 32767, 32768, 32769, 100003};
+    for (const std::int64_t n : sizes) {
+        for (const int threads : thread_counts) {
+            cpu::set_max_threads(threads);
+            std::vector<std::vector<float>> results[2];
+            for (const bool avx2 : {false, true}) {
+                cpu::set_optimizer_avx2(avx2);
+                test::require(cpu::optimizer_avx2_enabled() == avx2, "the AVX2 switch works");
+                Tensor ps = make(values(n, 1), {n}), pa = make(values(n, 1), {n}),
+                       pw = make(values(n, 1), {n}), pd = make(values(n, 1), {n});
+                Tensor velocity = Tensor::zeros({n}), ma = Tensor::zeros({n}),
+                       va = Tensor::zeros({n}), mw = Tensor::zeros({n}), vw = Tensor::zeros({n});
+                for (int step = 1; step <= 4; ++step) {
+                    const Tensor g = make(values(n, 20 + step, 1.0f), {n});
+                    sgd(ps, g, 0.02f, 0.9f, 0.01f, &velocity);
+                    sgd(pd, g, 0.02f, 0.0f, 0.01f); // no momentum
+                    adam(pa, g, ma, va, 0.01f, step, 0.9f, 0.999f, 1e-8f, 0.1f);
+                    adamw(pw, g, mw, vw, 0.01f, step, 0.9f, 0.999f, 1e-8f, 0.1f);
+                }
+                for (const Tensor* t : {&ps, &pd, &velocity, &pa, &ma, &va, &pw, &mw, &vw}) {
+                    results[avx2 ? 1 : 0].push_back(t->to_vector<float>());
+                }
+            }
+            for (std::size_t i = 0; i < results[0].size(); ++i) {
+                test::require(
+                    same_bits(results[0][i], results[1][i]),
+                    "AVX2 and portable optimizer results are identical: n=" + std::to_string(n) +
+                        " threads=" + std::to_string(threads) + " tensor " + std::to_string(i));
             }
         }
     }
@@ -957,6 +1007,7 @@ int main() {
         test_reference_gradients();
         test_optimizers_against_torch();
         test_optimizer_kernels();
+        test_optimizer_avx2_matches_portable();
         test_optimizer_api();
         test_norm_against_torch();
         test_norm_kernels();

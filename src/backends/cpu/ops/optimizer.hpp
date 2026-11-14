@@ -18,4 +18,12 @@ void sgd_f32(float* p, const float* g, float* velocity, std::int64_t n, float lr
 void adam_f32(float* p, const float* g, float* m, float* v, std::int64_t n, float lr, float beta1,
               float beta2, float eps, float weight_decay, std::int64_t step, bool decoupled);
 
+// The three updates have an AVX2 version, chosen at run time when the CPU and the OS support AVX2
+// (the same check the packed matmul uses; the build stays baseline x86-64). It performs the same
+// operations in the same order as the portable loop and does not use FMA, so both give identical
+// bits. These exist so tests and benchmarks can compare the two.
+bool optimizer_avx2_available();
+void set_optimizer_avx2(bool enabled); // default true; ignored when AVX2 is not available
+bool optimizer_avx2_enabled();         // available and not switched off
+
 } // namespace mensurflow::cpu

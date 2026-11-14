@@ -16,10 +16,11 @@
 // Optimizer state keeps evolving across timed calls (Adam is stepped with a fixed step number), which
 // does not change the work per element.
 //
-//   optimizer_normalization_benchmark [optimizers|line_norm|batch_norm|api]
+//   optimizer_normalization_benchmark [optimizers|line_norm|batch_norm|api] [noavx2]
 #include "bench.hpp"
 
 #include "backends/cpu/ops/normalization.hpp"
+#include "backends/cpu/ops/optimizer.hpp"
 #include "backends/cpu/threads.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/optimizer_normalization.hpp"
@@ -454,7 +455,14 @@ void api_section(bench::Table& table, const bench::Config& config,
 int main(int argc, char** argv) {
     // Optional argument: run only the groups whose name contains it (optimizers, line_norm,
     // batch_norm, api), for quick experiments. Without it everything runs.
-    const std::string only = argc > 1 ? argv[1] : "";
+    // Second optional argument "noavx2": run the optimizers with the portable loops instead of the AVX2
+    // kernels (they are chosen at run time when the CPU has AVX2), to compare the two.
+    const std::string only = argc > 1 && std::string(argv[1]) != "noavx2" ? argv[1] : "";
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "noavx2") {
+            cpu::set_optimizer_avx2(false);
+        }
+    }
     auto wanted = [&](const char* group) {
         return only.empty() || std::string(group).find(only) != std::string::npos;
     };
@@ -464,6 +472,8 @@ int main(int argc, char** argv) {
         "CPU optimizers and normalization, float32", config,
         {"sequential = one thread; parallel = the same kernel on N OpenMP threads",
          "rate is GB/s of bytes moved (inputs read once, outputs written once)",
+         std::string("optimizer kernels: ") +
+             (cpu::optimizer_avx2_enabled() ? "AVX2" : "portable (SSE2)"),
          "optimizers go through the public API (in place); normalization calls the",
          "kernels on preallocated buffers, then the public API in the last section"});
     bench::Table table("GB/s", 1e9, "vs seq", "");

@@ -17,7 +17,8 @@
 //          first, and the gradient is used as it is.
 //
 // `step` counts from 1 (the number of this update, for the bias correction); the caller owns it.
-// The result is the same on every thread count. Invalid hyperparameters and mismatched tensors
+// The result is the same on every thread count, and with or without the AVX2 kernels used when the CPU
+// has them (they do the same operations in the same order, without FMA). Invalid hyperparameters and mismatched tensors
 // throw std::invalid_argument before anything is changed.
 #pragma once
 
