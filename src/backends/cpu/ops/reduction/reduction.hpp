@@ -84,4 +84,18 @@ void std_backward_f32_sequential(const float* x, const float* grad, float* grad_
                                  const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
                                  std::int64_t correction);
 
+// ---- Parallel versions of argmin, var and std ----------------------------------------------
+//
+// Every split depends only on the shape, never on the thread count, so each gives the same bits
+// at every thread count. argmin gives exactly the sequential result; var and std agree with the
+// sequential Welford pass up to rounding in double.
+
+// Elements below which the parallel versions stay on one thread.
+constexpr std::int64_t moments_parallel_cutoff = std::int64_t{1} << 15;
+
+// Rows split across threads; a row longer than argmin_block elements is itself cut into blocks of
+// that size, each reduced on its own and merged in order with the tie and NaN rules.
+constexpr std::int64_t argmin_block = std::int64_t{1} << 14;
+void argmin_f32_parallel(const float* x, std::int64_t* out, std::int64_t rows, std::int64_t width);
+
 } // namespace mensurflow::cpu

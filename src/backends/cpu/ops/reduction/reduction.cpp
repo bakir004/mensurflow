@@ -5,6 +5,7 @@
 // maximum of fixed-size chunks in parallel, then of the chunks.
 #include "backends/cpu/ops/reduction/reduction.hpp"
 
+#include "backends/cpu/parallel.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>
@@ -413,6 +414,59 @@ void argmin_f32_sequential(const float* x, std::int64_t* out, std::int64_t rows,
             }
         }
         out[row] = best;
+    }
+}
+
+// ---- Parallel versions of argmin, var and std ----------------------------------------------
+
+namespace {
+
+// The index of the smallest of values[begin, end) by argmin's rules (first minimum, first NaN).
+// NaN is tested as v != v (one compare; MSVC may call a function for std::isnan), and the best
+// value is kept in a local so the loop does not reload it.
+std::int64_t argmin_range(const float* values, std::int64_t begin, std::int64_t end) {
+    std::int64_t best = begin;
+    float best_value = values[begin];
+    for (std::int64_t i = begin + 1; i < end && best_value == best_value; ++i) {
+        const float value = values[i];
+        if (value != value || value < best_value) {
+            best = i;
+            best_value = value;
+        }
+    }
+    return best;
+}
+
+// The winner of two candidates, `first` from earlier in the row: a NaN first wins, then a NaN
+// second, then the strictly smaller second; otherwise the earlier one (ties keep the first).
+std::int64_t argmin_merge(const float* values, std::int64_t first, std::int64_t second) {
+    if (first < 0 || std::isnan(values[first])) {
+        return first < 0 ? second : first;
+    }
+    return std::isnan(values[second]) || values[second] < values[first] ? second : first;
+}
+
+} // namespace
+
+void argmin_f32_parallel(const float* x, std::int64_t* out, std::int64_t rows,
+                         std::int64_t width) {
+    // argmin is exact under any split, so the choice may depend on the thread count.
+    if (width <= argmin_block || rows >= max_threads()) {
+        parallel_for(rows, grain_for(moments_parallel_cutoff, width),
+                     [&](std::int64_t r0, std::int64_t r1) {
+                         for (std::int64_t r = r0; r < r1; ++r) {
+                             out[r] = argmin_range(x + r * width, 0, width);
+                         }
+                     });
+        return;
+    }
+    for (std::int64_t r = 0; r < rows; ++r) {
+        const float* values = x + r * width;
+        out[r] = parallel_reduce(
+            width, argmin_block, std::int64_t{-1},
+            [&](std::int64_t begin, std::int64_t end) { return argmin_range(values, begin, end); },
+            [&](std::int64_t a, std::int64_t b) { return argmin_merge(values, a, b); },
+            grain_for(moments_parallel_cutoff, argmin_block));
     }
 }
 

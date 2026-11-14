@@ -52,7 +52,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`matvec`|OpenMP, double accumulation per row|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
-|`argmin`|sequential only (`*_sequential`); last-axis float32 input with int64 output; argmax's rules (ties select the first index, the first NaN wins); forward only (not differentiable)|—|—|
+|`argmin`|`*_sequential` and `*_parallel` (rows across threads; rows longer than 16384 split into blocks merged in order), exactly the sequential result; last-axis float32 input with int64 output; argmax's rules (ties select the first index, the first NaN wins); forward only (not differentiable)|—|—|
 |`var`, `std`|sequential only (`*_sequential`), float32, any axis with `keepdim`; one-pass Welford in double; `correction` (default 1); NaN when `count - correction <= 0`; forward, backward and CPU autograd; see [CPU variance and standard deviation](#cpu-variance-and-standard-deviation)|—|—|
 |`matmul`|packed AVX2/FMA GEMM on our own thread pool (scalar fallback without AVX2); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|—|
 |`gemm`|alpha, beta and transposes|—|—|

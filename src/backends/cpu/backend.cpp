@@ -590,8 +590,8 @@ void argmax_kernel(const OpArgs& args, Stream&) {
 void argmin_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
     const std::int64_t width = x.size(x.dim() - 1);
-    cpu::argmin_f32_sequential(data<float>(x), data<std::int64_t>(args.outputs[0]),
-                               x.numel() / width, width);
+    const auto kernel = use_parallel ? cpu::argmin_f32_parallel : cpu::argmin_f32_sequential;
+    kernel(data<float>(x), data<std::int64_t>(args.outputs[0]), x.numel() / width, width);
 }
 
 // Ops hand var and std a contiguous x, args.axis (normalized) and args.correction.

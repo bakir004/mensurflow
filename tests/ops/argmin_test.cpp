@@ -1,6 +1,7 @@
 // argmin against the reference in tests/reference/reduction.hpp: odd and non-square shapes, the
 // tie and NaN rules shared with argmax, views, empty shapes and errors.
 #include "backends/cpu/ops/reduction/reduction.hpp"
+#include "backends/cpu/threads.hpp"
 #include "gradient_check.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/reduction.hpp"
@@ -123,10 +124,56 @@ void test_empty_and_errors() {
     test::require_throws<E>([&] { argmin(Tensor::empty({2, 0})); }, "empty axis");
 }
 
+// The parallel kernel gives exactly the sequential indices at every thread count: around the
+// cutoff, and for long rows split into blocks, with the minimum, ties and NaNs at block edges.
+void test_parallel() {
+    struct Case {
+        std::int64_t rows, width;
+        std::vector<std::pair<std::int64_t, float>> planted; // (column, value) in every row
+    };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::int64_t block = cpu::argmin_block;
+    const std::vector<Case> cases = {
+        {63, 1024, {}}, // around the cutoff: 2 * 2^15 elements
+        {64, 1024, {}},
+        {65, 1024, {}},
+        {1, block - 1, {{block - 2, -5.0f}}},
+        {1, block, {{block - 1, -5.0f}}},
+        {1, block + 1, {{block, -5.0f}}},                          // minimum alone in block 1
+        {2, 3 * block + 7, {{block - 1, -5.0f}, {2 * block, -5.0f}}}, // tie across blocks
+        {3, 4 * block, {{3 * block, nan}, {block, -9.0f}}},            // NaN in a later block
+        {1, 4 * block, {{block, nan}, {3 * block, nan}}},              // first NaN wins
+        {2, (1 << 20) + 3, {{(1 << 20) + 2, -7.0f}}},
+    };
+    const int original = cpu::max_threads();
+    std::uint32_t seed = 90;
+    for (const Case& c : cases) {
+        auto x = test::random_values(c.rows * c.width, seed++);
+        for (std::int64_t r = 0; r < c.rows; ++r) {
+            for (const auto& [column, value] : c.planted) {
+                x[static_cast<std::size_t>(r * c.width + column)] = value;
+            }
+        }
+        std::vector<std::int64_t> want(static_cast<std::size_t>(c.rows));
+        cpu::argmin_f32_sequential(x.data(), want.data(), c.rows, c.width);
+        for (int threads : {1, 2, 3, 7, original}) {
+            cpu::set_max_threads(threads);
+            std::vector<std::int64_t> got(want.size());
+            cpu::argmin_f32_parallel(x.data(), got.data(), c.rows, c.width);
+            require_indices(got, want,
+                            "parallel argmin " + std::to_string(c.rows) + "x" +
+                                std::to_string(c.width) + ", " + std::to_string(threads) +
+                                " threads");
+        }
+    }
+    cpu::set_max_threads(original);
+}
+
 } // namespace
 
 int main() {
     return test::run("argmin_test", [] {
+        test_parallel();
         test_shapes();
         test_rules();
         test_views();
