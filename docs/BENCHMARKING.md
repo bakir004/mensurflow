@@ -31,6 +31,7 @@ the threads made it faster.
 | `activation_torch_benchmark` (optional) | direct CPU activations vs preallocated C++ ATen `out` calls at matching thread counts | `benchmarks/activation_torch_benchmark.cpp` |
 | `activation_movement_benchmark` | public activation-backward and tensor-movement APIs across CPU thread counts | `benchmarks/activation_movement_benchmark.cpp` |
 | `random_indexing_benchmark` | seeded RNG, dropout and indexing forward/backward public APIs; optional native ATen comparison | `benchmarks/random_indexing_benchmark.cpp` |
+| `optimizer_normalization_benchmark` | `sgd`, `adam`, `adamw`, `layer_norm`, `rms_norm`, `batch_norm` (forward and backward): sequential vs parallel kernels, bitwise-equal across thread counts; PyTorch side is `benchmarks/reference/optimizer_normalization.py`, joined by `compare_optimizer_normalization.py` | `benchmarks/optimizer_normalization_benchmark.cpp` |
 | `selection_benchmark` | F32 comparisons and `where`, one/many CPU threads; optional native ATen reference | `benchmarks/selection_benchmark.cpp` |
 | `cast_benchmark` | all 16 F32/I32/F16/BF16 pairs, one/many CPU threads; optional native ATen `copy_` reference | `benchmarks/cast_benchmark.cpp` |
 | `reduction_benchmark` | sequential vs parallel `sum`, `mean`, and `max`, across configured OpenMP thread counts | `benchmarks/blas/reduction_benchmark.cpp` |

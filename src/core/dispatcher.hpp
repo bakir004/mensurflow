@@ -143,12 +143,14 @@ struct OpArgs {
     // Op-specific scalar: multiplier, clamp lower bound, activation slope/alpha, or softplus beta.
     float alpha = 1.0f;
     float beta = 1.0f; // gemv beta, clamp upper bound, or softplus threshold.
-    float gamma = 0.0f; // optimizer beta1 or batch-norm momentum.
-    float delta = 0.0f; // optimizer beta2.
+    // Optimizers (alpha is the learning rate) and normalization (epsilon, momentum).
+    float beta1 = 0.9f;
+    float beta2 = 0.999f;
+    float momentum = 0.0f; // SGD momentum, or the batch-norm running-statistics momentum.
     float epsilon = 1e-5f;
     float weight_decay = 0.0f;
-    std::int64_t step = 1;
-    int axis = -1;     // Reduction axis; unused by other operations.
+    std::int64_t step = 1; // Adam / AdamW: the 1-based step count, for bias correction.
+    int axis = -1;         // Reduction axis; unused by other operations.
     bool keepdim = false;
     bool transpose = false;
     bool approximate = false; // GELU: tanh approximation instead of the Gaussian CDF.

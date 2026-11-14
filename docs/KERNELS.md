@@ -33,7 +33,7 @@ bit-identical CPU/GPU reductions.
 What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
 dispatcher where to run. CPU kernels are in
-`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,softmax,loss}/`; each is one loop that OpenMP
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,softmax,loss}/` (the optimizers and normalization are `optimizer.cpp` and `normalization.cpp` there); each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
@@ -71,6 +71,9 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`cross_entropy`|OpenMP, fused log-softmax + NLL per row with I64 labels, no softmax stored; none/sum/mean; forward/backward and CPU autograd|—|—|
 |`mse_loss`, `binary_cross_entropy_with_logits`|OpenMP, none/sum/mean; BCE uses max(x,0) - xt + log1p(exp(-\|x\|)) and a cancellation-free gradient; forward/backward and CPU autograd for input and target|—|—|
 |`attention`|naive: `gemm_strided_batched`, `where` with -inf, `softmax`, `gemm_strided_batched`; Bool mask and causal flag; fully masked queries give zeros; forward only|—|—|
+|`sgd`, `adam`, `adamw`|OpenMP, F32, one fused pass over parameter and state, in place (SGD with momentum and weight decay; Adam with bias correction and L2 decay; AdamW with decoupled decay); PyTorch's formulation; same bits at every thread count; no autograd (the step after backward)|—|—|
+|`layer_norm`, `rms_norm`|OpenMP over lines (one line per thread; line sums in 8 float lanes combined in double), any number of trailing normalized dimensions, optional weight/bias; forward/backward and CPU autograd for input, weight and bias; weight/bias gradients added in 64 fixed blocks, so the same bits at every thread count|—|—|
+|`batch_norm`|OpenMP over planes (`[N,C,...]`, NCHW) or row blocks (`[N,C]`); training (batch statistics, running mean/unbiased variance updated in place) and evaluation (running statistics); forward/backward and CPU autograd; per-channel sums added in a fixed order, so the same bits at every thread count|—|—|
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
@@ -239,7 +242,9 @@ autograd for the implemented elementwise, reduction, bias, and matrix multiply
 operations, and a runnable MLP example (`examples/mlp_xor.cpp`) that writes its
 loss and update step from those operations. The five additional activations below currently
 provide forward support only. Softmax, log-softmax and the losses (cross-entropy, MSE, binary
-cross-entropy with logits) are back, with backward and autograd; the SGD optimizer was removed. GPU backends,
+cross-entropy with logits) are back, with backward and autograd; SGD (with momentum and weight
+decay), Adam and AdamW are back as fused in-place updates, and layer, RMS and batch normalization
+have forward, backward and autograd. GPU backends,
 backend-independent correctness infrastructure, and the broader vendor-kernel
 coverage table remain separate work.
 
@@ -372,11 +377,10 @@ kernel. For example, GEMM backward can dispatch two existing GEMM operations.
 * \[x] `bernoulli` sampling — CPU F32 zeros/ones with explicit probability.
 * \[ ] `randperm` — data shuffling.
 * \[ ] Xavier/He initialization built from random generation and scaling.
-* \[ ] SGD parameter update (removed).
-* \[ ] Optional momentum SGD, followed by Adam with optimizer state and bias
-correction.
-* \[ ] AdamW — Adam with decoupled weight decay; the usual optimizer for
-transformer training.
+* \[x] `sgd` parameter update, in place, with optional momentum and weight decay (CPU, F32).
+* \[x] `adam` with optimizer state and bias correction (CPU, F32, fused single pass).
+* \[x] `adamw` — Adam with decoupled weight decay; the usual optimizer for
+transformer training (CPU, F32, fused single pass).
 * \[ ] Gradient zeroing and optional global-norm clipping.
 * \[x] Optional dropout forward/backward with saved masks and explicit train/eval
 behavior.
@@ -427,13 +431,16 @@ transformers and optical flow. `affine\_grid` builds the coordinates.
 
 ### Normalization
 
-* \[ ] Layer normalization forward, including epsilon and learned scale/bias.
-* \[ ] Batch normalization inference using stored running statistics.
-* \[ ] Batch normalization training and running-statistic updates, if needed.
+* \[x] `layer_norm` forward, including epsilon and learned scale/bias, over any number of trailing
+dimensions (CPU, F32); `rms_norm` likewise, without centering or bias.
+* \[x] `batch_norm` inference using stored running statistics (`[N, C, ...]`, CPU, F32).
+* \[x] `batch_norm` training and running-statistic updates (batch statistics; running variance gets
+the unbiased estimate, as in PyTorch).
 * \[ ] Group normalization — diffusion U-Nets and small-batch training. Instance
 normalization is the case of one group per channel.
 * \[ ] Local response normalization — older CNNs such as AlexNet.
-* \[ ] Normalization backward for whichever training operations are supported.
+* \[x] Normalization backward for `layer_norm`, `rms_norm` and `batch_norm` (training and
+evaluation), with CPU autograd.
 
 ### Additional activations
 
@@ -474,7 +481,7 @@ keys are all masked gets zeros.
 (T5, SAM, BLOOM).
 * \[ ] Window partition / unpartition for windowed attention (Swin, SAM).
 * \[x] GELU activation — exact and tanh approximation, CPU F32 forward only.
-* \[ ] LayerNorm or RMSNorm as required by the chosen model. Variants: Gemma's
+* \[x] LayerNorm and RMSNorm (`layer_norm`, `rms_norm`, forward and backward). Not done: Gemma's
 `(1 + w)` scale and gated RMSNorm.
 * \[ ] Positional encodings or rotary positional embeddings, model-dependent.
 * \[ ] Gated MLP activations: SwiGLU and GeGLU, `act(xW) \* (xV)` — standard in
