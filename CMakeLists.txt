@@ -79,6 +79,11 @@ if(NOT MSVC)
     if(MENSURFLOW_NATIVE)
         target_compile_options(mensurflow PRIVATE -march=native)
     endif()
+    # The optimizer kernels promise the same bits with and without their AVX2 version. When FMA is on for
+    # the whole file (-march=native, -mfma) GCC and Clang contract a * b + c differently in the portable
+    # loop and in the intrinsics, so contraction is switched off for this one file.
+    set_source_files_properties(src/backends/cpu/ops/optimizer.cpp PROPERTIES
+                                COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
 # OpenMP is optional: without it the CPU backend runs the sequential kernels.

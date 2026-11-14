@@ -21,6 +21,9 @@
 // AVX2 without FMA on purpose. With "avx2,fma" GCC and Clang fuse a * b + c into one rounding by default
 // (-ffp-contract=fast), including in the scalar tail of these functions, and the results would no longer
 // match the portable loop bit for bit. Without the fma target the compiler cannot emit FMA here.
+// That is not enough when the whole file is compiled with FMA (-march=native, -mfma): the fusing is then
+// possible in both versions and happens differently in each, so CMakeLists.txt also compiles this file
+// with -ffp-contract=off.
 #if defined(_MSC_VER)
 #define MENSURFLOW_OPTIMIZER_TARGET
 #else
