@@ -163,6 +163,7 @@ mensurflow_add_test(random_test tests/ops/random_test.cpp)
 mensurflow_add_test(indexing_test tests/ops/indexing_test.cpp)
 mensurflow_add_test(conv2d_test tests/ops/conv2d_test.cpp)
 mensurflow_add_test(max_pool2d_test tests/ops/max_pool2d_test.cpp)
+mensurflow_add_test(avg_pool2d_test tests/ops/avg_pool2d_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.

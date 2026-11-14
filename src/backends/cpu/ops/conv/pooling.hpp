@@ -32,4 +32,13 @@ void max_pool2d_f32_sequential(const float* x, float* y, std::int64_t* indices,
 void max_pool2d_backward_f32_sequential(const float* grad_y, const std::int64_t* indices,
                                         float* grad_x, const Pool2dShape& s);
 
+// y = the sum of the input cells of each window (in double) divided by kh * kw: padded cells
+// count in the divisor as zeros (PyTorch's count_include_pad = true). Without ceil_mode no window
+// reaches past the padding, so the divisor is always kh * kw.
+void avg_pool2d_f32_sequential(const float* x, float* y, const Pool2dShape& s);
+
+// grad_x[n, c, h, w]: every grad_y element divided by kh * kw and added to each input cell of its
+// window (overlapping windows add up; padding cells take no gradient). Overwrites grad_x.
+void avg_pool2d_backward_f32_sequential(const float* grad_y, float* grad_x, const Pool2dShape& s);
+
 } // namespace mensurflow::cpu

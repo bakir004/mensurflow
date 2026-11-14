@@ -168,6 +168,10 @@ const char* op_name(OpId op) {
         return "max_pool2d";
     case OpId::MaxPool2dBackward:
         return "max_pool2d_backward";
+    case OpId::AvgPool2d:
+        return "avg_pool2d";
+    case OpId::AvgPool2dBackward:
+        return "avg_pool2d_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }

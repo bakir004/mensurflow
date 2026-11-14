@@ -68,4 +68,48 @@ void max_pool2d_backward_f32_sequential(const float* grad_y, const std::int64_t*
     }
 }
 
+void avg_pool2d_f32_sequential(const float* x, float* y, const Pool2dShape& s) {
+    const std::int64_t planes = s.n * s.c;
+    const double divisor = static_cast<double>(s.kh * s.kw);
+    for (std::int64_t plane = 0; plane < planes; ++plane) {
+        const float* in = x + plane * s.h * s.w;
+        float* out = y + plane * s.h_out * s.w_out;
+        for (std::int64_t oh = 0; oh < s.h_out; ++oh) {
+            const Span rows = window(oh, s.stride_h, s.pad_h, s.kh, s.h);
+            for (std::int64_t ow = 0; ow < s.w_out; ++ow) {
+                const Span cols = window(ow, s.stride_w, s.pad_w, s.kw, s.w);
+                double sum = 0.0;
+                for (std::int64_t ih = rows.begin; ih < rows.end; ++ih) {
+                    for (std::int64_t iw = cols.begin; iw < cols.end; ++iw) {
+                        sum += static_cast<double>(in[ih * s.w + iw]);
+                    }
+                }
+                out[oh * s.w_out + ow] = static_cast<float>(sum / divisor);
+            }
+        }
+    }
+}
+
+void avg_pool2d_backward_f32_sequential(const float* grad_y, float* grad_x, const Pool2dShape& s) {
+    const std::int64_t planes = s.n * s.c;
+    const float scale = 1.0f / static_cast<float>(s.kh * s.kw);
+    std::fill(grad_x, grad_x + planes * s.h * s.w, 0.0f);
+    for (std::int64_t plane = 0; plane < planes; ++plane) {
+        const float* in = grad_y + plane * s.h_out * s.w_out;
+        float* out = grad_x + plane * s.h * s.w;
+        for (std::int64_t oh = 0; oh < s.h_out; ++oh) {
+            const Span rows = window(oh, s.stride_h, s.pad_h, s.kh, s.h);
+            for (std::int64_t ow = 0; ow < s.w_out; ++ow) {
+                const Span cols = window(ow, s.stride_w, s.pad_w, s.kw, s.w);
+                const float share = in[oh * s.w_out + ow] * scale;
+                for (std::int64_t ih = rows.begin; ih < rows.end; ++ih) {
+                    for (std::int64_t iw = cols.begin; iw < cols.end; ++iw) {
+                        out[ih * s.w + iw] += share;
+                    }
+                }
+            }
+        }
+    }
+}
+
 } // namespace mensurflow::cpu

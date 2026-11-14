@@ -36,7 +36,7 @@ dispatcher where to run. CPU kernels are in
 `src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
-by Asja (`conv2d`, `max_pool2d`) have only a `*_sequential` kernel so far: it is the correctness baseline the
+by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`) have only a `*_sequential` kernel so far: it is the correctness baseline the
 parallel version will be tested and benchmarked against.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
@@ -71,6 +71,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`embedding`|OpenMP, F32 weights/output and I64 indices; forward/backward and CPU autograd; repeated-index gradients accumulate deterministically|—|—|
 |`conv2d`|sequential only (`*_sequential`), float32 NCHW; im2col + single-threaded packed GEMM per image; stride and zero padding per dimension, optional bias; dilation 1 and groups 1 only; forward, backward (data via col2im, weight, bias) and CPU autograd; see [CPU convolution and pooling](#cpu-convolution-and-pooling)|—|—|
 |`max_pool2d`|sequential only (`*_sequential`), float32 NCHW; kernel, stride (default = kernel) and zero padding per dimension; I64 indices saved per output element; forward, backward (scatter-add through the indices) and CPU autograd|—|—|
+|`avg_pool2d`|sequential only (`*_sequential`), float32 NCHW; kernel, stride (default = kernel) and zero padding per dimension; padding counts in the divisor (`count_include_pad = true`), `ceil_mode = false`; forward, backward and CPU autograd|—|—|
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
@@ -200,6 +201,19 @@ packed before the kernel runs.
 * Tests: `tests/ops/max_pool2d_test.cpp` against `tests/reference/pooling.hpp`, including the tie,
   padding and NaN rules, overlapping windows and a finite-difference check on inputs whose values
   are 0.1 apart (so a small step cannot change which cell wins).
+
+**`avg_pool2d(x, kernel_size, stride, padding)`**
+
+* The sum of each window's input cells (accumulated in double) divided by `kH * kW`.
+* Padded cells count in the divisor as zeros, matching PyTorch's default
+  `count_include_pad = true`: a 3 x 3 window with padding 1 over all-ones gives 4/9 in a corner.
+  `count_include_pad = false` and `divisor_override` are not offered.
+* `ceil_mode = false`, so no window reaches past the padding and the divisor is always `kH * kW`.
+* NaN and infinities propagate to every window that contains them.
+* `avg_pool2d_backward(grad_output, input_shape, kernel_size, stride, padding)` divides each output
+  gradient by `kH * kW` and adds it to every input cell of the window; padding takes no gradient.
+* Tests: `tests/ops/avg_pool2d_test.cpp` against `tests/reference/pooling.hpp`, including the
+  divisor convention and a finite-difference check.
 
 ## P0 — Minimum useful dense inference library
 
@@ -431,9 +445,8 @@ in `tests/reference/conv.hpp`.
 * \[x] Optional im2col + GEMM implementation; account for temporary memory costs — the column
 matrix is `C_in * kH * kW` by `H_out * W_out` floats, one image at a time.
 `col2im` is its inverse, used by transposed convolution and backward.
-* \[ ] Max pooling (returning indices, for backward and `max\_unpool`) and average
-pooling. Max pooling done (`max_pool2d`, CPU float32, forward and backward); average pooling
-remains.
+* \[x] Max pooling (returning indices, for backward and `max\_unpool`) and average
+pooling — `max_pool2d` and `avg_pool2d`, CPU float32, forward and backward.
 * \[ ] Adaptive / global average pooling — classifier heads, e.g. ResNet. Also
 global max pooling and Lp pooling.
 * \[ ] `conv1d` — audio and sequence models, e.g. Whisper's front end and Mamba's
@@ -449,7 +462,8 @@ medical imaging.
 * \[ ] `grid\_sample` — bilinear sampling at given coordinates; spatial
 transformers and optical flow. `affine\_grid` builds the coordinates.
 * \[ ] Non-maximum suppression, ROI Align, and ROI pooling — object detection.
-* \[ ] Convolution and pooling backward if training is in scope.
+* \[x] Convolution and pooling backward if training is in scope — `conv2d` (data, weight, bias),
+`max_pool2d` and `avg_pool2d`, with CPU autograd.
 
 ### Normalization
 

@@ -87,4 +87,35 @@ inline std::vector<float> max_pool2d_backward(const std::vector<float>& grad_y,
     return result;
 }
 
+// count_include_pad = true: every window is divided by its full size kh * kw, padding included.
+inline std::vector<float> avg_pool2d(const std::vector<float>& x, const Pool2dSizes& s) {
+    std::vector<double> sums(static_cast<std::size_t>(s.y_size()), 0.0);
+    for_each_window_cell(s, [&](std::int64_t plane, std::int64_t out, std::int64_t ih,
+                                std::int64_t iw) {
+        sums[static_cast<std::size_t>(out)] +=
+            x[static_cast<std::size_t>((plane * s.h + ih) * s.w + iw)];
+    });
+    std::vector<float> result(sums.size());
+    for (std::size_t i = 0; i < sums.size(); ++i) {
+        result[i] = static_cast<float>(sums[i] / static_cast<double>(s.kh * s.kw));
+    }
+    return result;
+}
+
+// d(sum(avg_pool2d(x) * grad_y)) / dx, in double.
+inline std::vector<float> avg_pool2d_backward(const std::vector<float>& grad_y,
+                                              const Pool2dSizes& s) {
+    std::vector<double> gx(static_cast<std::size_t>(s.x_size()), 0.0);
+    for_each_window_cell(s, [&](std::int64_t plane, std::int64_t out, std::int64_t ih,
+                                std::int64_t iw) {
+        gx[static_cast<std::size_t>((plane * s.h + ih) * s.w + iw)] +=
+            grad_y[static_cast<std::size_t>(out)] / static_cast<double>(s.kh * s.kw);
+    });
+    std::vector<float> result(gx.size());
+    for (std::size_t i = 0; i < gx.size(); ++i) {
+        result[i] = static_cast<float>(gx[i]);
+    }
+    return result;
+}
+
 } // namespace reference

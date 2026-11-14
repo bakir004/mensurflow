@@ -96,7 +96,9 @@ enum class OpId {
     Conv2dBackwardWeight,
     Conv2dBackwardBias,
     MaxPool2d,
-    MaxPool2dBackward
+    MaxPool2dBackward,
+    AvgPool2d,
+    AvgPool2dBackward
 };
 
 const char* op_name(OpId op);

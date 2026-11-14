@@ -86,4 +86,19 @@ MaxPool2dResult max_pool2d(const Tensor& x, Size2d kernel_size, Size2d stride = 
 Tensor max_pool2d_backward(const Tensor& grad_output, const Tensor& indices,
                            const Shape& input_shape, Execution execution = Execution::Auto);
 
+// Average pooling: the sum of each window's input cells divided by kH * kW. Padded cells count in
+// the divisor as zeros (PyTorch's default count_include_pad = true), so a window that overlaps the
+// padding averages to less than the mean of its input cells. ceil_mode is false, so no window
+// reaches past the padding and the divisor is always kH * kW. The window sum is accumulated in
+// double. Records autograd for x; the backward pass is avg_pool2d_backward.
+Tensor avg_pool2d(const Tensor& x, Size2d kernel_size, Size2d stride = {0, 0},
+                  Size2d padding = {0, 0}, Execution execution = Execution::Auto);
+
+// The gradient of avg_pool2d with respect to an input of shape input_shape [N, C, H, W]: each
+// element of grad_output divided by kH * kW and added to every input cell of its window
+// (overlapping windows add up). Pass the same kernel_size, stride and padding as the forward call.
+Tensor avg_pool2d_backward(const Tensor& grad_output, const Shape& input_shape,
+                           Size2d kernel_size, Size2d stride = {0, 0}, Size2d padding = {0, 0},
+                           Execution execution = Execution::Auto);
+
 } // namespace mensurflow

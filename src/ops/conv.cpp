@@ -315,4 +315,38 @@ Tensor max_pool2d_backward(const Tensor& grad_output, const Tensor& indices,
     return out;
 }
 
+Tensor avg_pool2d(const Tensor& x, Size2d kernel_size, Size2d stride, Size2d padding,
+                  Execution execution) {
+    const std::string op = "avg_pool2d";
+    require_tensor(x, op, "x", 4);
+    const PoolWindow window = pool_window(kernel_size, stride, padding, op);
+    Tensor out = Tensor::empty(pool_output_shape(x.shape(), window, op), x.dtype(), x.device());
+    detail::dispatch(detail::OpId::AvgPool2d, pool_args({x.contiguous()}, {out}, window),
+                     execution);
+    if (x.requires_grad()) {
+        detail::AutogradAccess::record(
+            out, {x}, [x, window, execution](const Tensor& gradient) {
+                detail::autograd::NoGradGuard guard;
+                detail::autograd::propagate(
+                    x, avg_pool2d_backward(gradient, x.shape(), window.kernel, window.stride,
+                                           window.padding, execution));
+            });
+    }
+    return out;
+}
+
+Tensor avg_pool2d_backward(const Tensor& grad_output, const Shape& input_shape,
+                           Size2d kernel_size, Size2d stride, Size2d padding,
+                           Execution execution) {
+    const std::string op = "avg_pool2d_backward";
+    require_tensor(grad_output, op, "grad_output", 4);
+    require_shape(input_shape, op, "input_shape");
+    const PoolWindow window = pool_window(kernel_size, stride, padding, op);
+    require_grad_shape(grad_output, pool_output_shape(input_shape, window, op), op);
+    Tensor out = Tensor::empty(input_shape, grad_output.dtype(), grad_output.device());
+    detail::dispatch(detail::OpId::AvgPool2dBackward,
+                     pool_args({grad_output.contiguous()}, {out}, window), execution);
+    return out;
+}
+
 } // namespace mensurflow
