@@ -174,6 +174,10 @@ const char* op_name(OpId op) {
         return "avg_pool2d_backward";
     case OpId::Argmin:
         return "argmin";
+    case OpId::Var:
+        return "var";
+    case OpId::VarBackward:
+        return "var_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }

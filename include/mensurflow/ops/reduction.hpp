@@ -51,4 +51,23 @@ Tensor argmax(const Tensor& x, int axis = -1, Execution execution = Execution::A
 // Not differentiable. Only float32 input and CPU execution are supported so far.
 Tensor argmin(const Tensor& x, int axis = -1, Execution execution = Execution::Auto);
 
+// Variance along one axis (any axis; negative counts from the end), optionally keeping it as a
+// size-one dimension:
+//   var = sum((x - mean)^2) / (count - correction)
+// with count the size of the axis. correction = 1 (the default, as in PyTorch) is the unbiased
+// sample variance, correction = 0 the population variance; it must be >= 0. Computed in one pass
+// with Welford's algorithm (mean and M2 in double), so a large mean with a small spread does not
+// lose precision as sum(x^2) - count * mean^2 would.
+// When count - correction <= 0 (for example one element with correction 1, or an empty axis) the
+// result is NaN. A NaN or infinity among the reduced elements gives NaN. Records autograd for x;
+// the backward pass is var_backward.
+Tensor var(const Tensor& x, int axis, bool keepdim = false, std::int64_t correction = 1,
+           Execution execution = Execution::Auto);
+
+// The gradient of var(x, axis, keepdim, correction) with respect to x, given the gradient of its
+// output (with var's output shape): grad * 2 * (x - mean) / (count - correction); NaN where
+// count - correction <= 0.
+Tensor var_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim = false,
+                    std::int64_t correction = 1, Execution execution = Execution::Auto);
+
 } // namespace mensurflow

@@ -1,9 +1,11 @@
-// Naive double-precision references for full-tensor reductions.
+// Naive double-precision references for reductions.
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace reference {
 
@@ -47,6 +49,81 @@ inline float max(const float* x, std::int64_t n) {
 }
 
 inline double tolerance(const ReductionResult& result) { return 2e-4 * result.magnitude + 1e-30; }
+
+// Variance along `axis` of a row-major tensor, by the two-pass formula in double: the mean first,
+// then the sum of squared deviations divided by (count - correction); NaN when that is <= 0.
+// Returns one value per output position, in row-major order of the reduced shape.
+inline std::vector<double> var_axis(const std::vector<float>& x,
+                                    const std::vector<std::int64_t>& shape, int axis,
+                                    std::int64_t correction) {
+    std::int64_t outer = 1, inner = 1;
+    for (int d = 0; d < axis; ++d) {
+        outer *= shape[static_cast<std::size_t>(d)];
+    }
+    for (std::size_t d = static_cast<std::size_t>(axis) + 1; d < shape.size(); ++d) {
+        inner *= shape[d];
+    }
+    const std::int64_t width = shape[static_cast<std::size_t>(axis)];
+    std::vector<double> out;
+    for (std::int64_t o = 0; o < outer; ++o) {
+        for (std::int64_t i = 0; i < inner; ++i) {
+            auto at = [&](std::int64_t r) {
+                return static_cast<double>(
+                    x[static_cast<std::size_t>((o * width + r) * inner + i)]);
+            };
+            double sum = 0.0;
+            for (std::int64_t r = 0; r < width; ++r) {
+                sum += at(r);
+            }
+            const double mean = sum / static_cast<double>(width);
+            double squares = 0.0;
+            for (std::int64_t r = 0; r < width; ++r) {
+                squares += (at(r) - mean) * (at(r) - mean);
+            }
+            out.push_back(width - correction > 0
+                              ? squares / static_cast<double>(width - correction)
+                              : std::numeric_limits<double>::quiet_NaN());
+        }
+    }
+    return out;
+}
+
+// d(sum(var_axis(x) * grad)) / dx = grad * 2 * (x - mean) / (count - correction), by the two-pass
+// mean in double.
+inline std::vector<double> var_axis_backward(const std::vector<float>& x,
+                                             const std::vector<std::int64_t>& shape, int axis,
+                                             std::int64_t correction,
+                                             const std::vector<float>& grad) {
+    std::int64_t outer = 1, inner = 1;
+    for (int d = 0; d < axis; ++d) {
+        outer *= shape[static_cast<std::size_t>(d)];
+    }
+    for (std::size_t d = static_cast<std::size_t>(axis) + 1; d < shape.size(); ++d) {
+        inner *= shape[d];
+    }
+    const std::int64_t width = shape[static_cast<std::size_t>(axis)];
+    std::vector<double> gx(x.size());
+    for (std::int64_t o = 0; o < outer; ++o) {
+        for (std::int64_t i = 0; i < inner; ++i) {
+            auto index = [&](std::int64_t r) {
+                return static_cast<std::size_t>((o * width + r) * inner + i);
+            };
+            double sum = 0.0;
+            for (std::int64_t r = 0; r < width; ++r) {
+                sum += x[index(r)];
+            }
+            const double mean = sum / static_cast<double>(width);
+            const double g = grad[static_cast<std::size_t>(o * inner + i)];
+            for (std::int64_t r = 0; r < width; ++r) {
+                gx[index(r)] = width - correction > 0
+                                   ? g * 2.0 * (x[index(r)] - mean) /
+                                         static_cast<double>(width - correction)
+                                   : std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+    }
+    return gx;
+}
 
 // Index of the smallest of x[0..n): the first NaN if there is one, otherwise the first index
 // holding the minimum. n > 0.

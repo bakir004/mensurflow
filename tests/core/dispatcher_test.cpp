@@ -68,7 +68,8 @@ void test_registry() {
                     OpId::DropoutBackward, OpId::Embedding, OpId::EmbeddingBackward,
                     OpId::Conv2d, OpId::Conv2dBackwardData, OpId::Conv2dBackwardWeight,
                     OpId::Conv2dBackwardBias, OpId::MaxPool2d, OpId::MaxPool2dBackward,
-                    OpId::AvgPool2d, OpId::AvgPool2dBackward, OpId::Argmin}) {
+                    OpId::AvgPool2d, OpId::AvgPool2dBackward, OpId::Argmin, OpId::Var,
+                    OpId::VarBackward}) {
         test::require(registry.dispatcher().find({op, DeviceType::CPU, DType::F32}) != nullptr,
                       std::string("cpu ") + op_name(op) + " is registered");
     }

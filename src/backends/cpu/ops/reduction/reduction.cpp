@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace mensurflow::cpu {
@@ -290,6 +291,81 @@ void argmax_f32(const float* x, std::int64_t* out, std::int64_t rows, std::int64
             }
         }
         out[row] = best;
+    }
+}
+
+namespace {
+
+// x viewed as [outer, width, inner] around the reduced axis.
+struct AxisLayout {
+    std::int64_t outer = 1, width = 1, inner = 1;
+};
+
+AxisLayout axis_layout(const std::int64_t* shape, std::int64_t rank, std::int64_t axis) {
+    AxisLayout layout;
+    for (std::int64_t d = 0; d < axis; ++d) {
+        layout.outer *= shape[d];
+    }
+    for (std::int64_t d = axis + 1; d < rank; ++d) {
+        layout.inner *= shape[d];
+    }
+    layout.width = shape[axis];
+    return layout;
+}
+
+struct Moments {
+    double mean = 0.0;
+    double m2 = 0.0; // sum of squared deviations from the mean
+};
+
+// Welford's one-pass update over `count` elements `stride` apart: each new value moves the mean
+// by its deviation / k and adds deviation * (value - new mean) to M2. Unlike sum(x^2) - n mean^2
+// it never subtracts two large, nearly equal numbers, so a large mean costs no precision.
+Moments welford(const float* start, std::int64_t count, std::int64_t stride) {
+    Moments m;
+    for (std::int64_t k = 0; k < count; ++k) {
+        const double value = static_cast<double>(start[k * stride]);
+        const double delta = value - m.mean;
+        m.mean += delta / static_cast<double>(k + 1);
+        m.m2 += delta * (value - m.mean);
+    }
+    return m;
+}
+
+// count - correction, or 0 when that is not positive (the result is then NaN).
+double variance_divisor(std::int64_t count, std::int64_t correction) {
+    return count - correction > 0 ? static_cast<double>(count - correction) : 0.0;
+}
+
+constexpr double quiet_nan = std::numeric_limits<double>::quiet_NaN();
+
+} // namespace
+
+void var_axis_f32_sequential(const float* x, float* out, const std::int64_t* shape,
+                             std::int64_t rank, std::int64_t axis, std::int64_t correction) {
+    const AxisLayout l = axis_layout(shape, rank, axis);
+    const double divisor = variance_divisor(l.width, correction);
+    for (std::int64_t index = 0; index < l.outer * l.inner; ++index) {
+        const float* start = x + (index / l.inner) * l.width * l.inner + index % l.inner;
+        const Moments m = welford(start, l.width, l.inner);
+        out[index] = static_cast<float>(divisor > 0.0 ? m.m2 / divisor : quiet_nan);
+    }
+}
+
+void var_backward_f32_sequential(const float* x, const float* grad, float* grad_x,
+                                 const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                                 std::int64_t correction) {
+    const AxisLayout l = axis_layout(shape, rank, axis);
+    const double divisor = variance_divisor(l.width, correction);
+    for (std::int64_t index = 0; index < l.outer * l.inner; ++index) {
+        const std::int64_t offset = (index / l.inner) * l.width * l.inner + index % l.inner;
+        const Moments m = welford(x + offset, l.width, l.inner);
+        const double scale =
+            divisor > 0.0 ? 2.0 * static_cast<double>(grad[index]) / divisor : quiet_nan;
+        for (std::int64_t r = 0; r < l.width; ++r) {
+            const std::int64_t i = offset + r * l.inner;
+            grad_x[i] = static_cast<float>(scale * (static_cast<double>(x[i]) - m.mean));
+        }
     }
 }
 

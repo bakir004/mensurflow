@@ -58,4 +58,18 @@ void argmax_f32(const float* x, std::int64_t* out, std::int64_t rows, std::int64
 void argmin_f32_sequential(const float* x, std::int64_t* out, std::int64_t rows,
                            std::int64_t width);
 
+// Variance along one axis (shape, rank and axis as in sum_axis_f32), in one pass with Welford's
+// update (mean and M2 kept in double): out = M2 / (count - correction), where count is the axis
+// size. count - correction <= 0 (including an empty axis) gives NaN; a NaN or infinity in the
+// reduced elements gives NaN. Sequential: the baseline for a later parallel version.
+void var_axis_f32_sequential(const float* x, float* out, const std::int64_t* shape,
+                             std::int64_t rank, std::int64_t axis, std::int64_t correction);
+
+// grad_x = grad * 2 * (x - mean) / (count - correction), with grad the [outer, inner] gradient of
+// var_axis_f32_sequential's output (keepdim does not change its layout) and the mean recomputed
+// with the same Welford pass. NaN where count - correction <= 0. Overwrites grad_x (x's shape).
+void var_backward_f32_sequential(const float* x, const float* grad, float* grad_x,
+                                 const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                                 std::int64_t correction);
+
 } // namespace mensurflow::cpu

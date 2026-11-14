@@ -99,7 +99,9 @@ enum class OpId {
     MaxPool2dBackward,
     AvgPool2d,
     AvgPool2dBackward,
-    Argmin
+    Argmin,
+    Var,
+    VarBackward
 };
 
 const char* op_name(OpId op);
@@ -134,6 +136,8 @@ struct OpArgs {
     std::vector<std::int64_t> stride{};
     // Pooling: the window size {kernel_h, kernel_w} (conv2d takes it from the weight's shape).
     std::vector<std::int64_t> kernel_size{};
+    // var and std: the divisor is (count - correction); 0 is the population variance.
+    std::int64_t correction = 1;
     // Counter-based random generation: offset counts output elements, not threads.
     std::uint64_t seed = 0;
     std::uint64_t offset = 0;

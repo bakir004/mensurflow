@@ -36,7 +36,7 @@ dispatcher where to run. CPU kernels are in
 `src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
-by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`, `argmin`) have only a `*_sequential` kernel so far: it is the correctness baseline the
+by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`, `argmin`, `var`) have only a `*_sequential` kernel so far: it is the correctness baseline the
 parallel version will be tested and benchmarked against.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
@@ -53,6 +53,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
 |`argmin`|sequential only (`*_sequential`); last-axis float32 input with int64 output; argmax's rules (ties select the first index, the first NaN wins); forward only (not differentiable)|—|—|
+|`var`|sequential only (`*_sequential`), float32, any axis with `keepdim`; one-pass Welford in double; `correction` (default 1); NaN when `count - correction <= 0`; forward, backward and CPU autograd; see [CPU variance and standard deviation](#cpu-variance-and-standard-deviation)|—|—|
 |`matmul`|packed AVX2/FMA GEMM on our own thread pool (scalar fallback without AVX2); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|—|
 |`gemm`|alpha, beta and transposes|—|—|
 |`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|
@@ -216,6 +217,33 @@ packed before the kernel runs.
 * Tests: `tests/ops/avg_pool2d_test.cpp` against `tests/reference/pooling.hpp`, including the
   divisor convention and a finite-difference check.
 
+## CPU variance and standard deviation
+
+Declared in `include/mensurflow/ops/reduction.hpp`, kernels in
+`src/backends/cpu/ops/reduction/`. Float32, CPU, sequential kernels only so far.
+
+**`var(x, axis, keepdim = false, correction = 1)`**
+
+* Along any one axis (negative counts from the end); `keepdim` keeps it as a size-one dimension.
+  There is no whole-tensor overload yet; reshape to 1-D for that.
+* `var = sum((x - mean)^2) / (count - correction)`, `count` the size of the axis. `correction = 1`
+  (the default, as in PyTorch) is the unbiased sample variance, `correction = 0` the population
+  variance; negative values are rejected.
+* **`count - correction <= 0` gives NaN**: one element with the default correction, a correction at
+  or above the count, and any empty axis (even with `correction = 0`). The gradient is NaN there
+  too. (PyTorch gives NaN or inf here depending on the case; we always give NaN.)
+* One pass with Welford's update, mean and M2 in double, so a large mean with a small spread keeps
+  its precision: on `1e8 + 8 * {0, 1, 2, 3}` (1000 values) the naive `sum(x^2) - n * mean^2` in
+  double is off by 0.16% and in float32 is meaningless, while Welford matches the exact 80.08 to
+  float precision (`test_var_large_mean`).
+* A NaN or infinity among the reduced elements gives NaN; a constant row gives exactly 0.
+* `var_backward(grad_output, x, axis, keepdim, correction)` = `grad * 2 * (x - mean) /
+  (count - correction)`, with the mean recomputed by the same Welford pass. The forward op records
+  autograd with it.
+* Tests: `tests/ops/var_std_test.cpp` against a two-pass double reference
+  (`tests/reference/reduction.hpp`) for every axis, `keepdim` and `correction` in {0, 1, 2}, plus
+  finite differences, views, empty shapes and errors.
+
 ## P0 — Minimum useful dense inference library
 
 This is the first implementation target: linear regression, logistic regression,
@@ -330,7 +358,9 @@ first NaN of a row is selected (CPU, float32 input, int64 output, sequential ker
 * \[ ] L1/L2 norms, with explicit axes.
 * \[ ] Lp normalization, e.g. L2 `x / ||x||` — embedding and retrieval models.
 * \[ ] Variance and standard deviation; specify population/sample convention and
-use a numerically stable algorithm where practical.
+use a numerically stable algorithm where practical. Variance done (`var`, Welford, `correction`
+default 1; see [CPU variance and standard deviation](#cpu-variance-and-standard-deviation));
+standard deviation remains.
 * \[x] Batched `matmul` (`gemm_strided_batched`), with NumPy-style batch broadcasting.
 * \[x] `outer(x, y)` — outer product, as `ger(1, x, y)`; also appears in gradient formulas.
 * \[ ] `einsum` — lowered to permute, reshape, and batched GEMM.
