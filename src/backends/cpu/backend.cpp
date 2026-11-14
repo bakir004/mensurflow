@@ -305,9 +305,10 @@ cpu::Pool2dShape pool2d_shape(const Shape& input, const OpArgs& args) {
 // Input x; outputs y (F32) and indices (I64).
 void max_pool2d_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
-    cpu::max_pool2d_f32_sequential(data<float>(x), data<float>(args.outputs[0]),
-                                   data<std::int64_t>(args.outputs[1]),
-                                   pool2d_shape(x.shape(), args));
+    const auto kernel =
+        use_parallel ? cpu::max_pool2d_f32_parallel : cpu::max_pool2d_f32_sequential;
+    kernel(data<float>(x), data<float>(args.outputs[0]), data<std::int64_t>(args.outputs[1]),
+           pool2d_shape(x.shape(), args));
 }
 
 // Inputs grad_y and indices (both of the output's shape); the output has the input's shape. The
@@ -322,9 +323,9 @@ void max_pool2d_backward_kernel(const OpArgs& args, Stream&) {
     s.w = grad_x.size(3);
     s.h_out = grad_y.size(2);
     s.w_out = grad_y.size(3);
-    cpu::max_pool2d_backward_f32_sequential(data<float>(grad_y),
-                                            data<std::int64_t>(args.inputs[1]),
-                                            data<float>(grad_x), s);
+    const auto kernel = use_parallel ? cpu::max_pool2d_backward_f32_parallel
+                                     : cpu::max_pool2d_backward_f32_sequential;
+    kernel(data<float>(grad_y), data<std::int64_t>(args.inputs[1]), data<float>(grad_x), s);
 }
 
 void avg_pool2d_kernel(const OpArgs& args, Stream&) {

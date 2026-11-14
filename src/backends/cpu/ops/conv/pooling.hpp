@@ -41,4 +41,22 @@ void avg_pool2d_f32_sequential(const float* x, float* y, const Pool2dShape& s);
 // window (overlapping windows add up; padding cells take no gradient). Overwrites grad_x.
 void avg_pool2d_backward_f32_sequential(const float* grad_y, float* grad_x, const Pool2dShape& s);
 
+// ---- Parallel versions ---------------------------------------------------------------------
+//
+// The same bits as the sequential versions at every thread count: every output element (and every
+// gradient cell) is computed by one task, with the same operations in the same order.
+
+// Window cells (output elements times kh * kw) below which the parallel versions stay on one
+// thread.
+constexpr std::int64_t pool2d_parallel_cutoff = std::int64_t{1} << 15;
+
+// One task per (plane, output row), so a few large planes still use every thread.
+void max_pool2d_f32_parallel(const float* x, float* y, std::int64_t* indices,
+                             const Pool2dShape& s);
+
+// One task per plane: each plane's scatter runs on one thread in the sequential order, so no two
+// threads write the same cell and any in-plane index is handled exactly as sequentially.
+void max_pool2d_backward_f32_parallel(const float* grad_y, const std::int64_t* indices,
+                                      float* grad_x, const Pool2dShape& s);
+
 } // namespace mensurflow::cpu

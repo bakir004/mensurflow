@@ -1,6 +1,8 @@
 // max_pool2d forward and backward against the direct reference in tests/reference/pooling.hpp:
 // values, indices, tie and NaN rules, padding, a finite-difference check of the gradient,
 // autograd, views, empty shapes and errors.
+#include "backends/cpu/ops/conv/pooling.hpp"
+#include "backends/cpu/threads.hpp"
 #include "gradient_check.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/pooling.hpp"
@@ -266,10 +268,73 @@ void test_errors() {
                             "negative index");
 }
 
+cpu::Pool2dShape kernel_shape(const Pool2dSizes& p) {
+    cpu::Pool2dShape s;
+    s.n = p.n;
+    s.c = p.c;
+    s.h = p.h;
+    s.w = p.w;
+    s.kh = p.kh;
+    s.kw = p.kw;
+    s.stride_h = p.stride_h;
+    s.stride_w = p.stride_w;
+    s.pad_h = p.pad_h;
+    s.pad_w = p.pad_w;
+    s.h_out = p.h_out();
+    s.w_out = p.w_out();
+    return s;
+}
+
+// The parallel kernels give exactly the sequential results (values, indices and gradients) at
+// every thread count, around the cutoff and for few large or many small planes.
+void test_parallel() {
+    const std::vector<Pool2dSizes> sizes = {
+        // 2x2/2 on one plane: 127, 128 and 129 output rows of 128 windows of 4 cells, around
+        // the point where the work first splits (2 * 2^15 cells).
+        {1, 1, 254, 256, 2, 2, 2, 2, 0, 0},
+        {1, 1, 256, 256, 2, 2, 2, 2, 0, 0},
+        {1, 1, 258, 256, 2, 2, 2, 2, 0, 0},
+        {1, 3, 224, 224, 3, 3, 2, 2, 1, 1}, // few large planes
+        {2, 64, 57, 55, 3, 3, 2, 2, 1, 1},  // ResNet stem pool, odd sizes
+        {32, 3, 30, 30, 2, 2, 2, 2, 0, 0},
+        {2, 512, 7, 7, 7, 7, 7, 7, 0, 0},   // global pooling
+        {3, 5, 17, 13, 4, 3, 1, 2, 2, 1},   // overlapping windows
+    };
+    const int original = cpu::max_threads();
+    for (const Pool2dSizes& p : sizes) {
+        const cpu::Pool2dShape s = kernel_shape(p);
+        auto x = test::random_values(p.x_size(), 71);
+        for (float& value : x) {
+            value = std::round(value * 8.0f); // ties
+        }
+        x[x.size() / 3] = std::numeric_limits<float>::quiet_NaN();
+        const auto gy = test::random_values(p.y_size(), 72);
+        const auto outputs = static_cast<std::size_t>(p.y_size());
+        std::vector<float> y_seq(outputs), gx_seq(static_cast<std::size_t>(p.x_size()));
+        std::vector<std::int64_t> i_seq(outputs);
+        cpu::max_pool2d_f32_sequential(x.data(), y_seq.data(), i_seq.data(), s);
+        cpu::max_pool2d_backward_f32_sequential(gy.data(), i_seq.data(), gx_seq.data(), s);
+        for (int threads : {1, 2, 3, 7, original}) {
+            cpu::set_max_threads(threads);
+            const std::string label = "parallel max_pool2d " + to_string(x_shape(p)) + ", " +
+                                      std::to_string(threads) + " threads";
+            std::vector<float> y(outputs), gx(gx_seq.size());
+            std::vector<std::int64_t> idx(outputs);
+            cpu::max_pool2d_f32_parallel(x.data(), y.data(), idx.data(), s);
+            cpu::max_pool2d_backward_f32_parallel(gy.data(), idx.data(), gx.data(), s);
+            test::require(test::matches_f32(y, y_seq), label + ": values");
+            require_indices(idx, i_seq, label + ": indices");
+            test::require(test::matches_f32(gx, gx_seq), label + ": gradient");
+        }
+    }
+    cpu::set_max_threads(original);
+}
+
 } // namespace
 
 int main() {
     return test::run("max_pool2d_test", [] {
+        test_parallel();
         for (const Case& c : cases) {
             test_against_reference(c);
         }
