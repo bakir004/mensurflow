@@ -1,6 +1,7 @@
 // conv2d forward and backward against the direct-loop reference in tests/reference/conv.hpp, a
 // finite-difference check of every gradient, autograd, views, empty shapes and errors.
 #include "backends/cpu/ops/conv/conv2d.hpp"
+#include "backends/cpu/threads.hpp"
 #include "gradient_check.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/conv.hpp"
@@ -321,10 +322,127 @@ void test_partial_autograd() {
                         tolerance(s.n * s.h_out() * s.w_out()), 0.0, "weight-only autograd");
 }
 
+cpu::Conv2dShape kernel_shape(const Conv2dSizes& c) {
+    cpu::Conv2dShape s;
+    s.n = c.n;
+    s.c_in = c.c_in;
+    s.h = c.h;
+    s.w = c.w;
+    s.c_out = c.c_out;
+    s.kh = c.kh;
+    s.kw = c.kw;
+    s.stride_h = c.stride_h;
+    s.stride_w = c.stride_w;
+    s.pad_h = c.pad_h;
+    s.pad_w = c.pad_w;
+    s.h_out = c.h_out();
+    s.w_out = c.w_out();
+    return s;
+}
+
+std::int64_t multiply_adds(const Conv2dSizes& c) {
+    return c.n * c.c_out * c.c_in * c.kh * c.kw * c.h_out() * c.w_out();
+}
+
+// The four outputs of one convolution: y, grad_x, grad_weight, grad_bias.
+struct Results {
+    std::vector<float> y, gx, gw, gb;
+};
+
+template <typename Forward, typename Data, typename Weight, typename Bias>
+Results run_kernels(const Conv2dSizes& c, Forward forward, Data data, Weight weight, Bias bias) {
+    const cpu::Conv2dShape s = kernel_shape(c);
+    const auto x = test::random_values(c.x_size(), 61);
+    const auto w = test::random_values(c.weight_size(), 62);
+    const auto b = test::random_values(c.c_out, 63);
+    const auto gy = test::random_values(c.y_size(), 64);
+    Results r{std::vector<float>(static_cast<std::size_t>(c.y_size())),
+              std::vector<float>(static_cast<std::size_t>(c.x_size())),
+              std::vector<float>(static_cast<std::size_t>(c.weight_size())),
+              std::vector<float>(static_cast<std::size_t>(c.c_out))};
+    forward(x.data(), w.data(), b.data(), r.y.data(), s);
+    data(gy.data(), w.data(), r.gx.data(), s);
+    weight(gy.data(), x.data(), r.gw.data(), s);
+    bias(gy.data(), r.gb.data(), s);
+    return r;
+}
+
+void require_same_bits(const Results& a, const Results& b, const std::string& label) {
+    test::require(test::matches_f32(a.y, b.y) && test::matches_f32(a.gx, b.gx) &&
+                      test::matches_f32(a.gw, b.gw) && test::matches_f32(a.gb, b.gb),
+                  label + ": results differ in their bits");
+}
+
+// The parallel kernels against the sequential ones, at several thread counts and around the
+// cutoff; every thread count must give the same bits as one thread.
+void test_parallel() {
+    const std::vector<Conv2dSizes> sizes = {
+        // Below, at and above the cutoff of 2^20 multiply-adds: 16 * 16 * 64 * {63, 64, 65}.
+        {1, 16, 64, 63, 16, 1, 1, 1, 1, 0, 0},
+        {1, 16, 64, 64, 16, 1, 1, 1, 1, 0, 0},
+        {1, 16, 64, 65, 16, 1, 1, 1, 1, 0, 0},
+        {2, 8, 32, 32, 8, 2, 2, 1, 1, 0, 0},
+        // ResNet-like layers, odd sizes and strides.
+        {4, 16, 23, 19, 24, 3, 3, 1, 1, 1, 1},
+        {3, 3, 41, 37, 16, 7, 7, 2, 2, 3, 3},
+        {8, 32, 9, 9, 40, 3, 3, 2, 1, 1, 0},
+        {1, 64, 14, 14, 64, 1, 1, 1, 1, 0, 0}, // pointwise, one image
+        {8, 32, 10, 12, 48, 1, 1, 1, 1, 0, 0}, // pointwise, several images
+        // A weight gradient of 256 * 1152 floats: one product per chunk rather than groups.
+        {2, 128, 6, 6, 256, 3, 3, 1, 1, 1, 1},
+        {30, 4, 12, 11, 6, 3, 3, 1, 1, 1, 1}, // more images than weight groups
+        // Several chunks of the batch: 108 * 28900 floats of columns per image, two images per chunk.
+        {5, 12, 170, 170, 3, 3, 3, 1, 1, 1, 1},
+    };
+    const int original = cpu::max_threads();
+    for (const Conv2dSizes& c : sizes) {
+        const std::string label = "parallel conv2d " + to_string(x_shape(c)) + " * " +
+                                  to_string(weight_shape(c)) + ", " +
+                                  std::to_string(multiply_adds(c)) + " multiply-adds";
+        const Results sequential = run_kernels(
+            c, cpu::conv2d_f32_sequential, cpu::conv2d_backward_data_f32_sequential,
+            cpu::conv2d_backward_weight_f32_sequential, cpu::conv2d_backward_bias_f32_sequential);
+        Results one_thread;
+        for (int threads : {1, 2, 3, 7, original}) {
+            cpu::set_max_threads(threads);
+            for (cpu::Conv2dStrategy strategy :
+                 {cpu::Conv2dStrategy::Auto, cpu::Conv2dStrategy::Folded,
+                  cpu::Conv2dStrategy::ImagePerThread}) {
+                const Results parallel = run_kernels(
+                    c,
+                    [strategy](const float* x, const float* w, const float* b, float* y,
+                               const cpu::Conv2dShape& s) {
+                        cpu::conv2d_f32_parallel(x, w, b, y, s, strategy);
+                    },
+                    cpu::conv2d_backward_data_f32_parallel,
+                    cpu::conv2d_backward_weight_f32_parallel,
+                    cpu::conv2d_backward_bias_f32_parallel);
+                const std::string at = label + ", " + std::to_string(threads) + " threads, strategy " +
+                                       std::to_string(static_cast<int>(strategy));
+                test::require_close(parallel.y, sequential.y,
+                                    tolerance(c.c_in * c.kh * c.kw), 0.0, at + ": forward");
+                test::require_close(parallel.gx, sequential.gx,
+                                    tolerance(c.c_out * c.kh * c.kw), 0.0, at + ": data");
+                test::require_close(parallel.gw, sequential.gw,
+                                    tolerance(c.n * c.h_out() * c.w_out()), 0.0, at + ": weight");
+                test::require_close(parallel.gb, sequential.gb, 1e-6, 1e-6, at + ": bias");
+                if (threads == 1 && strategy == cpu::Conv2dStrategy::Auto) {
+                    one_thread = parallel;
+                } else {
+                    // Every thread count and both strategies give the bits of one thread.
+                    require_same_bits(parallel, one_thread, at);
+                }
+            }
+        }
+    }
+    cpu::set_max_threads(original);
+}
+
 } // namespace
 
 int main() {
     return test::run("conv2d_test", [] {
+        test_parallel();
         test_im2col_adjoint();
         for (const Case& c : cases) {
             test_against_reference(c);

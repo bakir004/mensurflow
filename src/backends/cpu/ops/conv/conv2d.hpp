@@ -51,4 +51,54 @@ void conv2d_backward_weight_f32_sequential(const float* grad_y, const float* x, 
 void conv2d_backward_bias_f32_sequential(const float* grad_y, float* grad_bias,
                                          const Conv2dShape& s);
 
+// ---- Parallel versions ---------------------------------------------------------------------
+//
+// Same results as the sequential versions up to float rounding, and the same bits at every thread
+// count. Below conv2d_parallel_cutoff multiply-adds they run the per-image code on the calling
+// thread (no threads, but the reused buffers and the faster im2col). A 1x1
+// kernel with stride 1 and no padding skips im2col: the image is the column matrix. Temporary
+// buffers are kept per thread between calls (they only grow; at most about 3 x 32 MB).
+
+// How the forward pass spreads its work over threads.
+enum class Conv2dStrategy {
+    // Chooses one of the two below from the shape (see conv2d.cpp).
+    Auto,
+    // A chunk of the batch at a time (bounded by conv2d_column_budget floats): im2col of all its
+    // images into one matrix [K, chunk * h_out * w_out] in parallel, then one large product on
+    // all threads, then the result copied into NCHW order.
+    Folded,
+    // Whole images per thread: each thread runs im2col and the single-threaded product for its
+    // own images, with its own column buffer. No synchronization inside an image.
+    ImagePerThread,
+};
+
+// Multiply-adds below which the parallel versions stay on the calling thread.
+constexpr std::int64_t conv2d_parallel_cutoff = std::int64_t{1} << 20;
+
+// The largest column matrix the folded strategy builds, in floats (32 MB): the batch is processed
+// in chunks of as many images as fit (at least one).
+constexpr std::int64_t conv2d_column_budget = std::int64_t{1} << 23;
+
+void conv2d_f32_parallel(const float* x, const float* weight, const float* bias, float* y,
+                         const Conv2dShape& s, Conv2dStrategy strategy = Conv2dStrategy::Auto);
+
+// With at least one image per thread, whole images per task (product on one thread, then
+// col2im); otherwise per chunk of the batch, weight^T * grad_y as one product on all threads,
+// then col2im with one task per (image, input channel) plane. Either way no two threads write the
+// same cell of grad_x, and both give the same bits.
+void conv2d_backward_data_f32_parallel(const float* grad_y, const float* weight, float* grad_x,
+                                       const Conv2dShape& s);
+
+// A small gradient (c_out * K below 2^18 floats): fixed groups of images, each group summed on one
+// thread into its own partial matrix, the partials added in group order. Otherwise per chunk of
+// the batch, one product of depth chunk * h_out * w_out (the batch folded into the depth) on all
+// threads, added chunk after chunk. The choice and the groups depend only on the shape; no
+// atomics anywhere.
+void conv2d_backward_weight_f32_parallel(const float* grad_y, const float* x, float* grad_weight,
+                                         const Conv2dShape& s);
+
+// One task per output channel.
+void conv2d_backward_bias_f32_parallel(const float* grad_y, float* grad_bias,
+                                       const Conv2dShape& s);
+
 } // namespace mensurflow::cpu

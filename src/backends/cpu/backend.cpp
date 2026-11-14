@@ -240,27 +240,34 @@ void conv2d_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
     const Tensor& weight = args.inputs[1];
     const float* bias = args.inputs.size() > 2 ? data<float>(args.inputs[2]) : nullptr;
-    cpu::conv2d_f32_sequential(data<float>(x), data<float>(weight), bias,
-                               data<float>(args.outputs[0]),
-                               conv2d_shape(x.shape(), weight.shape(), args));
+    const auto s = conv2d_shape(x.shape(), weight.shape(), args);
+    if (use_parallel) {
+        cpu::conv2d_f32_parallel(data<float>(x), data<float>(weight), bias,
+                                 data<float>(args.outputs[0]), s);
+    } else {
+        cpu::conv2d_f32_sequential(data<float>(x), data<float>(weight), bias,
+                                   data<float>(args.outputs[0]), s);
+    }
 }
 
 // Inputs: grad_y and weight; the output has the input's shape.
 void conv2d_backward_data_kernel(const OpArgs& args, Stream&) {
     const Tensor& weight = args.inputs[1];
     const Tensor& grad_x = args.outputs[0];
-    cpu::conv2d_backward_data_f32_sequential(data<float>(args.inputs[0]), data<float>(weight),
-                                             data<float>(grad_x),
-                                             conv2d_shape(grad_x.shape(), weight.shape(), args));
+    const auto kernel = use_parallel ? cpu::conv2d_backward_data_f32_parallel
+                                     : cpu::conv2d_backward_data_f32_sequential;
+    kernel(data<float>(args.inputs[0]), data<float>(weight), data<float>(grad_x),
+           conv2d_shape(grad_x.shape(), weight.shape(), args));
 }
 
 // Inputs: grad_y and x; the output has the weight's shape.
 void conv2d_backward_weight_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[1];
     const Tensor& grad_weight = args.outputs[0];
-    cpu::conv2d_backward_weight_f32_sequential(data<float>(args.inputs[0]), data<float>(x),
-                                               data<float>(grad_weight),
-                                               conv2d_shape(x.shape(), grad_weight.shape(), args));
+    const auto kernel = use_parallel ? cpu::conv2d_backward_weight_f32_parallel
+                                     : cpu::conv2d_backward_weight_f32_sequential;
+    kernel(data<float>(args.inputs[0]), data<float>(x), data<float>(grad_weight),
+           conv2d_shape(x.shape(), grad_weight.shape(), args));
 }
 
 // Input: grad_y [n, c_out, h_out, w_out]; output [c_out].
@@ -271,7 +278,9 @@ void conv2d_backward_bias_kernel(const OpArgs& args, Stream&) {
     s.c_out = grad_y.size(1);
     s.h_out = grad_y.size(2);
     s.w_out = grad_y.size(3);
-    cpu::conv2d_backward_bias_f32_sequential(data<float>(grad_y), data<float>(args.outputs[0]), s);
+    const auto kernel = use_parallel ? cpu::conv2d_backward_bias_f32_parallel
+                                     : cpu::conv2d_backward_bias_f32_sequential;
+    kernel(data<float>(grad_y), data<float>(args.outputs[0]), s);
 }
 
 // The pooling's sizes from the input's [n, c, h, w] shape, args.kernel_size, args.stride and
