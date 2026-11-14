@@ -293,4 +293,18 @@ void argmax_f32(const float* x, std::int64_t* out, std::int64_t rows, std::int64
     }
 }
 
+void argmin_f32_sequential(const float* x, std::int64_t* out, std::int64_t rows,
+                           std::int64_t width) {
+    for (std::int64_t row = 0; row < rows; ++row) {
+        const float* values = x + row * width;
+        std::int64_t best = 0;
+        for (std::int64_t i = 1; i < width && !std::isnan(values[best]); ++i) {
+            if (std::isnan(values[i]) || values[i] < values[best]) {
+                best = i;
+            }
+        }
+        out[row] = best;
+    }
+}
+
 } // namespace mensurflow::cpu

@@ -48,4 +48,21 @@ inline float max(const float* x, std::int64_t n) {
 
 inline double tolerance(const ReductionResult& result) { return 2e-4 * result.magnitude + 1e-30; }
 
+// Index of the smallest of x[0..n): the first NaN if there is one, otherwise the first index
+// holding the minimum. n > 0.
+inline std::int64_t argmin(const float* x, std::int64_t n) {
+    for (std::int64_t i = 0; i < n; ++i) {
+        if (std::isnan(x[i])) {
+            return i;
+        }
+    }
+    std::int64_t best = 0;
+    for (std::int64_t i = 1; i < n; ++i) {
+        if (x[i] < x[best]) {
+            best = i;
+        }
+    }
+    return best;
+}
+
 } // namespace reference

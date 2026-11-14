@@ -52,4 +52,10 @@ void prod_axis_f32(const float* x, float* out, const std::int64_t* shape, std::i
 // index; a NaN picks the first NaN. width > 0.
 void argmax_f32(const float* x, std::int64_t* out, std::int64_t rows, std::int64_t width);
 
+// For each of `rows` rows of x[rows, width], the index of the smallest value, with argmax_f32's
+// rules: ties pick the first index; a NaN picks the first NaN. width > 0. Sequential: the
+// baseline for a later parallel version.
+void argmin_f32_sequential(const float* x, std::int64_t* out, std::int64_t rows,
+                           std::int64_t width);
+
 } // namespace mensurflow::cpu

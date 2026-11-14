@@ -98,7 +98,8 @@ enum class OpId {
     MaxPool2d,
     MaxPool2dBackward,
     AvgPool2d,
-    AvgPool2dBackward
+    AvgPool2dBackward,
+    Argmin
 };
 
 const char* op_name(OpId op);

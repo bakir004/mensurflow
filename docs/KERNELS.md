@@ -36,7 +36,7 @@ dispatcher where to run. CPU kernels are in
 `src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
-by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`) have only a `*_sequential` kernel so far: it is the correctness baseline the
+by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`, `argmin`) have only a `*_sequential` kernel so far: it is the correctness baseline the
 parallel version will be tested and benchmarked against.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
@@ -52,6 +52,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`matvec`|OpenMP, double accumulation per row|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
+|`argmin`|sequential only (`*_sequential`); last-axis float32 input with int64 output; argmax's rules (ties select the first index, the first NaN wins); forward only (not differentiable)|—|—|
 |`matmul`|packed AVX2/FMA GEMM on our own thread pool (scalar fallback without AVX2); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|—|
 |`gemm`|alpha, beta and transposes|—|—|
 |`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|
@@ -321,6 +322,8 @@ integer masks and unpacking int4 weights.
 ### Additional reductions and linear algebra
 
 * \[x] `min` and `prod`; `argmin`, `sum\_of\_squares`, `any`, and `all` remain.
+* \[x] `argmin(x, axis)` — last axis only, like `argmax`; ties select the first index and the
+first NaN of a row is selected (CPU, float32 input, int64 output, sequential kernel).
 * \[ ] `cumsum` along an axis — top-p sampling and state-space models.
 * \[ ] `logsumexp` as a standalone reduction.
 * \[ ] `sort` and `argsort`, with defined tie and stability rules.

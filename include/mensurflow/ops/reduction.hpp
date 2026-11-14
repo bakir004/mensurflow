@@ -44,4 +44,11 @@ Tensor prod(const Tensor& x, int axis, bool keepdim = false, Execution execution
 // invalid. Only float32 input and CPU execution are supported so far.
 Tensor argmax(const Tensor& x, int axis = -1, Execution execution = Execution::Auto);
 
+// Returns the index of the smallest element independently along the last axis, with argmax's
+// rules: only the last axis (axis -1 or dim - 1; others are invalid), ties select the first index,
+// and a NaN counts as the extreme value, so the first NaN of a row is selected. The result has the
+// input shape with its last dimension removed and dtype int64. Empty axes and scalars are invalid.
+// Not differentiable. Only float32 input and CPU execution are supported so far.
+Tensor argmin(const Tensor& x, int axis = -1, Execution execution = Execution::Auto);
+
 } // namespace mensurflow

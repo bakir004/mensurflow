@@ -575,6 +575,13 @@ void argmax_kernel(const OpArgs& args, Stream&) {
     cpu::argmax_f32(data<float>(x), data<std::int64_t>(args.outputs[0]), x.numel() / width, width);
 }
 
+void argmin_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const std::int64_t width = x.size(x.dim() - 1);
+    cpu::argmin_f32_sequential(data<float>(x), data<std::int64_t>(args.outputs[0]),
+                               x.numel() / width, width);
+}
+
 class CpuBackend final : public Backend {
   public:
     DeviceType type() const override { return DeviceType::CPU; }
@@ -661,6 +668,7 @@ class CpuBackend final : public Backend {
         add(OpId::AxisMin, axis_reduce_kernel<min_axis_f32>);
         add(OpId::AxisProd, axis_reduce_kernel<prod_axis_f32>);
         add(OpId::Argmax, argmax_kernel);
+        add(OpId::Argmin, argmin_kernel);
 
         add(OpId::Ger, ger_kernel);
         add(OpId::GemmBatched, gemm_batched_kernel<gemm_batched_default>);

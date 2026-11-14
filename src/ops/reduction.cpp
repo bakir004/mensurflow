@@ -159,26 +159,40 @@ Tensor prod(const Tensor& x, int axis, bool keepdim, Execution execution) {
     return reduce_axis(detail::OpId::AxisProd, x, axis, keepdim, execution);
 }
 
-Tensor argmax(const Tensor& x, int axis, Execution execution) {
+namespace {
+
+// argmax and argmin: the same validation (last axis only, non-empty) and an I64 result.
+Tensor arg_reduce(detail::OpId op, const Tensor& x, int axis, Execution execution) {
+    const std::string name = detail::op_name(op);
     if (!x.defined()) {
-        throw std::invalid_argument("argmax: undefined tensor");
+        throw std::invalid_argument(name + ": undefined tensor");
     }
     if (x.dim() == 0) {
-        throw std::invalid_argument("argmax: input must have at least one dimension");
+        throw std::invalid_argument(name + ": input must have at least one dimension");
     }
     const int normalized_axis = axis < 0 ? axis + x.dim() : axis;
     if (normalized_axis != x.dim() - 1) {
-        throw std::invalid_argument("argmax: only the last axis is supported");
+        throw std::invalid_argument(name + ": only the last axis is supported");
     }
     const std::int64_t width = x.size(x.dim() - 1);
     if (width == 0) {
-        throw std::invalid_argument("argmax: empty axis");
+        throw std::invalid_argument(name + ": empty axis");
     }
     Shape output_shape(x.shape().begin(), x.shape().end() - 1);
     Tensor out = Tensor::empty(std::move(output_shape), DType::I64, x.device());
     const Tensor input = x.is_contiguous() ? x : x.contiguous();
-    detail::dispatch(detail::OpId::Argmax, {{input}, {out}}, execution);
+    detail::dispatch(op, {{input}, {out}}, execution);
     return out;
+}
+
+} // namespace
+
+Tensor argmax(const Tensor& x, int axis, Execution execution) {
+    return arg_reduce(detail::OpId::Argmax, x, axis, execution);
+}
+
+Tensor argmin(const Tensor& x, int axis, Execution execution) {
+    return arg_reduce(detail::OpId::Argmin, x, axis, execution);
 }
 
 } // namespace mensurflow
