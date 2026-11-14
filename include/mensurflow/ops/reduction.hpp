@@ -70,4 +70,16 @@ Tensor var(const Tensor& x, int axis, bool keepdim = false, std::int64_t correct
 Tensor var_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim = false,
                     std::int64_t correction = 1, Execution execution = Execution::Auto);
 
+// Standard deviation along one axis: sqrt(var(x, axis, keepdim, correction)), with var's
+// conventions (correction default 1, NaN when count - correction <= 0, Welford in double).
+// Records autograd for x; the backward pass is std_backward.
+Tensor std(const Tensor& x, int axis, bool keepdim = false, std::int64_t correction = 1,
+           Execution execution = Execution::Auto);
+
+// The gradient of std(x, axis, keepdim, correction) with respect to x:
+// grad * (x - mean) / ((count - correction) * std). Where std is 0 (all elements equal) the
+// gradient is 0, as in PyTorch, rather than 0 / 0; NaN where count - correction <= 0.
+Tensor std_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim = false,
+                    std::int64_t correction = 1, Execution execution = Execution::Auto);
+
 } // namespace mensurflow

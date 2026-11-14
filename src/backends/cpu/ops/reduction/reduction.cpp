@@ -369,6 +369,39 @@ void var_backward_f32_sequential(const float* x, const float* grad, float* grad_
     }
 }
 
+void std_axis_f32_sequential(const float* x, float* out, const std::int64_t* shape,
+                             std::int64_t rank, std::int64_t axis, std::int64_t correction) {
+    const AxisLayout l = axis_layout(shape, rank, axis);
+    const double divisor = variance_divisor(l.width, correction);
+    for (std::int64_t index = 0; index < l.outer * l.inner; ++index) {
+        const float* start = x + (index / l.inner) * l.width * l.inner + index % l.inner;
+        const Moments m = welford(start, l.width, l.inner);
+        out[index] = static_cast<float>(divisor > 0.0 ? std::sqrt(m.m2 / divisor) : quiet_nan);
+    }
+}
+
+void std_backward_f32_sequential(const float* x, const float* grad, float* grad_x,
+                                 const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                                 std::int64_t correction) {
+    const AxisLayout l = axis_layout(shape, rank, axis);
+    const double divisor = variance_divisor(l.width, correction);
+    for (std::int64_t index = 0; index < l.outer * l.inner; ++index) {
+        const std::int64_t offset = (index / l.inner) * l.width * l.inner + index % l.inner;
+        const Moments m = welford(x + offset, l.width, l.inner);
+        double scale = quiet_nan;
+        if (divisor > 0.0) {
+            const double deviation = std::sqrt(m.m2 / divisor);
+            // A constant row has std 0 and every x - mean is 0: its gradient is 0, not 0 / 0.
+            scale = deviation == 0.0 ? 0.0
+                                     : static_cast<double>(grad[index]) / (divisor * deviation);
+        }
+        for (std::int64_t r = 0; r < l.width; ++r) {
+            const std::int64_t i = offset + r * l.inner;
+            grad_x[i] = static_cast<float>(scale * (static_cast<double>(x[i]) - m.mean));
+        }
+    }
+}
+
 void argmin_f32_sequential(const float* x, std::int64_t* out, std::int64_t rows,
                            std::int64_t width) {
     for (std::int64_t row = 0; row < rows; ++row) {

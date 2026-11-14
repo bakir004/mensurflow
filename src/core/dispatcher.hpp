@@ -101,7 +101,9 @@ enum class OpId {
     AvgPool2dBackward,
     Argmin,
     Var,
-    VarBackward
+    VarBackward,
+    Std,
+    StdBackward
 };
 
 const char* op_name(OpId op);

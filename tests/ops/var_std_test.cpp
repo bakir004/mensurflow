@@ -218,6 +218,115 @@ void test_var_views_and_errors() {
     test::require_throws<E>([&] { var_backward(Tensor(), x, 1); }, "undefined gradient");
 }
 
+std::vector<double> sqrt_all(std::vector<double> values) {
+    for (double& value : values) {
+        value = std::sqrt(value);
+    }
+    return values;
+}
+
+void test_std_against_reference() {
+    std::uint32_t seed = 101;
+    for (const Shape& shape : shapes) {
+        const auto x = test::random_values(numel(shape), seed++, -2.0f, 3.0f);
+        for (int axis = 0; axis < static_cast<int>(shape.size()); ++axis) {
+            for (bool keepdim : {false, true}) {
+                for (std::int64_t correction : {0, 1, 2}) {
+                    const std::string label = "std " + describe(shape, axis, keepdim, correction);
+                    const Shape out_shape = reduced_shape(shape, axis, keepdim);
+                    const Tensor tx = Tensor::from_vector(x, shape);
+                    const Tensor y = mensurflow::std(tx, axis, keepdim, correction,
+                                                     Execution::CPU);
+                    test::require(y.shape() == out_shape, label + ": shape");
+                    test::require_close(y.to_vector<float>(),
+                                        sqrt_all(reference::var_axis(x, shape, axis, correction)),
+                                        1e-7, 1e-5, label + ": forward");
+
+                    const auto g = test::random_values(numel(out_shape), seed++);
+                    const auto want =
+                        reference::std_axis_backward(x, shape, axis, correction, g);
+                    test::require_close(std_backward(Tensor::from_vector(g, out_shape), tx, axis,
+                                                     keepdim, correction)
+                                            .to_vector<float>(),
+                                        want, 1e-6, 1e-5, label + ": backward");
+                    Tensor leaf = Tensor::from_vector(x, shape);
+                    leaf.set_requires_grad();
+                    test::weighted_loss(mensurflow::std(leaf, axis, keepdim, correction), g)
+                        .backward();
+                    test::require_close(leaf.grad().to_vector<float>(), want, 1e-6, 1e-5,
+                                        label + ": autograd");
+                }
+            }
+        }
+    }
+}
+
+void test_std_rules() {
+    // count - correction <= 0: NaN value and NaN gradient.
+    const Tensor column = Tensor::from_vector(std::vector<float>{1, 2, 3}, {3, 1});
+    test::require(std::isnan(mensurflow::std(column, 1).to_vector<float>()[1]),
+                  "one element with correction 1 is NaN");
+    test::require(std::isnan(std_backward(Tensor::ones({3}), column, 1).to_vector<float>()[0]),
+                  "its gradient is NaN");
+    test::require(std::isnan(mensurflow::std(Tensor::empty({2, 0}), 1, false, 0)
+                                 .to_vector<float>()[0]),
+                  "an empty axis is NaN");
+    // A constant row: std exactly 0, gradient 0 (not 0 / 0).
+    const Tensor constant = Tensor::full({2, 5}, 3.25);
+    test::require_close(mensurflow::std(constant, 1).to_vector<float>(),
+                        std::vector<float>(2, 0.0f), 0.0, 0.0, "constant rows have std 0");
+    Tensor leaf = Tensor::full({2, 5}, 3.25);
+    leaf.set_requires_grad();
+    mensurflow::sum(mensurflow::std(leaf, 1)).backward();
+    test::require_close(leaf.grad().to_vector<float>(), std::vector<float>(10, 0.0f), 0.0, 0.0,
+                        "the gradient of a zero std is 0");
+    // NaN in a row gives NaN for that row's value and gradient, not 0.
+    const Tensor with_nan = Tensor::from_vector(std::vector<float>{1, nan, 2, 1, 2, 3}, {2, 3});
+    const auto values = mensurflow::std(with_nan, 1).to_vector<float>();
+    test::require(std::isnan(values[0]) && values[1] == 1.0f, "NaN stays in its row");
+    test::require(std::isnan(std_backward(Tensor::ones({2}), with_nan, 1).to_vector<float>()[0]),
+                  "NaN row has a NaN gradient");
+
+    // Large mean: std of 1e8 + 8 * {0, 1, 2, 3} is sqrt(80) (population) to float precision.
+    std::vector<float> x(400);
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] = 1e8f + 8.0f * static_cast<float>(i % 4);
+    }
+    const float got = mensurflow::std(Tensor::from_vector(x, {400}), 0, false, 0).item<float>();
+    test::require(std::abs(static_cast<double>(got) - std::sqrt(80.0)) <= 1e-6 * std::sqrt(80.0),
+                  "std with a large mean: got " + std::to_string(got));
+
+    using E = std::invalid_argument;
+    const Tensor m = Tensor::zeros({2, 3});
+    test::require_throws<E>([&] { mensurflow::std(Tensor(), 0); }, "undefined");
+    test::require_throws<E>([&] { mensurflow::std(m, 2); }, "axis out of range");
+    test::require_throws<E>([&] { mensurflow::std(m, 0, false, -2); }, "negative correction");
+    test::require_throws<E>([&] { std_backward(Tensor::zeros({2, 1}), m, 1); },
+                            "gradient of the wrong shape");
+}
+
+void test_std_finite_differences() {
+    const Shape shape{3, 4, 5};
+    const auto x = test::random_values(numel(shape), 41);
+    for (int axis = 0; axis < 3; ++axis) {
+        for (std::int64_t correction : {0, 1}) {
+            const Shape out_shape = reduced_shape(shape, axis, true);
+            const auto g = test::random_values(numel(out_shape), 42);
+            auto forward = [&](const std::vector<float>& v) {
+                return mensurflow::std(Tensor::from_vector(v, shape), axis, true, correction)
+                    .to_vector<float>();
+            };
+            // std is smooth away from a zero spread; a small step keeps the truncation error low.
+            test::require_close(std_backward(Tensor::from_vector(g, out_shape),
+                                             Tensor::from_vector(x, shape), axis, true,
+                                             correction)
+                                    .to_vector<float>(),
+                                test::numeric_gradient(forward, x, g, 1e-2f), 2e-3, 2e-2,
+                                "std finite differences, axis " + std::to_string(axis));
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -228,5 +337,8 @@ int main() {
         test_var_large_mean();
         test_var_finite_differences();
         test_var_views_and_errors();
+        test_std_against_reference();
+        test_std_rules();
+        test_std_finite_differences();
     });
 }

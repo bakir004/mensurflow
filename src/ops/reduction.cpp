@@ -292,4 +292,14 @@ Tensor var_backward(const Tensor& grad_output, const Tensor& x, int axis, bool k
                            execution);
 }
 
+Tensor std(const Tensor& x, int axis, bool keepdim, std::int64_t correction, Execution execution) {
+    return moment(detail::OpId::Std, x, axis, keepdim, correction, execution, std_backward);
+}
+
+Tensor std_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim,
+                    std::int64_t correction, Execution execution) {
+    return moment_backward(detail::OpId::StdBackward, grad_output, x, axis, keepdim, correction,
+                           execution);
+}
+
 } // namespace mensurflow

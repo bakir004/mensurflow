@@ -178,6 +178,10 @@ const char* op_name(OpId op) {
         return "var";
     case OpId::VarBackward:
         return "var_backward";
+    case OpId::Std:
+        return "std";
+    case OpId::StdBackward:
+        return "std_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }

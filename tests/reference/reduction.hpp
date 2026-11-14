@@ -125,6 +125,31 @@ inline std::vector<double> var_axis_backward(const std::vector<float>& x,
     return gx;
 }
 
+// d(sum(sqrt(var_axis(x)) * grad)) / dx = grad * (x - mean) / ((count - correction) * std); 0
+// where std is 0, NaN where count - correction <= 0. Two-pass mean and variance in double.
+inline std::vector<double> std_axis_backward(const std::vector<float>& x,
+                                             const std::vector<std::int64_t>& shape, int axis,
+                                             std::int64_t correction,
+                                             const std::vector<float>& grad) {
+    const std::vector<double> variance = var_axis(x, shape, axis, correction);
+    // var's gradient is grad * 2 (x - mean) / (count - correction); std's is that / (2 std).
+    const std::vector<float> ones(grad.size(), 1.0f);
+    const std::vector<double> unit = var_axis_backward(x, shape, axis, correction, ones);
+    std::int64_t inner = 1;
+    for (std::size_t d = static_cast<std::size_t>(axis) + 1; d < shape.size(); ++d) {
+        inner *= shape[d];
+    }
+    const std::int64_t width = shape[static_cast<std::size_t>(axis)];
+    std::vector<double> gx(x.size());
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const std::int64_t flat = static_cast<std::int64_t>(i);
+        const auto out = static_cast<std::size_t>((flat / (width * inner)) * inner + flat % inner);
+        const double deviation = std::sqrt(variance[out]);
+        gx[i] = deviation == 0.0 ? 0.0 : grad[out] * unit[i] / (2.0 * deviation);
+    }
+    return gx;
+}
+
 // Index of the smallest of x[0..n): the first NaN if there is one, otherwise the first index
 // holding the minimum. n > 0.
 inline std::int64_t argmin(const float* x, std::int64_t n) {

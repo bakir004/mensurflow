@@ -72,4 +72,16 @@ void var_backward_f32_sequential(const float* x, const float* grad, float* grad_
                                  const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
                                  std::int64_t correction);
 
+// Standard deviation along one axis: sqrt of var_axis_f32_sequential's result (taken in double),
+// with the same correction and NaN rules.
+void std_axis_f32_sequential(const float* x, float* out, const std::int64_t* shape,
+                             std::int64_t rank, std::int64_t axis, std::int64_t correction);
+
+// grad_x = grad * (x - mean) / ((count - correction) * std), with mean and std recomputed by the
+// same Welford pass. Where std is 0 (a constant row) the gradient is 0, as in PyTorch; NaN where
+// count - correction <= 0. Overwrites grad_x (x's shape).
+void std_backward_f32_sequential(const float* x, const float* grad, float* grad_x,
+                                 const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                                 std::int64_t correction);
+
 } // namespace mensurflow::cpu

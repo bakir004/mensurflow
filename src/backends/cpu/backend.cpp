@@ -582,22 +582,25 @@ void argmin_kernel(const OpArgs& args, Stream&) {
                                x.numel() / width, width);
 }
 
-// Ops hand var a contiguous x, args.axis (normalized) and args.correction.
-void var_kernel(const OpArgs& args, Stream&) {
+// Ops hand var and std a contiguous x, args.axis (normalized) and args.correction.
+template <void (*Kernel)(const float*, float*, const std::int64_t*, std::int64_t, std::int64_t,
+                         std::int64_t)>
+void moment_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
     if (args.outputs[0].numel() == 0) {
         return;
     }
-    cpu::var_axis_f32_sequential(data<float>(x), data<float>(args.outputs[0]), x.shape().data(),
-                                 x.dim(), args.axis, args.correction);
+    Kernel(data<float>(x), data<float>(args.outputs[0]), x.shape().data(), x.dim(), args.axis,
+           args.correction);
 }
 
 // Inputs x and the output gradient (contiguous); the output has x's shape.
-void var_backward_kernel(const OpArgs& args, Stream&) {
+template <void (*Kernel)(const float*, const float*, float*, const std::int64_t*, std::int64_t,
+                         std::int64_t, std::int64_t)>
+void moment_backward_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
-    cpu::var_backward_f32_sequential(data<float>(x), data<float>(args.inputs[1]),
-                                     data<float>(args.outputs[0]), x.shape().data(), x.dim(),
-                                     args.axis, args.correction);
+    Kernel(data<float>(x), data<float>(args.inputs[1]), data<float>(args.outputs[0]),
+           x.shape().data(), x.dim(), args.axis, args.correction);
 }
 
 class CpuBackend final : public Backend {
@@ -687,8 +690,10 @@ class CpuBackend final : public Backend {
         add(OpId::AxisProd, axis_reduce_kernel<prod_axis_f32>);
         add(OpId::Argmax, argmax_kernel);
         add(OpId::Argmin, argmin_kernel);
-        add(OpId::Var, var_kernel);
-        add(OpId::VarBackward, var_backward_kernel);
+        add(OpId::Var, moment_kernel<var_axis_f32_sequential>);
+        add(OpId::VarBackward, moment_backward_kernel<var_backward_f32_sequential>);
+        add(OpId::Std, moment_kernel<std_axis_f32_sequential>);
+        add(OpId::StdBackward, moment_backward_kernel<std_backward_f32_sequential>);
 
         add(OpId::Ger, ger_kernel);
         add(OpId::GemmBatched, gemm_batched_kernel<gemm_batched_default>);
