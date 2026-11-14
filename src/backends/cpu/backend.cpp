@@ -12,6 +12,8 @@
 #include "backends/cpu/ops/indexing/indexing.hpp"
 #include "backends/cpu/ops/loss/loss.hpp"
 #include "backends/cpu/ops/movement/movement.hpp"
+#include "backends/cpu/ops/normalization.hpp"
+#include "backends/cpu/ops/optimizer.hpp"
 #include "backends/cpu/ops/random/random.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
 #include "backends/cpu/ops/softmax/softmax.hpp"
@@ -543,6 +545,81 @@ void clamp_kernel(const OpArgs& args, Stream&) {
                    args.beta);
 }
 
+// Optimizers update their tensors in place: outputs are the tensors that change (parameter, then
+// the state), inputs hold the gradient.
+void sgd_kernel(const OpArgs& args, Stream&) {
+    const Tensor& p = args.outputs[0];
+    float* velocity = args.outputs.size() > 1 ? data<float>(args.outputs[1]) : nullptr;
+    cpu::sgd_f32(data<float>(p), data<float>(args.inputs[0]), velocity, p.numel(), args.alpha,
+                 args.momentum, args.weight_decay);
+}
+
+template <bool Decoupled> void adam_kernel(const OpArgs& args, Stream&) {
+    const Tensor& p = args.outputs[0];
+    cpu::adam_f32(data<float>(p), data<float>(args.inputs[0]), data<float>(args.outputs[1]),
+                  data<float>(args.outputs[2]), p.numel(), args.alpha, args.beta1, args.beta2,
+                  args.epsilon, args.weight_decay, args.step, Decoupled);
+}
+
+// Layer and RMS norm: inputs hold x, then the scale (and bias); axis is how many trailing
+// dimensions are normalized, so the line width is the scale's element count.
+void layer_norm_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const std::int64_t width = args.inputs[1].numel();
+    cpu::layer_norm_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+                        data<float>(args.outputs[0]), width == 0 ? 0 : x.numel() / width, width,
+                        args.epsilon);
+}
+
+void layer_norm_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const std::int64_t width = args.inputs[2].numel();
+    cpu::layer_norm_backward_f32(data<float>(x), data<float>(args.inputs[1]),
+                                 data<float>(args.inputs[2]), data<float>(args.outputs[0]),
+                                 data<float>(args.outputs[1]), data<float>(args.outputs[2]),
+                                 x.numel() / width, width, args.epsilon);
+}
+
+void rms_norm_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const std::int64_t width = args.inputs[1].numel();
+    cpu::rms_norm_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.outputs[0]),
+                      x.numel() / width, width, args.epsilon);
+}
+
+void rms_norm_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const std::int64_t width = args.inputs[2].numel();
+    cpu::rms_norm_backward_f32(data<float>(x), data<float>(args.inputs[1]),
+                               data<float>(args.inputs[2]), data<float>(args.outputs[0]),
+                               data<float>(args.outputs[1]), x.numel() / width, width,
+                               args.epsilon);
+}
+
+// Batch norm sees x as [n, c, spatial]. Inputs: x, scale, bias; outputs: y, running mean, running
+// variance (the last two are updated in place in training mode).
+void batch_norm_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const std::int64_t c = x.size(1);
+    const std::int64_t spatial = x.numel() / (x.size(0) * c);
+    cpu::batch_norm_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+                        data<float>(args.outputs[1]), data<float>(args.outputs[2]),
+                        data<float>(args.outputs[0]), x.size(0), c, spatial, args.training,
+                        args.momentum, args.epsilon);
+}
+
+// Inputs: x, dy, scale, running mean, running variance; outputs: dx, dscale, dbias.
+void batch_norm_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const std::int64_t c = x.size(1);
+    const std::int64_t spatial = x.numel() / (x.size(0) * c);
+    cpu::batch_norm_backward_f32(data<float>(x), data<float>(args.inputs[1]),
+                                 data<float>(args.inputs[2]), data<float>(args.inputs[3]),
+                                 data<float>(args.inputs[4]), data<float>(args.outputs[0]),
+                                 data<float>(args.outputs[1]), data<float>(args.outputs[2]),
+                                 x.size(0), c, spatial, args.training, args.epsilon);
+}
+
 // Ops hand bias_add a contiguous [batch, features] matrix and a contiguous [features] bias.
 void bias_add_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
@@ -699,6 +776,15 @@ class CpuBackend final : public Backend {
         add(OpId::MseLossBackward, loss_backward_kernel<mse_loss_backward_f32>);
         add(OpId::BceWithLogits, loss_kernel<bce_with_logits_f32>);
         add(OpId::BceWithLogitsBackward, loss_backward_kernel<bce_with_logits_backward_f32>);
+        add(OpId::Sgd, sgd_kernel);
+        add(OpId::Adam, adam_kernel<false>);
+        add(OpId::AdamW, adam_kernel<true>);
+        add(OpId::LayerNorm, layer_norm_kernel);
+        add(OpId::LayerNormBackward, layer_norm_backward_kernel);
+        add(OpId::RmsNorm, rms_norm_kernel);
+        add(OpId::RmsNormBackward, rms_norm_backward_kernel);
+        add(OpId::BatchNorm, batch_norm_kernel);
+        add(OpId::BatchNormBackward, batch_norm_backward_kernel);
     }
 
   private:

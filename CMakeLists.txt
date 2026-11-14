@@ -50,6 +50,8 @@ add_library(mensurflow
     src/ops/random.cpp
     src/ops/reduction.cpp
     src/ops/softmax.cpp
+    src/ops/optimizers.cpp
+    src/ops/normalization.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/affinity.cpp
     src/backends/cpu/thread_pool.cpp
@@ -64,7 +66,9 @@ add_library(mensurflow
     src/backends/cpu/ops/movement/movement.cpp
     src/backends/cpu/ops/random/random.cpp
     src/backends/cpu/ops/reduction/reduction.cpp
-    src/backends/cpu/ops/softmax/softmax.cpp)
+    src/backends/cpu/ops/softmax/softmax.cpp
+    src/backends/cpu/ops/optimizer.cpp
+    src/backends/cpu/ops/normalization.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -75,6 +79,11 @@ if(NOT MSVC)
     if(MENSURFLOW_NATIVE)
         target_compile_options(mensurflow PRIVATE -march=native)
     endif()
+    # The optimizer kernels promise the same bits with and without their AVX2 version. When FMA is on for
+    # the whole file (-march=native, -mfma) GCC and Clang contract a * b + c differently in the portable
+    # loop and in the intrinsics, so contraction is switched off for this one file.
+    set_source_files_properties(src/backends/cpu/ops/optimizer.cpp PROPERTIES
+                                COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
 # OpenMP is optional: without it the CPU backend runs the sequential kernels.
@@ -172,6 +181,7 @@ mensurflow_add_test(activation_movement_test tests/ops/activation_movement_test.
 mensurflow_add_test(random_test tests/ops/random_test.cpp)
 mensurflow_add_test(indexing_test tests/ops/indexing_test.cpp)
 mensurflow_add_test(softmax_loss_test tests/ops/softmax_loss_test.cpp)
+mensurflow_add_test(optimizer_normalization_test tests/ops/optimizer_normalization_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -189,6 +199,7 @@ endfunction()
 mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.cpp)
 mensurflow_add_benchmark(bandwidth_benchmark benchmarks/bandwidth_benchmark.cpp)
 mensurflow_add_benchmark(activation_movement_benchmark benchmarks/activation_movement_benchmark.cpp)
+mensurflow_add_benchmark(optimizer_normalization_benchmark benchmarks/optimizer_normalization_benchmark.cpp)
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
 mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
 mensurflow_add_benchmark(matmul_tile_benchmark benchmarks/blas/matmul_tile_benchmark.cpp)
