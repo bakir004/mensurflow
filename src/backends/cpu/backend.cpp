@@ -5,6 +5,7 @@
 #include "backends/backend.hpp"
 
 #include "backends/cpu/ops/blas/blas.hpp"
+#include "backends/cpu/ops/conv/conv2d.hpp"
 #include "backends/cpu/ops/elementwise/cast.hpp"
 #include "backends/cpu/ops/elementwise/elementwise.hpp"
 #include "backends/cpu/ops/gemm/gemm_batched.hpp"
@@ -210,6 +211,67 @@ void gemm_batched_kernel(const OpArgs& args, Stream&) {
 // the build has OpenMP, the sequential one otherwise.
 constexpr void (*gemm_batched_default)(const cpu::BatchedGemm&) =
     use_parallel ? cpu::gemm_batched_f32_parallel : cpu::gemm_batched_f32_sequential;
+
+// ---- Convolution ---------------------------------------------------------------------------
+
+// The convolution's sizes from the input's [n, c_in, h, w] and the weight's [c_out, c_in, kh, kw]
+// shapes, args.stride and args.padding. Ops have checked that the output is at least 1 x 1.
+cpu::Conv2dShape conv2d_shape(const Shape& input, const Shape& weight, const OpArgs& args) {
+    cpu::Conv2dShape s;
+    s.n = input[0];
+    s.c_in = input[1];
+    s.h = input[2];
+    s.w = input[3];
+    s.c_out = weight[0];
+    s.kh = weight[2];
+    s.kw = weight[3];
+    s.stride_h = args.stride[0];
+    s.stride_w = args.stride[1];
+    s.pad_h = args.padding[0];
+    s.pad_w = args.padding[1];
+    s.h_out = (s.h + 2 * s.pad_h - s.kh) / s.stride_h + 1;
+    s.w_out = (s.w + 2 * s.pad_w - s.kw) / s.stride_w + 1;
+    return s;
+}
+
+// Ops hand conv2d contiguous x, weight and (optionally, as a third input) bias.
+void conv2d_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0];
+    const Tensor& weight = args.inputs[1];
+    const float* bias = args.inputs.size() > 2 ? data<float>(args.inputs[2]) : nullptr;
+    cpu::conv2d_f32_sequential(data<float>(x), data<float>(weight), bias,
+                               data<float>(args.outputs[0]),
+                               conv2d_shape(x.shape(), weight.shape(), args));
+}
+
+// Inputs: grad_y and weight; the output has the input's shape.
+void conv2d_backward_data_kernel(const OpArgs& args, Stream&) {
+    const Tensor& weight = args.inputs[1];
+    const Tensor& grad_x = args.outputs[0];
+    cpu::conv2d_backward_data_f32_sequential(data<float>(args.inputs[0]), data<float>(weight),
+                                             data<float>(grad_x),
+                                             conv2d_shape(grad_x.shape(), weight.shape(), args));
+}
+
+// Inputs: grad_y and x; the output has the weight's shape.
+void conv2d_backward_weight_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[1];
+    const Tensor& grad_weight = args.outputs[0];
+    cpu::conv2d_backward_weight_f32_sequential(data<float>(args.inputs[0]), data<float>(x),
+                                               data<float>(grad_weight),
+                                               conv2d_shape(x.shape(), grad_weight.shape(), args));
+}
+
+// Input: grad_y [n, c_out, h_out, w_out]; output [c_out].
+void conv2d_backward_bias_kernel(const OpArgs& args, Stream&) {
+    const Tensor& grad_y = args.inputs[0];
+    cpu::Conv2dShape s;
+    s.n = grad_y.size(0);
+    s.c_out = grad_y.size(1);
+    s.h_out = grad_y.size(2);
+    s.w_out = grad_y.size(3);
+    cpu::conv2d_backward_bias_f32_sequential(data<float>(grad_y), data<float>(args.outputs[0]), s);
+}
 
 // ---- Data movement -------------------------------------------------------------------------
 
@@ -556,6 +618,10 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::OneHot, DeviceType::CPU, DType::I64}, one_hot_kernel);
         add(OpId::Embedding, embedding_kernel);
         add(OpId::EmbeddingBackward, embedding_backward_kernel);
+        add(OpId::Conv2d, conv2d_kernel);
+        add(OpId::Conv2dBackwardData, conv2d_backward_data_kernel);
+        add(OpId::Conv2dBackwardWeight, conv2d_backward_weight_kernel);
+        add(OpId::Conv2dBackwardBias, conv2d_backward_bias_kernel);
     }
 
   private:

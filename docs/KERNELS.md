@@ -33,9 +33,11 @@ bit-identical CPU/GPU reductions.
 What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
 dispatcher where to run. CPU kernels are in
-`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing}/`; each is one loop that OpenMP
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
-which have separate sequential and parallel versions.
+which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
+by Asja (`conv2d`) have only a `*_sequential` kernel so far: it is the correctness baseline the
+parallel version will be tested and benchmarked against.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
 |Operation|CPU|CUDA|Metal|
@@ -67,6 +69,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`dropout`|OpenMP, F32 forward/backward and CPU autograd; saved Bool mask, inverted scaling and explicit train/eval|—|—|
 |`one_hot`|OpenMP, I64 indices and output; arbitrary-rank indices, explicit class count; forward only|—|—|
 |`embedding`|OpenMP, F32 weights/output and I64 indices; forward/backward and CPU autograd; repeated-index gradients accumulate deterministically|—|—|
+|`conv2d`|sequential only (`*_sequential`), float32 NCHW; im2col + single-threaded packed GEMM per image; stride and zero padding per dimension, optional bias; dilation 1 and groups 1 only; forward, backward (data via col2im, weight, bias) and CPU autograd; see [CPU convolution and pooling](#cpu-convolution-and-pooling)|—|—|
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
@@ -140,6 +143,36 @@ duplicate-index gradients in input order at every thread count. Both ops integra
 autograd; their explicit backward calls also work without recording a graph. Views are packed
 before dispatch. Index validation rejects negative and out-of-range IDs, including for empty
 feature dimensions. GPU kernels and general gather backward are still pending.
+
+## CPU convolution and pooling
+
+Declared in `include/mensurflow/ops/conv.hpp`, kernels in `src/backends/cpu/ops/conv/`. Float32,
+CPU, sequential kernels only (the parallel versions come later). Inputs may be views; they are
+packed before the kernel runs.
+
+**`conv2d(x, weight, bias, stride, padding, dilation, groups)`**
+
+* Layout NCHW: `x[N, C_in, H, W]`, `weight[C_out, C_in, kH, kW]`, optional `bias[C_out]` (a
+  pointer, `nullptr` for none), output `[N, C_out, H_out, W_out]`.
+* `stride = {stride_h, stride_w}` (each at least 1, default `{1, 1}`) and zero
+  `padding = {pad_h, pad_w}` (each at least 0, default `{0, 0}`), separately per dimension and
+  added on both sides.
+* `H_out = floor((H + 2 * pad_h - kH) / stride_h) + 1`, `W_out` likewise. A kernel larger than the
+  padded input (output size below 1) and a kernel dimension of 0 are rejected.
+* Only `dilation = {1, 1}` and `groups = 1`. Other values throw `invalid_argument`; they are not
+  silently ignored.
+* Cross-correlation (the kernel is not flipped), as in PyTorch.
+* Computed with im2col and the existing packed GEMM, one image at a time; the strided GEMM entry
+  point reads the transposed operands of the backward pass in place, without copies. Float32
+  accumulation, so results differ from a direct loop in the last bits.
+* Backward: `conv2d_backward_data` (weight^T times the output gradient, then col2im; overlapping
+  windows add up), `conv2d_backward_weight` (output gradient times the im2col matrix transposed,
+  summed over the batch) and `conv2d_backward_bias` (sum over batch and space, in double). The
+  forward op records autograd for `x`, `weight` and `bias` with these functions.
+* Empty batch or `C_out = 0` gives an empty output (and zero weight and bias gradients);
+  `C_in = 0` gives the bias, or zeros.
+* Tested against a direct-loop double reference (`tests/reference/conv.hpp`) and with central
+  finite differences for all three gradients (`tests/ops/conv2d_test.cpp`).
 
 ## P0 — Minimum useful dense inference library
 
@@ -362,10 +395,14 @@ loss on a controlled dataset.
 
 ### Convolution and pooling
 
-* \[ ] `conv2d` forward, with one documented layout, e.g. NCHW.
-* \[ ] Stride and padding, then dilation and groups if needed.
-* \[ ] Simple direct convolution reference implementation.
-* \[ ] Optional im2col + GEMM implementation; account for temporary memory costs.
+* \[x] `conv2d` forward, with one documented layout, e.g. NCHW — CPU float32, NCHW; see
+[CPU convolution and pooling](#cpu-convolution-and-pooling).
+* \[x] Stride and padding, then dilation and groups if needed — stride and zero padding per
+dimension; dilation and groups other than 1 are rejected.
+* \[x] Simple direct convolution reference implementation — the double-precision test reference
+in `tests/reference/conv.hpp`.
+* \[x] Optional im2col + GEMM implementation; account for temporary memory costs — the column
+matrix is `C_in * kH * kW` by `H_out * W_out` floats, one image at a time.
 `col2im` is its inverse, used by transposed convolution and backward.
 * \[ ] Max pooling (returning indices, for backward and `max\_unpool`) and average
 pooling.

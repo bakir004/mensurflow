@@ -156,6 +156,14 @@ const char* op_name(OpId op) {
         return "embedding";
     case OpId::EmbeddingBackward:
         return "embedding_backward";
+    case OpId::Conv2d:
+        return "conv2d";
+    case OpId::Conv2dBackwardData:
+        return "conv2d_backward_data";
+    case OpId::Conv2dBackwardWeight:
+        return "conv2d_backward_weight";
+    case OpId::Conv2dBackwardBias:
+        return "conv2d_backward_bias";
     }
     throw std::invalid_argument("invalid OpId");
 }

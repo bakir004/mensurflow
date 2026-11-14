@@ -90,7 +90,11 @@ enum class OpId {
     DropoutBackward,
     OneHot,
     Embedding,
-    EmbeddingBackward
+    EmbeddingBackward,
+    Conv2d,
+    Conv2dBackwardData,
+    Conv2dBackwardWeight,
+    Conv2dBackwardBias
 };
 
 const char* op_name(OpId op);
@@ -118,8 +122,11 @@ struct OpArgs {
     bool transpose = false;
     bool approximate = false; // GELU: tanh approximation instead of the Gaussian CDF.
     // pad: elements added before and after each dimension, as (before, after) pairs in dimension
-    // order. Unused by other operations.
+    // order. conv2d and pooling: the zero padding {pad_h, pad_w} on each side. Unused by other
+    // operations.
     std::vector<std::int64_t> padding{};
+    // conv2d and pooling: the window step {stride_h, stride_w}.
+    std::vector<std::int64_t> stride{};
     // Counter-based random generation: offset counts output elements, not threads.
     std::uint64_t seed = 0;
     std::uint64_t offset = 0;
