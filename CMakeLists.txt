@@ -42,10 +42,13 @@ add_library(mensurflow
     src/core/tensor.cpp
     src/ops/blas.cpp
     src/ops/elementwise.cpp
+    src/ops/attention.cpp
     src/ops/indexing.cpp
+    src/ops/loss.cpp
     src/ops/movement.cpp
     src/ops/random.cpp
     src/ops/reduction.cpp
+    src/ops/softmax.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/affinity.cpp
     src/backends/cpu/thread_pool.cpp
@@ -56,9 +59,11 @@ add_library(mensurflow
     src/backends/cpu/ops/elementwise/elementwise.cpp
     src/backends/cpu/ops/elementwise/cast.cpp
     src/backends/cpu/ops/indexing/indexing.cpp
+    src/backends/cpu/ops/loss/loss.cpp
     src/backends/cpu/ops/movement/movement.cpp
     src/backends/cpu/ops/random/random.cpp
-    src/backends/cpu/ops/reduction/reduction.cpp)
+    src/backends/cpu/ops/reduction/reduction.cpp
+    src/backends/cpu/ops/softmax/softmax.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -158,6 +163,7 @@ mensurflow_add_test(movement_test tests/ops/movement_test.cpp)
 mensurflow_add_test(activation_movement_test tests/ops/activation_movement_test.cpp)
 mensurflow_add_test(random_test tests/ops/random_test.cpp)
 mensurflow_add_test(indexing_test tests/ops/indexing_test.cpp)
+mensurflow_add_test(softmax_loss_test tests/ops/softmax_loss_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -266,6 +272,7 @@ mensurflow_add_benchmark(gemm_batched_benchmark benchmarks/blas/gemm_batched_ben
 mensurflow_add_benchmark(ger_benchmark benchmarks/blas/ger_benchmark.cpp)
 mensurflow_add_benchmark(movement_benchmark benchmarks/movement_benchmark.cpp)
 mensurflow_add_benchmark(random_indexing_benchmark benchmarks/random_indexing_benchmark.cpp)
+mensurflow_add_benchmark(softmax_loss_benchmark benchmarks/softmax_loss_benchmark.cpp)
 
 # LibTorch from a CPU PyTorch wheel is an optional native reference, not a core dependency.
 # Configure a separate build directory with Torch's CMake prefix when enabling this target.

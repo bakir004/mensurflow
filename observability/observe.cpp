@@ -333,6 +333,86 @@ std::vector<OpSpec> make_ops() {
                 Tensor mask = dropout(rnd({n}, 2), 0.5f, true, 42, 0, Execution::CPU).mask.to(d);
                 return Case{{g, mask}, [=] { return dropout_backward(g, mask, 0.5f, true, e); }};
             }});
+    // Softmax and losses: [rows, 1000] logits (a 1000-class head) and per-element losses.
+    const auto classes_1000 = [](std::int64_t n) {
+        return Shape{std::max<std::int64_t>(1, n / 1000), 1000};
+    };
+    add_op({"softmax", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd(classes_1000(n), 1, d);
+                return Case{{x}, [=] { return softmax(x, -1, e); }};
+            }});
+    add_op({"log_softmax", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd(classes_1000(n), 1, d);
+                return Case{{x}, [=] { return log_softmax(x, -1, e); }};
+            }});
+    add_op({"softmax_backward", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor y = softmax(rnd(classes_1000(n), 1), -1, Execution::CPU).to(d);
+                Tensor g = rnd(classes_1000(n), 2, d);
+                return Case{{y, g}, [=] { return softmax_backward(y, g, -1, e); }};
+            }});
+    add_op({"log_softmax_backward", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor y = log_softmax(rnd(classes_1000(n), 1), -1, Execution::CPU).to(d);
+                Tensor g = rnd(classes_1000(n), 2, d);
+                return Case{{y, g}, [=] { return log_softmax_backward(y, g, -1, e); }};
+            }});
+    add_op({"cross_entropy", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                const Shape shape = classes_1000(n);
+                Tensor x = rnd(shape, 1, d), labels = indices({shape[0]}, shape[1], 7, d);
+                return Case{{x, labels},
+                            [=] { return cross_entropy(x, labels, Reduction::Mean, e); }};
+            }});
+    add_op({"cross_entropy_backward", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                const Shape shape = classes_1000(n);
+                Tensor x = rnd(shape, 1, d), labels = indices({shape[0]}, shape[1], 7, d);
+                Tensor g = Tensor::ones({}, DType::F32, d);
+                return Case{{x, labels, g}, [=] {
+                                return cross_entropy_backward(x, labels, g, Reduction::Mean, e);
+                            }};
+            }});
+    add_op({"mse_loss", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d);
+                return Case{{x, t}, [=] { return mse_loss(x, t, Reduction::Mean, e); }};
+            }});
+    add_op({"mse_loss_backward", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d), g = Tensor::ones({}, DType::F32, d);
+                return Case{{x, t, g},
+                            [=] { return mse_loss_backward(x, t, g, Reduction::Mean, e); }};
+            }});
+    add_op({"binary_cross_entropy_with_logits", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d);
+                return Case{{x, t}, [=] {
+                                return binary_cross_entropy_with_logits(x, t, Reduction::Mean, e);
+                            }};
+            }});
+    add_op({"binary_cross_entropy_with_logits_backward", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d), g = Tensor::ones({}, DType::F32, d);
+                return Case{{x, t, g}, [=] {
+                                return binary_cross_entropy_with_logits_backward(
+                                    x, t, g, Reduction::Mean, e);
+                            }};
+            }});
+    // Attention: [1, 8, L, 64], causal; size is the sequence length L. Rate: GFLOP/s of the two GEMMs.
+    add_op({"attention",
+            "attention",
+            "sequence length L ([1, 8, L, 64])",
+            {64, 128, 256, 512, 1024},
+            [](std::int64_t length, Device d, Execution e) {
+                Tensor q = rnd({1, 8, length, 64}, 1, d), k = rnd({1, 8, length, 64}, 2, d),
+                       v = rnd({1, 8, length, 64}, 3, d);
+                return Case{{q, k, v},
+                            [=] { return attention(q, k, v, nullptr, true, 0.0f, e); },
+                            4.0 * 8 * static_cast<double>(length) * length * 64};
+            }});
     return ops;
 }
 

@@ -472,6 +472,7 @@ function docHtml(op) {
 // ---------- kernels tab ----------
 function scaleSize(op) {
   const k = Number($("k-scale").value);
+  if (op.unit.startsWith("sequence")) return [64, 256, 1024][k];
   if (op.unit.includes("batch")) return [16, 64, 256][k];
   if (op.unit.startsWith("matrix")) return [64, 256, 1024][k];
   return [1 << 14, 1 << 20, 1 << 24][k];
@@ -621,6 +622,7 @@ $("threads").addEventListener("input", () => { renderKernels(); renderOpResults(
 // ---------- power-of-two size pickers ----------
 // Sizes are picked as 2^k toggles: several for a sweep (data-multi), one for a call breakdown.
 function exponentRange(op) {
+  if (op.unit.startsWith("sequence")) return [4, 12]; // attention sequence length
   if (op.unit.includes("batch")) return [1, 10];   // matrix side, batch of 16
   if (op.unit.startsWith("matrix")) return [3, 12]; // matrix side N
   return [6, 26];                                   // elements: 64 to 64M

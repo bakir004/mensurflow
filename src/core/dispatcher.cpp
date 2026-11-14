@@ -156,6 +156,26 @@ const char* op_name(OpId op) {
         return "embedding";
     case OpId::EmbeddingBackward:
         return "embedding_backward";
+    case OpId::Softmax:
+        return "softmax";
+    case OpId::LogSoftmax:
+        return "log_softmax";
+    case OpId::SoftmaxBackward:
+        return "softmax_backward";
+    case OpId::LogSoftmaxBackward:
+        return "log_softmax_backward";
+    case OpId::CrossEntropy:
+        return "cross_entropy";
+    case OpId::CrossEntropyBackward:
+        return "cross_entropy_backward";
+    case OpId::MseLoss:
+        return "mse_loss";
+    case OpId::MseLossBackward:
+        return "mse_loss_backward";
+    case OpId::BceWithLogits:
+        return "binary_cross_entropy_with_logits";
+    case OpId::BceWithLogitsBackward:
+        return "binary_cross_entropy_with_logits_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }

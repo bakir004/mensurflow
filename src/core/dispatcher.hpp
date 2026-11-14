@@ -90,7 +90,17 @@ enum class OpId {
     DropoutBackward,
     OneHot,
     Embedding,
-    EmbeddingBackward
+    EmbeddingBackward,
+    Softmax,
+    LogSoftmax,
+    SoftmaxBackward,
+    LogSoftmaxBackward,
+    CrossEntropy,
+    CrossEntropyBackward,
+    MseLoss,
+    MseLossBackward,
+    BceWithLogits,
+    BceWithLogitsBackward
 };
 
 const char* op_name(OpId op);
@@ -112,8 +122,8 @@ struct OpArgs {
     std::vector<Tensor> outputs;
     // Op-specific scalar: multiplier, clamp lower bound, activation slope/alpha, or softplus beta.
     float alpha = 1.0f;
-    float beta = 1.0f;  // gemv beta, clamp upper bound, or softplus threshold.
-    int axis = -1;      // Reduction axis; unused by other operations.
+    float beta = 1.0f; // gemv beta, clamp upper bound, or softplus threshold.
+    int axis = -1;     // Reduction axis; unused by other operations.
     bool keepdim = false;
     bool transpose = false;
     bool approximate = false; // GELU: tanh approximation instead of the Gaussian CDF.
@@ -124,6 +134,7 @@ struct OpArgs {
     std::uint64_t seed = 0;
     std::uint64_t offset = 0;
     bool training = true; // Dropout: eval mode is the identity.
+    int reduction = 0;    // Losses: 0 none, 1 sum, 2 mean (the order of mensurflow::Reduction).
 };
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);

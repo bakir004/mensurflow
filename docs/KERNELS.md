@@ -33,7 +33,7 @@ bit-identical CPU/GPU reductions.
 What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
 dispatcher where to run. CPU kernels are in
-`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing}/`; each is one loop that OpenMP
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,softmax,loss}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions.
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
@@ -67,6 +67,10 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`dropout`|OpenMP, F32 forward/backward and CPU autograd; saved Bool mask, inverted scaling and explicit train/eval|—|—|
 |`one_hot`|OpenMP, I64 indices and output; arbitrary-rank indices, explicit class count; forward only|—|—|
 |`embedding`|OpenMP, F32 weights/output and I64 indices; forward/backward and CPU autograd; repeated-index gradients accumulate deterministically|—|—|
+|`softmax`, `log_softmax`|OpenMP over lines (one line per thread, so the same bits at every thread count), any axis; stable (max subtracted, double sums); fully masked lines give 0 / -inf; forward/backward and CPU autograd|—|—|
+|`cross_entropy`|OpenMP, fused log-softmax + NLL per row with I64 labels, no softmax stored; none/sum/mean; forward/backward and CPU autograd|—|—|
+|`mse_loss`, `binary_cross_entropy_with_logits`|OpenMP, none/sum/mean; BCE uses max(x,0) - xt + log1p(exp(-\|x\|)) and a cancellation-free gradient; forward/backward and CPU autograd for input and target|—|—|
+|`attention`|naive: `gemm_strided_batched`, `where` with -inf, `softmax`, `gemm_strided_batched`; Bool mask and causal flag; fully masked queries give zeros; forward only|—|—|
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
@@ -141,6 +145,35 @@ autograd; their explicit backward calls also work without recording a graph. Vie
 before dispatch. Index validation rejects negative and out-of-range IDs, including for empty
 feature dimensions. GPU kernels and general gather backward are still pending.
 
+## CPU softmax, losses and attention
+
+```cpp
+softmax(x);                          // last axis; softmax(x, 0) for another axis
+log_softmax(x);                      // (x - max) - log(sum(exp(x - max)))
+cross_entropy(logits, labels);       // logits [N, C] F32, labels [N] I64; mean over N
+cross_entropy(logits, labels, Reduction::None);   // [N] losses
+mse_loss(prediction, target);        // same shapes, no broadcasting
+binary_cross_entropy_with_logits(x, t, Reduction::Sum);
+attention(q, k, v, &mask, /*causal=*/true);       // softmax(q k^T / sqrt(D) masked) v
+```
+
+Softmax and log-softmax subtract each line's maximum and sum in double, so logits of +-1000 are
+exact. A line that is entirely -inf (every position masked) gives zeros from softmax and -inf from
+log-softmax rather than NaN; a NaN anywhere in a line makes the whole line NaN. One line is one
+thread's work, so the result does not depend on the thread count.
+
+Losses take `Reduction::None`, `Sum` or `Mean` (default). Mean of an empty input is NaN, as in
+PyTorch; Sum is 0. Reduced losses sum fixed 16,384-element chunks in parallel and then the chunk
+sums in order, so they are bit-identical at every thread count. Labels are checked on the host
+before the kernel runs (0 <= label < C). The binary cross-entropy gradient is computed as
+(1 - t) - e/(1+e) or e/(1+e) - t with e = exp(-|x|), which keeps sigmoid(x) - t exact where it is
+tiny (PyTorch rounds sigmoid(30) - 1 to 0; this gives -9.36e-14).
+
+`attention` is the naive algorithm built from `gemm_strided_batched`, `where` and `softmax`: it
+materializes the [..., Lq, Lk] scores. Masks are Bool tensors that broadcast to the scores (true
+keeps a position); `causal` is top-left aligned like PyTorch's `is_causal`. It is not differentiable
+yet because `gemm_strided_batched` has no backward.
+
 ## P0 — Minimum useful dense inference library
 
 This is the first implementation target: linear regression, logistic regression,
@@ -177,9 +210,9 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[x] `min(x)` and `prod(x)` — full-tensor minimum/product reductions.
 * \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
-* \[ ] `softmax(x, axis)` — normalized exponentials (removed; to be redone).
-* \[ ] `mse_loss`, `log_softmax`, and index-target `cross_entropy` (removed; MSE can be written
-as `mean(square(sub(p, t)))`).
+* \[x] `softmax(x, axis)` — normalized exponentials along any axis, stable; forward and backward
+(CPU, float32).
+* \[x] `mse_loss`, `log_softmax`, and index-target `cross_entropy` — see Losses and evaluation below.
 
 ### Tensor plumbing
 
@@ -204,8 +237,8 @@ with a reference. This supports inference, not training by itself.
 autograd for the implemented elementwise, reduction, bias, and matrix multiply
 operations, and a runnable MLP example (`examples/mlp_xor.cpp`) that writes its
 loss and update step from those operations. The five additional activations below currently
-provide forward support only. Softmax, the loss operations, and
-the SGD optimizer were removed. GPU backends,
+provide forward support only. Softmax, log-softmax and the losses (cross-entropy, MSE, binary
+cross-entropy with logits) are back, with backward and autograd; the SGD optimizer was removed. GPU backends,
 backend-independent correctness infrastructure, and the broader vendor-kernel
 coverage table remain separate work.
 
@@ -293,18 +326,21 @@ of a tensor, e.g. KV-cache updates.
 
 ### Losses and evaluation
 
-* \[ ] Mean squared error (MSE) as an op (removed; `examples/mlp\_xor.cpp` writes it as
-`mean(square(sub(p, t)))`).
-* \[ ] Binary cross-entropy **with logits**, using a stable formula.
-* \[ ] `log\_softmax`, using stable log-sum-exp (removed).
-* \[ ] Multiclass cross-entropy **with logits**, with integer class labels (removed).
+* \[x] Mean squared error (MSE) as an op: `mse_loss` (CPU, float32, forward and backward).
+* \[x] Binary cross-entropy **with logits**, using a stable formula:
+`binary_cross_entropy_with_logits` = max(x, 0) - x t + log1p(exp(-|x|)).
+* \[x] `log\_softmax`, using stable log-sum-exp: computed as (x - max) - log(sum exp(x - max)).
+* \[x] Multiclass cross-entropy **with logits**, with integer class labels: `cross_entropy`, fused
+log-softmax and NLL per row.
 * \[ ] Negative log-likelihood loss on log-probabilities.
 * \[ ] Huber / smooth-L1 loss and KL divergence.
 * \[ ] Label smoothing for cross-entropy.
 * \[ ] Accuracy, composed from `argmax`, comparisons, and reductions.
 
 Loss APIs should expose `none`, `sum`, and `mean` reduction modes. The initial
-version can choose one mode if it is explicit and tested.
+version can choose one mode if it is explicit and tested. Done: every loss takes
+`Reduction::None`, `Sum` or `Mean` (the default); reduced losses add fixed chunks in order, so they
+give the same bits at every thread count.
 
 ## P2 — Training small dense models
 
@@ -317,8 +353,10 @@ graphs if a full automatic differentiation system would exceed scope.
 * \[x] Elementwise gradients for arithmetic, ReLU, sigmoid, and tanh.
 * \[x] GEMM gradients using transposed GEMMs.
 * \[x] Bias gradients and reduction gradients using sum/broadcast.
-* \[ ] MSE and cross-entropy-with-logits gradients (removed with the losses).
-* \[ ] Softmax/log-softmax backward when required independently of fused losses (removed).
+* \[x] MSE and cross-entropy-with-logits gradients (`mse_loss_backward`, `cross_entropy_backward`,
+`binary_cross_entropy_with_logits_backward`), also recorded by autograd.
+* \[x] Softmax/log-softmax backward when required independently of fused losses
+(`softmax_backward`, `log_softmax_backward`).
 * \[ ] `sum\_to\_shape` — reduce broadcasted gradients back to an input's shape.
 * \[ ] Gradient accumulation for parameters used by multiple graph branches.
 * \[x] Embedding indexing gradients use deterministic scatter-add; repeated indices accumulate.
@@ -424,10 +462,13 @@ This is a stretch tier. Reuse earlier primitives before writing specialized fuse
 kernels.
 
 * \[x] Embedding row lookup and backward; CPU F32 with I64 indices and repeated-index accumulation.
-* \[ ] Batched GEMM with transpose support for attention scores and weighted sums.
-* \[ ] Scaled dot-product attention: `softmax(QK^T / sqrt(d) + mask) V`.
-* \[ ] Causal, padding, and sliding-window masks, with defined all-masked-row
-behavior.
+* \[x] Batched GEMM with transpose support for attention scores and weighted sums
+(`gemm_strided_batched`).
+* \[x] Scaled dot-product attention: `softmax(QK^T / sqrt(d) + mask) V` — `attention`, the naive
+algorithm from existing ops, forward only.
+* \[x] Causal, padding, and sliding-window masks, with defined all-masked-row
+behavior: a `causal` flag and any Bool mask (padding and sliding windows are masks); a query whose
+keys are all masked gets zeros.
 * \[ ] Relative position bias and ALiBi — biases added to attention scores
 (T5, SAM, BLOOM).
 * \[ ] Window partition / unpartition for windowed attention (Swin, SAM).

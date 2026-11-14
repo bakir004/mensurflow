@@ -10,9 +10,11 @@
 #include "backends/cpu/ops/gemm/gemm_batched.hpp"
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/ops/indexing/indexing.hpp"
+#include "backends/cpu/ops/loss/loss.hpp"
 #include "backends/cpu/ops/movement/movement.hpp"
 #include "backends/cpu/ops/random/random.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
+#include "backends/cpu/ops/softmax/softmax.hpp"
 #include "backends/cpu/threads.hpp"
 #include "core/dispatcher.hpp"
 #include "core/registry.hpp"
@@ -287,8 +289,8 @@ void bernoulli_kernel(const OpArgs& args, Stream&) {
 void dropout_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
     cpu::dropout_f32(data<float>(args.inputs[0]), data<float>(out),
-                     data<std::uint8_t>(args.outputs[1]), out.numel(), args.alpha,
-                     args.training, args.seed, args.offset);
+                     data<std::uint8_t>(args.outputs[1]), out.numel(), args.alpha, args.training,
+                     args.seed, args.offset);
 }
 
 void dropout_backward_kernel(const OpArgs& args, Stream&) {
@@ -312,8 +314,71 @@ void embedding_kernel(const OpArgs& args, Stream&) {
 void embedding_backward_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
     cpu::embedding_backward_f32(data<float>(args.inputs[0]), data<std::int64_t>(args.inputs[1]),
-                                data<float>(out), args.inputs[1].numel(), out.size(0),
-                                out.size(1));
+                                data<float>(out), args.inputs[1].numel(), out.size(0), out.size(1));
+}
+
+// ---- Softmax and losses ----------------------------------------------------------------------
+
+// Softmax views its input as [outer, length, inner] around args.axis (already normalized by the op).
+struct Lines {
+    std::int64_t outer = 1, length = 1, inner = 1;
+};
+
+Lines lines_around(const Tensor& t, int axis) {
+    Lines lines;
+    for (int d = 0; d < t.dim(); ++d) {
+        if (d < axis) {
+            lines.outer *= t.size(d);
+        } else if (d == axis) {
+            lines.length = t.size(d);
+        } else {
+            lines.inner *= t.size(d);
+        }
+    }
+    return lines;
+}
+
+template <void (*Kernel)(const float*, float*, std::int64_t, std::int64_t, std::int64_t)>
+void softmax_kernel(const OpArgs& args, Stream&) {
+    const Lines l = lines_around(args.inputs[0], args.axis);
+    Kernel(data<float>(args.inputs[0]), data<float>(args.outputs[0]), l.outer, l.length, l.inner);
+}
+
+template <void (*Kernel)(const float*, const float*, float*, std::int64_t, std::int64_t,
+                         std::int64_t)>
+void softmax_backward_kernel(const OpArgs& args, Stream&) {
+    const Lines l = lines_around(args.inputs[0], args.axis);
+    Kernel(data<float>(args.inputs[0]), data<float>(args.inputs[1]), data<float>(args.outputs[0]),
+           l.outer, l.length, l.inner);
+}
+
+// Inputs: logits [rows, classes], labels [rows] (I64), and for backward the upstream gradient.
+void cross_entropy_kernel(const OpArgs& args, Stream&) {
+    const Tensor& logits = args.inputs[0];
+    cpu::cross_entropy_f32(data<float>(logits), data<std::int64_t>(args.inputs[1]),
+                           data<float>(args.outputs[0]), logits.size(0), logits.size(1),
+                           args.reduction);
+}
+
+void cross_entropy_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& logits = args.inputs[0];
+    cpu::cross_entropy_backward_f32(data<float>(logits), data<std::int64_t>(args.inputs[1]),
+                                    data<float>(args.inputs[2]), data<float>(args.outputs[0]),
+                                    logits.size(0), logits.size(1), args.reduction);
+}
+
+// Inputs: x and target of the same shape.
+template <void (*Kernel)(const float*, const float*, float*, std::int64_t, int)>
+void loss_kernel(const OpArgs& args, Stream&) {
+    Kernel(data<float>(args.inputs[0]), data<float>(args.inputs[1]), data<float>(args.outputs[0]),
+           args.inputs[0].numel(), args.reduction);
+}
+
+// Inputs: x, target and the upstream gradient.
+template <void (*Kernel)(const float*, const float*, const float*, float*, std::int64_t, int)>
+void loss_backward_kernel(const OpArgs& args, Stream&) {
+    Kernel(data<float>(args.inputs[0]), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+           data<float>(args.outputs[0]), args.inputs[0].numel(), args.reduction);
 }
 
 // ---- Elementwise ---------------------------------------------------------------------------
@@ -556,6 +621,16 @@ class CpuBackend final : public Backend {
         dispatcher.register_kernel({OpId::OneHot, DeviceType::CPU, DType::I64}, one_hot_kernel);
         add(OpId::Embedding, embedding_kernel);
         add(OpId::EmbeddingBackward, embedding_backward_kernel);
+        add(OpId::Softmax, softmax_kernel<softmax_f32>);
+        add(OpId::LogSoftmax, softmax_kernel<log_softmax_f32>);
+        add(OpId::SoftmaxBackward, softmax_backward_kernel<softmax_backward_f32>);
+        add(OpId::LogSoftmaxBackward, softmax_backward_kernel<log_softmax_backward_f32>);
+        add(OpId::CrossEntropy, cross_entropy_kernel);
+        add(OpId::CrossEntropyBackward, cross_entropy_backward_kernel);
+        add(OpId::MseLoss, loss_kernel<mse_loss_f32>);
+        add(OpId::MseLossBackward, loss_backward_kernel<mse_loss_backward_f32>);
+        add(OpId::BceWithLogits, loss_kernel<bce_with_logits_f32>);
+        add(OpId::BceWithLogitsBackward, loss_backward_kernel<bce_with_logits_backward_f32>);
     }
 
   private:
