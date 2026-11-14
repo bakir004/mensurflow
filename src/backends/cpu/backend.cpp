@@ -11,6 +11,8 @@
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/ops/indexing/indexing.hpp"
 #include "backends/cpu/ops/loss/loss.hpp"
+#include "backends/cpu/ops/optimizer.hpp"
+#include "backends/cpu/ops/normalization.hpp"
 #include "backends/cpu/ops/movement/movement.hpp"
 #include "backends/cpu/ops/random/random.hpp"
 #include "backends/cpu/ops/reduction/reduction.hpp"
@@ -543,6 +545,58 @@ void clamp_kernel(const OpArgs& args, Stream&) {
                    args.beta);
 }
 
+void sgd_kernel(const OpArgs& args, Stream&) {
+    const Tensor& p = args.inputs[0];
+    float* velocity = args.inputs.size() > 2 ? data<float>(args.inputs[2]) : nullptr;
+    cpu::sgd_f32(data<float>(p), data<float>(args.inputs[1]), data<float>(args.outputs[0]), velocity,
+                 p.numel(), args.alpha, args.gamma, args.weight_decay);
+}
+void adam_kernel(const OpArgs& args, Stream& stream) {
+    const Tensor& p = args.inputs[0];
+    cpu::adam_f32(data<float>(p), data<float>(args.inputs[1]), data<float>(args.outputs[0]),
+                  data<float>(args.inputs[2]), data<float>(args.inputs[3]), p.numel(), args.alpha,
+                  args.gamma, args.delta, args.epsilon, args.weight_decay, args.step,
+                  args.transpose);
+}
+void layer_norm_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0]; const auto width = args.inputs[1].numel();
+    cpu::layer_norm_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+                        data<float>(args.outputs[0]), x.numel() / width, width, args.epsilon);
+}
+void layer_norm_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0]; const auto width = args.inputs[2].numel();
+    cpu::layer_norm_backward_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+                                 data<float>(args.outputs[0]), data<float>(args.outputs[1]),
+                                 data<float>(args.outputs[2]), x.numel() / width, width, args.epsilon);
+}
+void rms_norm_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0]; const auto width = args.inputs[1].numel();
+    cpu::rms_norm_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.outputs[0]),
+                      x.numel() / width, width, args.epsilon);
+}
+void rms_norm_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0]; const auto width = args.inputs[2].numel();
+    cpu::rms_norm_backward_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+                               data<float>(args.outputs[0]), data<float>(args.outputs[1]),
+                               x.numel() / width, width, args.epsilon);
+}
+void batch_norm_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0]; const auto c = x.size(1);
+    std::int64_t spatial = x.numel() / (x.size(0) * c);
+    cpu::batch_norm_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+                        data<float>(args.inputs[3]), data<float>(args.inputs[4]),
+                        data<float>(args.outputs[0]), data<float>(args.outputs[1]),
+                        x.size(0), c, spatial, args.training, args.gamma, args.epsilon);
+}
+void batch_norm_backward_kernel(const OpArgs& args, Stream&) {
+    const Tensor& x = args.inputs[0]; const auto c = x.size(1);
+    std::int64_t spatial = x.numel() / (x.size(0) * c);
+    cpu::batch_norm_backward_f32(data<float>(x), data<float>(args.inputs[1]), data<float>(args.inputs[2]),
+                                 data<float>(args.inputs[3]), data<float>(args.outputs[0]),
+                                 data<float>(args.outputs[1]), data<float>(args.outputs[2]),
+                                 x.size(0), c, spatial, args.training, args.gamma, args.epsilon);
+}
+
 // Ops hand bias_add a contiguous [batch, features] matrix and a contiguous [features] bias.
 void bias_add_kernel(const OpArgs& args, Stream&) {
     const Tensor& out = args.outputs[0];
@@ -699,6 +753,17 @@ class CpuBackend final : public Backend {
         add(OpId::MseLossBackward, loss_backward_kernel<mse_loss_backward_f32>);
         add(OpId::BceWithLogits, loss_kernel<bce_with_logits_f32>);
         add(OpId::BceWithLogitsBackward, loss_backward_kernel<bce_with_logits_backward_f32>);
+        add(OpId::Sgd, sgd_kernel);
+        add(OpId::Adam, adam_kernel);
+        add(OpId::AdamW, [](const OpArgs& args, Stream& s) {
+            OpArgs copy = args; copy.transpose = true; adam_kernel(copy, s);
+        });
+        add(OpId::LayerNorm, layer_norm_kernel);
+        add(OpId::LayerNormBackward, layer_norm_backward_kernel);
+        add(OpId::RmsNorm, rms_norm_kernel);
+        add(OpId::RmsNormBackward, rms_norm_backward_kernel);
+        add(OpId::BatchNorm, batch_norm_kernel);
+        add(OpId::BatchNormBackward, batch_norm_backward_kernel);
     }
 
   private:

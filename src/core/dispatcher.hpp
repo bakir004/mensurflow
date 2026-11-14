@@ -102,7 +102,16 @@ enum class OpId {
     MseLoss,
     MseLossBackward,
     BceWithLogits,
-    BceWithLogitsBackward
+    BceWithLogitsBackward,
+    Sgd,
+    Adam,
+    AdamW,
+    LayerNorm,
+    LayerNormBackward,
+    RmsNorm,
+    RmsNormBackward,
+    BatchNorm,
+    BatchNormBackward
 };
 
 const char* op_name(OpId op);
@@ -134,6 +143,11 @@ struct OpArgs {
     // Op-specific scalar: multiplier, clamp lower bound, activation slope/alpha, or softplus beta.
     float alpha = 1.0f;
     float beta = 1.0f; // gemv beta, clamp upper bound, or softplus threshold.
+    float gamma = 0.0f; // optimizer beta1 or batch-norm momentum.
+    float delta = 0.0f; // optimizer beta2.
+    float epsilon = 1e-5f;
+    float weight_decay = 0.0f;
+    std::int64_t step = 1;
     int axis = -1;     // Reduction axis; unused by other operations.
     bool keepdim = false;
     bool transpose = false;

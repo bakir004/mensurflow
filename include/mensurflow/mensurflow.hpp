@@ -10,6 +10,8 @@
 #include "mensurflow/ops/indexing.hpp"
 #include "mensurflow/ops/loss.hpp"
 #include "mensurflow/ops/movement.hpp"
+#include "mensurflow/ops/normalization.hpp"
+#include "mensurflow/ops/optimizers.hpp"
 #include "mensurflow/ops/random.hpp"
 #include "mensurflow/ops/reduction.hpp"
 #include "mensurflow/ops/softmax.hpp"

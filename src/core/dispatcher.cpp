@@ -177,6 +177,24 @@ const char* op_name(OpId op) {
         return "binary_cross_entropy_with_logits";
     case OpId::BceWithLogitsBackward:
         return "binary_cross_entropy_with_logits_backward";
+    case OpId::Sgd:
+        return "sgd";
+    case OpId::Adam:
+        return "adam";
+    case OpId::AdamW:
+        return "adamw";
+    case OpId::LayerNorm:
+        return "layer_norm";
+    case OpId::LayerNormBackward:
+        return "layer_norm_backward";
+    case OpId::RmsNorm:
+        return "rms_norm";
+    case OpId::RmsNormBackward:
+        return "rms_norm_backward";
+    case OpId::BatchNorm:
+        return "batch_norm";
+    case OpId::BatchNormBackward:
+        return "batch_norm_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }
