@@ -18,12 +18,13 @@
 #include <immintrin.h>
 #endif
 
-#ifndef MENSURFLOW_TARGET_AVX2
+// AVX2 without FMA on purpose. With "avx2,fma" GCC and Clang fuse a * b + c into one rounding by default
+// (-ffp-contract=fast), including in the scalar tail of these functions, and the results would no longer
+// match the portable loop bit for bit. Without the fma target the compiler cannot emit FMA here.
 #if defined(_MSC_VER)
-#define MENSURFLOW_TARGET_AVX2
+#define MENSURFLOW_OPTIMIZER_TARGET
 #else
-#define MENSURFLOW_TARGET_AVX2 __attribute__((target("avx2,fma")))
-#endif
+#define MENSURFLOW_OPTIMIZER_TARGET __attribute__((target("avx2")))
 #endif
 
 namespace mensurflow::cpu {
@@ -118,8 +119,8 @@ void adam_portable(float* p, const float* g, float* m, float* v, std::int64_t n,
 #ifdef MENSURFLOW_OPTIMIZER_AVX2
 
 template <bool Momentum>
-MENSURFLOW_TARGET_AVX2 void sgd_avx2(float* p, const float* g, float* velocity, std::int64_t n,
-                                     float lr, float momentum, float weight_decay) {
+MENSURFLOW_OPTIMIZER_TARGET void sgd_avx2(float* p, const float* g, float* velocity, std::int64_t n,
+                                          float lr, float momentum, float weight_decay) {
     const std::int64_t blocks = n / 8;
     const __m256 vlr = _mm256_set1_ps(lr);
     const __m256 vmomentum = _mm256_set1_ps(momentum);
@@ -142,8 +143,8 @@ MENSURFLOW_TARGET_AVX2 void sgd_avx2(float* p, const float* g, float* velocity, 
 }
 
 template <bool Decoupled>
-MENSURFLOW_TARGET_AVX2 void adam_avx2(float* p, const float* g, float* m, float* v, std::int64_t n,
-                                      const AdamCoefficients& c) {
+MENSURFLOW_OPTIMIZER_TARGET void adam_avx2(float* p, const float* g, float* m, float* v,
+                                           std::int64_t n, const AdamCoefficients& c) {
     const std::int64_t blocks = n / 8;
     const __m256 vbeta1 = _mm256_set1_ps(c.beta1);
     const __m256 vbeta2 = _mm256_set1_ps(c.beta2);
