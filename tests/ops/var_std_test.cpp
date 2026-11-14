@@ -2,6 +2,8 @@
 // tests/reference/reduction.hpp: every axis, keepdim and correction, the count - correction <= 0
 // rule, special values, a numerically hard case where the naive formulas lose precision,
 // finite-difference and reference checks of the gradient, autograd, views, empty shapes and errors.
+#include "backends/cpu/ops/reduction/reduction.hpp"
+#include "backends/cpu/threads.hpp"
 #include "gradient_check.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/reduction.hpp"
@@ -327,10 +329,85 @@ void test_std_finite_differences() {
     }
 }
 
+// The parallel kernels against the sequential ones for contiguous and strided axes, short and
+// long (many blocks merged with Chan's formula), and the same bits at every thread count.
+void test_parallel() {
+    struct Case {
+        Shape shape;
+        int axis;
+    };
+    const std::vector<Case> cases = {
+        {{2, 7}, 1},          {{3, 1000}, 1},      {{40, 1000}, 1},    // around the cutoff
+        {{3, 100001}, 1},     {{1, 1 << 20}, 1},   {{5, 8}, 1},        // contiguous, many blocks
+        {{100000, 3}, 0},     {{300, 513}, 0},     {{4, 5000, 6}, 1},  // strided
+        {{6, 4, 2049}, 1},    {{2, 3, 4, 5}, 2},   {{1, 1}, 1},
+    };
+    const int original = cpu::max_threads();
+    std::uint32_t seed = 300;
+    for (const Case& c : cases) {
+        const auto x = test::random_values(numel(c.shape), seed++, -2.0f, 3.0f);
+        const Shape out_shape = reduced_shape(c.shape, c.axis, false);
+        const auto g = test::random_values(numel(out_shape), seed++);
+        const auto rank = static_cast<std::int64_t>(c.shape.size());
+        const auto outputs = static_cast<std::size_t>(numel(out_shape));
+        for (std::int64_t correction : {0, 1}) {
+            std::vector<float> var_seq(outputs), std_seq(outputs), gv_seq(x.size()),
+                gs_seq(x.size());
+            cpu::var_axis_f32_sequential(x.data(), var_seq.data(), c.shape.data(), rank, c.axis,
+                                         correction);
+            cpu::std_axis_f32_sequential(x.data(), std_seq.data(), c.shape.data(), rank, c.axis,
+                                         correction);
+            cpu::var_backward_f32_sequential(x.data(), g.data(), gv_seq.data(), c.shape.data(),
+                                             rank, c.axis, correction);
+            cpu::std_backward_f32_sequential(x.data(), g.data(), gs_seq.data(), c.shape.data(),
+                                             rank, c.axis, correction);
+            std::vector<float> var_one, gv_one;
+            for (int threads : {1, 2, 3, 7, original}) {
+                cpu::set_max_threads(threads);
+                const std::string label = "parallel " + describe(c.shape, c.axis, false,
+                                                                 correction) +
+                                          ", " + std::to_string(threads) + " threads";
+                std::vector<float> v(outputs), sd(outputs), gv(x.size()), gs(x.size());
+                cpu::var_axis_f32_parallel(x.data(), v.data(), c.shape.data(), rank, c.axis,
+                                           correction);
+                cpu::std_axis_f32_parallel(x.data(), sd.data(), c.shape.data(), rank, c.axis,
+                                           correction);
+                cpu::var_backward_f32_parallel(x.data(), g.data(), gv.data(), c.shape.data(),
+                                               rank, c.axis, correction);
+                cpu::std_backward_f32_parallel(x.data(), g.data(), gs.data(), c.shape.data(),
+                                               rank, c.axis, correction);
+                test::require_close(v, var_seq, 1e-7, 2e-6, label + ": var");
+                test::require_close(sd, std_seq, 1e-7, 2e-6, label + ": std");
+                test::require_close(gv, gv_seq, 1e-6, 2e-6, label + ": var backward");
+                test::require_close(gs, gs_seq, 1e-6, 2e-6, label + ": std backward");
+                if (threads == 1) {
+                    var_one = v;
+                    gv_one = gv;
+                } else {
+                    test::require(test::matches_f32(v, var_one) && test::matches_f32(gv, gv_one),
+                                  label + ": bits of one thread");
+                }
+            }
+        }
+    }
+    // The large-mean case through the blocked path: 2^20 values 1e8 + 8 * {0, 1, 2, 3}.
+    std::vector<float> big(std::size_t{1} << 20);
+    for (std::size_t i = 0; i < big.size(); ++i) {
+        big[i] = 1e8f + 8.0f * static_cast<float>(i % 4);
+    }
+    const Shape big_shape{static_cast<std::int64_t>(big.size())};
+    float got = 0.0f;
+    cpu::var_axis_f32_parallel(big.data(), &got, big_shape.data(), 1, 0, 0);
+    test::require(std::abs(got - 80.0f) <= 80.0f * 1e-6f,
+                  "parallel Welford with a large mean: " + std::to_string(got));
+    cpu::set_max_threads(original);
+}
+
 } // namespace
 
 int main() {
     return test::run("var_std_test", [] {
+        test_parallel();
         test_var_against_reference();
         test_var_degenerate_counts();
         test_var_special_values();

@@ -36,8 +36,11 @@ dispatcher where to run. CPU kernels are in
 `src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv}/`; each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
-by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`, `argmin`, `var`, `std`) have only a `*_sequential` kernel so far: it is the correctness baseline the
-parallel version will be tested and benchmarked against.
+by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`, `argmin`, `var`, `std`) have a `*_sequential` kernel
+(the correctness baseline) and a `*_parallel` one built on `parallel_for` / `parallel_sum` in
+`src/backends/cpu/parallel.hpp` (no pragmas in the kernels; the pieces run on the GEMM's thread
+pool). Their splits depend only on the shape, so each gives the same bits at every thread count.
+Measured results: [docs/benchmarks/asja-ryzen9-5900x-2026-11-14.md](benchmarks/asja-ryzen9-5900x-2026-11-14.md).
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
 |Operation|CPU|CUDA|Metal|
@@ -53,7 +56,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
 |`argmin`|`*_sequential` and `*_parallel` (rows across threads; rows longer than 16384 split into blocks merged in order), exactly the sequential result; last-axis float32 input with int64 output; argmax's rules (ties select the first index, the first NaN wins); forward only (not differentiable)|—|—|
-|`var`, `std`|sequential only (`*_sequential`), float32, any axis with `keepdim`; one-pass Welford in double; `correction` (default 1); NaN when `count - correction <= 0`; forward, backward and CPU autograd; see [CPU variance and standard deviation](#cpu-variance-and-standard-deviation)|—|—|
+|`var`, `std`|`*_sequential` and `*_parallel` (the axis cut into fixed blocks of about 32K elements merged with Chan's formula; contiguous axes as 8 interleaved Welford lanes, strided axes 256 output positions at a time; same bits at every thread count), float32, any axis with `keepdim`; one-pass Welford in double; `correction` (default 1); NaN when `count - correction <= 0`; forward, backward and CPU autograd; see [CPU variance and standard deviation](#cpu-variance-and-standard-deviation)|—|—|
 |`matmul`|packed AVX2/FMA GEMM on our own thread pool (scalar fallback without AVX2); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|—|
 |`gemm`|alpha, beta and transposes|—|—|
 |`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|

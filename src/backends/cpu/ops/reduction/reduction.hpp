@@ -98,4 +98,20 @@ constexpr std::int64_t moments_parallel_cutoff = std::int64_t{1} << 15;
 constexpr std::int64_t argmin_block = std::int64_t{1} << 14;
 void argmin_f32_parallel(const float* x, std::int64_t* out, std::int64_t rows, std::int64_t width);
 
+// The reduced axis is cut into blocks of about 2^15 elements (times the positions reduced
+// together); each block runs Welford on its own and the blocks are merged in order with Chan's
+// formula. A contiguous axis (nothing after it) runs as 8 interleaved Welford lanes, merged at the
+// end of the block, so the update vectorizes; a strided axis updates up to 256 neighbouring
+// output positions together, reading contiguous memory.
+void var_axis_f32_parallel(const float* x, float* out, const std::int64_t* shape,
+                           std::int64_t rank, std::int64_t axis, std::int64_t correction);
+void std_axis_f32_parallel(const float* x, float* out, const std::int64_t* shape,
+                           std::int64_t rank, std::int64_t axis, std::int64_t correction);
+void var_backward_f32_parallel(const float* x, const float* grad, float* grad_x,
+                               const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                               std::int64_t correction);
+void std_backward_f32_parallel(const float* x, const float* grad, float* grad_x,
+                               const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                               std::int64_t correction);
+
 } // namespace mensurflow::cpu

@@ -446,6 +446,201 @@ std::int64_t argmin_merge(const float* values, std::int64_t first, std::int64_t 
     return std::isnan(values[second]) || values[second] < values[first] ? second : first;
 }
 
+// Moments of a block: element count, mean and M2.
+struct Block {
+    double count = 0.0, mean = 0.0, m2 = 0.0;
+};
+
+// Chan et al.'s combination of two blocks' moments: exact for the union up to rounding, and it
+// never subtracts large sums.
+Block chan_merge(const Block& a, const Block& b) {
+    if (a.count == 0.0) {
+        return b;
+    }
+    if (b.count == 0.0) {
+        return a;
+    }
+    const double count = a.count + b.count;
+    const double delta = b.mean - a.mean;
+    return {count, a.mean + delta * (b.count / count),
+            a.m2 + b.m2 + delta * delta * (a.count * b.count / count)};
+}
+
+constexpr std::int64_t lanes = 8;          // interleaved Welford streams on a contiguous axis
+constexpr std::int64_t inner_chunk = 256;  // output positions updated together on a strided axis
+constexpr std::int64_t block_elements = std::int64_t{1} << 15;
+
+// Moments of x[begin, end) on a contiguous axis: `lanes` interleaved Welford streams (element
+// begin + k * lanes + l goes to lane l), merged in lane order at the end. The lanes' updates are
+// independent, so the loop over them vectorizes, and each step needs one division for all lanes.
+Block contiguous_block(const float* x, std::int64_t begin, std::int64_t end) {
+    double mean[lanes] = {}, m2[lanes] = {};
+    const std::int64_t steps = (end - begin) / lanes;
+    for (std::int64_t k = 0; k < steps; ++k) {
+        const float* v = x + begin + k * lanes;
+        const double inverse = 1.0 / static_cast<double>(k + 1);
+        for (std::int64_t l = 0; l < lanes; ++l) {
+            const double value = static_cast<double>(v[l]);
+            const double delta = value - mean[l];
+            mean[l] += delta * inverse;
+            m2[l] += delta * (value - mean[l]);
+        }
+    }
+    Block result;
+    for (std::int64_t l = 0; l < lanes; ++l) {
+        result = chan_merge(result, {static_cast<double>(steps), mean[l], m2[l]});
+    }
+    // The tail (fewer than `lanes` elements) as a block of its own.
+    const Moments tail = welford(x + begin + steps * lanes, end - begin - steps * lanes, 1);
+    return chan_merge(result,
+                      {static_cast<double>(end - begin - steps * lanes), tail.mean, tail.m2});
+}
+
+// The plan of a blocked reduction over x viewed as [outer, width, inner].
+struct MomentPlan {
+    AxisLayout l;
+    std::int64_t chunk;  // inner positions per task (1 on a contiguous axis)
+    std::int64_t chunks; // tasks across inner
+    std::int64_t rows;   // axis elements per block
+    std::int64_t blocks; // blocks along the axis
+};
+
+MomentPlan moment_plan(const std::int64_t* shape, std::int64_t rank, std::int64_t axis) {
+    MomentPlan p;
+    p.l = axis_layout(shape, rank, axis);
+    p.chunk = std::min(p.l.inner, inner_chunk);
+    p.chunks = (p.l.inner + p.chunk - 1) / p.chunk;
+    p.rows = std::max<std::int64_t>(lanes, block_elements / p.chunk);
+    p.blocks = std::max<std::int64_t>(1, (p.l.width + p.rows - 1) / p.rows);
+    return p;
+}
+
+// Moments of block b of the axis for inner positions [i0, i1) of outer index o, into out[i - i0].
+void strided_block(const float* x, const MomentPlan& p, std::int64_t o, std::int64_t b,
+                   std::int64_t i0, std::int64_t i1, Block* out) {
+    const std::int64_t r0 = b * p.rows;
+    const std::int64_t r1 = std::min(p.l.width, r0 + p.rows);
+    if (p.l.inner == 1) {
+        out[0] = contiguous_block(x + o * p.l.width, r0, r1);
+        return;
+    }
+    const std::int64_t n = i1 - i0;
+    std::vector<double> mean(static_cast<std::size_t>(n), 0.0), m2(mean);
+    for (std::int64_t r = r0; r < r1; ++r) {
+        const float* row = x + (o * p.l.width + r) * p.l.inner + i0;
+        const double inverse = 1.0 / static_cast<double>(r - r0 + 1);
+        for (std::int64_t i = 0; i < n; ++i) {
+            const double value = static_cast<double>(row[i]);
+            const double delta = value - mean[static_cast<std::size_t>(i)];
+            mean[static_cast<std::size_t>(i)] += delta * inverse;
+            m2[static_cast<std::size_t>(i)] += delta * (value - mean[static_cast<std::size_t>(i)]);
+        }
+    }
+    for (std::int64_t i = 0; i < n; ++i) {
+        out[i] = {static_cast<double>(r1 - r0), mean[static_cast<std::size_t>(i)],
+                  m2[static_cast<std::size_t>(i)]};
+    }
+}
+
+// The moments of every output position [outer * inner], blocks computed in parallel and merged
+// in block order.
+std::vector<Block> blocked_moments(const float* x, const MomentPlan& p) {
+    const std::int64_t outputs = p.l.outer * p.l.inner;
+    // partial[(o * blocks + b) * inner + i]
+    std::vector<Block> partial(static_cast<std::size_t>(outputs * p.blocks));
+    const std::int64_t tasks = p.l.outer * p.blocks * p.chunks;
+    parallel_for(tasks, grain_for(moments_parallel_cutoff, std::min(p.rows, p.l.width) * p.chunk),
+                 [&](std::int64_t t0, std::int64_t t1) {
+                     for (std::int64_t t = t0; t < t1; ++t) {
+                         const std::int64_t c = t % p.chunks;
+                         const std::int64_t b = (t / p.chunks) % p.blocks;
+                         const std::int64_t o = t / (p.chunks * p.blocks);
+                         const std::int64_t i0 = c * p.chunk;
+                         const std::int64_t i1 = std::min(p.l.inner, i0 + p.chunk);
+                         strided_block(x, p, o, b, i0, i1,
+                                       partial.data() + (o * p.blocks + b) * p.l.inner + i0);
+                     }
+                 });
+    if (p.blocks == 1) {
+        return partial;
+    }
+    std::vector<Block> result(static_cast<std::size_t>(outputs));
+    parallel_for(outputs, grain_for(moments_parallel_cutoff, p.blocks),
+                 [&](std::int64_t j0, std::int64_t j1) {
+                     for (std::int64_t j = j0; j < j1; ++j) {
+                         const std::int64_t o = j / p.l.inner;
+                         const std::int64_t i = j % p.l.inner;
+                         Block merged;
+                         for (std::int64_t b = 0; b < p.blocks; ++b) {
+                             merged = chan_merge(
+                                 merged,
+                                 partial[static_cast<std::size_t>((o * p.blocks + b) * p.l.inner + i)]);
+                         }
+                         result[static_cast<std::size_t>(j)] = merged;
+                     }
+                 });
+    return result;
+}
+
+template <bool Sqrt>
+void moment_axis_parallel(const float* x, float* out, const std::int64_t* shape, std::int64_t rank,
+                          std::int64_t axis, std::int64_t correction) {
+    const MomentPlan p = moment_plan(shape, rank, axis);
+    const double divisor = variance_divisor(p.l.width, correction);
+    const std::vector<Block> moments = blocked_moments(x, p);
+    parallel_for(static_cast<std::int64_t>(moments.size()), moments_parallel_cutoff,
+                 [&](std::int64_t j0, std::int64_t j1) {
+                     for (std::int64_t j = j0; j < j1; ++j) {
+                         const double m2 = moments[static_cast<std::size_t>(j)].m2;
+                         const double variance = divisor > 0.0 ? m2 / divisor : quiet_nan;
+                         out[j] = static_cast<float>(Sqrt ? std::sqrt(variance) : variance);
+                     }
+                 });
+}
+
+// grad_x = scale * (x - mean), with scale per output position: 2 grad / divisor for var,
+// grad / (divisor * std) (0 where std is 0) for std, NaN where divisor <= 0.
+template <bool Std>
+void moment_backward_parallel(const float* x, const float* grad, float* grad_x,
+                              const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                              std::int64_t correction) {
+    const MomentPlan p = moment_plan(shape, rank, axis);
+    const double divisor = variance_divisor(p.l.width, correction);
+    const std::vector<Block> moments = blocked_moments(x, p);
+    std::vector<double> scale(moments.size()), mean(moments.size());
+    parallel_for(static_cast<std::int64_t>(moments.size()), moments_parallel_cutoff,
+                 [&](std::int64_t j0, std::int64_t j1) {
+                     for (auto j = static_cast<std::size_t>(j0); j < static_cast<std::size_t>(j1);
+                          ++j) {
+                         mean[j] = moments[j].mean;
+                         const double g = static_cast<double>(grad[j]);
+                         if (divisor <= 0.0) {
+                             scale[j] = quiet_nan;
+                         } else if (Std) {
+                             const double deviation = std::sqrt(moments[j].m2 / divisor);
+                             scale[j] = deviation == 0.0 ? 0.0 : g / (divisor * deviation);
+                         } else {
+                             scale[j] = 2.0 * g / divisor;
+                         }
+                     }
+                 });
+    // One task per row of `inner` contiguous elements.
+    const std::int64_t rows = p.l.outer * p.l.width;
+    parallel_for(rows, grain_for(moments_parallel_cutoff, p.l.inner),
+                 [&](std::int64_t r0, std::int64_t r1) {
+                     for (std::int64_t r = r0; r < r1; ++r) {
+                         const std::int64_t o = r / p.l.width;
+                         const float* in = x + r * p.l.inner;
+                         float* out = grad_x + r * p.l.inner;
+                         const double* s = scale.data() + o * p.l.inner;
+                         const double* m = mean.data() + o * p.l.inner;
+                         for (std::int64_t i = 0; i < p.l.inner; ++i) {
+                             out[i] = static_cast<float>(s[i] * (static_cast<double>(in[i]) - m[i]));
+                         }
+                     }
+                 });
+}
+
 } // namespace
 
 void argmin_f32_parallel(const float* x, std::int64_t* out, std::int64_t rows,
@@ -468,6 +663,28 @@ void argmin_f32_parallel(const float* x, std::int64_t* out, std::int64_t rows,
             [&](std::int64_t a, std::int64_t b) { return argmin_merge(values, a, b); },
             grain_for(moments_parallel_cutoff, argmin_block));
     }
+}
+
+void var_axis_f32_parallel(const float* x, float* out, const std::int64_t* shape,
+                           std::int64_t rank, std::int64_t axis, std::int64_t correction) {
+    moment_axis_parallel<false>(x, out, shape, rank, axis, correction);
+}
+
+void std_axis_f32_parallel(const float* x, float* out, const std::int64_t* shape,
+                           std::int64_t rank, std::int64_t axis, std::int64_t correction) {
+    moment_axis_parallel<true>(x, out, shape, rank, axis, correction);
+}
+
+void var_backward_f32_parallel(const float* x, const float* grad, float* grad_x,
+                               const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                               std::int64_t correction) {
+    moment_backward_parallel<false>(x, grad, grad_x, shape, rank, axis, correction);
+}
+
+void std_backward_f32_parallel(const float* x, const float* grad, float* grad_x,
+                               const std::int64_t* shape, std::int64_t rank, std::int64_t axis,
+                               std::int64_t correction) {
+    moment_backward_parallel<true>(x, grad, grad_x, shape, rank, axis, correction);
 }
 
 } // namespace mensurflow::cpu

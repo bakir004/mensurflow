@@ -702,10 +702,17 @@ class CpuBackend final : public Backend {
         add(OpId::AxisProd, axis_reduce_kernel<prod_axis_f32>);
         add(OpId::Argmax, argmax_kernel);
         add(OpId::Argmin, argmin_kernel);
-        add(OpId::Var, moment_kernel<var_axis_f32_sequential>);
-        add(OpId::VarBackward, moment_backward_kernel<var_backward_f32_sequential>);
-        add(OpId::Std, moment_kernel<std_axis_f32_sequential>);
-        add(OpId::StdBackward, moment_backward_kernel<std_backward_f32_sequential>);
+        if (use_parallel) {
+            add(OpId::Var, moment_kernel<var_axis_f32_parallel>);
+            add(OpId::VarBackward, moment_backward_kernel<var_backward_f32_parallel>);
+            add(OpId::Std, moment_kernel<std_axis_f32_parallel>);
+            add(OpId::StdBackward, moment_backward_kernel<std_backward_f32_parallel>);
+        } else {
+            add(OpId::Var, moment_kernel<var_axis_f32_sequential>);
+            add(OpId::VarBackward, moment_backward_kernel<var_backward_f32_sequential>);
+            add(OpId::Std, moment_kernel<std_axis_f32_sequential>);
+            add(OpId::StdBackward, moment_backward_kernel<std_backward_f32_sequential>);
+        }
 
         add(OpId::Ger, ger_kernel);
         add(OpId::GemmBatched, gemm_batched_kernel<gemm_batched_default>);
