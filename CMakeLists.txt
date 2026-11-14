@@ -267,6 +267,7 @@ mensurflow_add_benchmark(fma_peak_benchmark benchmarks/blas/fma_peak_benchmark.c
 mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
 mensurflow_add_benchmark(conv2d_benchmark benchmarks/conv/conv2d_benchmark.cpp)
+mensurflow_add_benchmark(pooling_benchmark benchmarks/conv/pooling_benchmark.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
 mensurflow_add_benchmark(selection_benchmark benchmarks/selection_benchmark.cpp)

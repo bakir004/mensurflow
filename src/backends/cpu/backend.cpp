@@ -330,15 +330,17 @@ void max_pool2d_backward_kernel(const OpArgs& args, Stream&) {
 
 void avg_pool2d_kernel(const OpArgs& args, Stream&) {
     const Tensor& x = args.inputs[0];
-    cpu::avg_pool2d_f32_sequential(data<float>(x), data<float>(args.outputs[0]),
-                                   pool2d_shape(x.shape(), args));
+    const auto kernel =
+        use_parallel ? cpu::avg_pool2d_f32_parallel : cpu::avg_pool2d_f32_sequential;
+    kernel(data<float>(x), data<float>(args.outputs[0]), pool2d_shape(x.shape(), args));
 }
 
 // Input grad_y; the output has the forward input's shape, from which the window sizes follow.
 void avg_pool2d_backward_kernel(const OpArgs& args, Stream&) {
     const Tensor& grad_x = args.outputs[0];
-    cpu::avg_pool2d_backward_f32_sequential(data<float>(args.inputs[0]), data<float>(grad_x),
-                                            pool2d_shape(grad_x.shape(), args));
+    const auto kernel = use_parallel ? cpu::avg_pool2d_backward_f32_parallel
+                                     : cpu::avg_pool2d_backward_f32_sequential;
+    kernel(data<float>(args.inputs[0]), data<float>(grad_x), pool2d_shape(grad_x.shape(), args));
 }
 
 // ---- Data movement -------------------------------------------------------------------------

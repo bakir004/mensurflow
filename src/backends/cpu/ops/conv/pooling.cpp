@@ -128,11 +128,30 @@ void avg_pool2d_backward_f32_sequential(const float* grad_y, float* grad_x, cons
 
 namespace {
 
+// The outputs [begin, end) whose window covers input position i: o * stride - pad <= i <=
+// o * stride - pad + kernel - 1, clipped to [0, n_out).
+Span covering(std::int64_t i, std::int64_t stride, std::int64_t pad, std::int64_t kernel,
+              std::int64_t n_out) {
+    const std::int64_t low = i + pad - kernel + 1;
+    const std::int64_t begin = low <= 0 ? 0 : (low + stride - 1) / stride;
+    const std::int64_t end = std::min(n_out, (i + pad) / stride + 1);
+    return {begin, std::max(begin, end)};
+}
+
 // The clipped input columns of every output column.
 std::vector<Span> column_windows(const Pool2dShape& s) {
     std::vector<Span> spans(static_cast<std::size_t>(s.w_out));
     for (std::int64_t ow = 0; ow < s.w_out; ++ow) {
         spans[static_cast<std::size_t>(ow)] = window(ow, s.stride_w, s.pad_w, s.kw, s.w);
+    }
+    return spans;
+}
+
+// The output columns that cover every input column.
+std::vector<Span> covering_columns(const Pool2dShape& s) {
+    std::vector<Span> spans(static_cast<std::size_t>(s.w));
+    for (std::int64_t iw = 0; iw < s.w; ++iw) {
+        spans[static_cast<std::size_t>(iw)] = covering(iw, s.stride_w, s.pad_w, s.kw, s.w_out);
     }
     return spans;
 }
@@ -161,6 +180,21 @@ void max_pool_row(const float* in, float* out, std::int64_t* out_index, const Sp
         }
         out[ow] = best_value;
         out_index[ow] = best;
+    }
+}
+
+void avg_pool_row(const float* in, float* out, const Span rows, const Span* columns,
+                  std::int64_t w, std::int64_t w_out, double divisor) {
+    for (std::int64_t ow = 0; ow < w_out; ++ow) {
+        const Span cols = columns[ow];
+        double sum = 0.0;
+        for (std::int64_t ih = rows.begin; ih < rows.end; ++ih) {
+            const float* line = in + ih * w;
+            for (std::int64_t iw = cols.begin; iw < cols.end; ++iw) {
+                sum += static_cast<double>(line[iw]);
+            }
+        }
+        out[ow] = static_cast<float>(sum / divisor);
     }
 }
 
@@ -198,6 +232,58 @@ void max_pool2d_backward_f32_parallel(const float* grad_y, const std::int64_t* i
                          std::fill(out, out + n_in, 0.0f);
                          for (std::int64_t i = 0; i < n_out; ++i) {
                              out[index[i]] += gy[i];
+                         }
+                     }
+                 });
+}
+
+void avg_pool2d_f32_parallel(const float* x, float* y, const Pool2dShape& s) {
+    const std::vector<Span> columns = column_windows(s);
+    parallel_for(s.n * s.c * s.h_out, grain_for(pool2d_parallel_cutoff, s.w_out * s.kh * s.kw),
+                 [&](std::int64_t r0, std::int64_t r1) {
+                     const Pool2dShape shape = s;
+                     const Span* cols = columns.data();
+                     const double divisor = static_cast<double>(shape.kh * shape.kw);
+                     for (std::int64_t r = r0; r < r1; ++r) {
+                         const std::int64_t plane = r / shape.h_out;
+                         const std::int64_t oh = r % shape.h_out;
+                         avg_pool_row(x + plane * shape.h * shape.w, y + r * shape.w_out,
+                                      window(oh, shape.stride_h, shape.pad_h, shape.kh, shape.h),
+                                      cols, shape.w, shape.w_out, divisor);
+                     }
+                 });
+}
+
+void avg_pool2d_backward_f32_parallel(const float* grad_y, float* grad_x, const Pool2dShape& s) {
+    const std::vector<Span> covering_cols = covering_columns(s);
+    // Each input cell gathers about (kh / stride_h) * (kw / stride_w) windows.
+    const std::int64_t cost =
+        s.w * std::max<std::int64_t>(1, (s.kh / s.stride_h) * (s.kw / s.stride_w));
+    parallel_for(s.n * s.c * s.h, grain_for(pool2d_parallel_cutoff, cost),
+                 [&](std::int64_t r0, std::int64_t r1) {
+                     const Pool2dShape shape = s;
+                     const Span* cover = covering_cols.data();
+                     const float scale = 1.0f / static_cast<float>(shape.kh * shape.kw);
+                     const std::int64_t outputs = shape.h_out * shape.w_out;
+                     for (std::int64_t r = r0; r < r1; ++r) {
+                         const std::int64_t plane = r / shape.h;
+                         const std::int64_t ih = r % shape.h;
+                         const float* in = grad_y + plane * outputs;
+                         float* out = grad_x + r * shape.w;
+                         const Span out_rows =
+                             covering(ih, shape.stride_h, shape.pad_h, shape.kh, shape.h_out);
+                         for (std::int64_t iw = 0; iw < shape.w; ++iw) {
+                             const Span out_cols = cover[iw];
+                             // From +0, share by share in increasing (oh, ow): the order of the
+                             // sequential scatter, so the bits agree.
+                             float sum = 0.0f;
+                             for (std::int64_t oh = out_rows.begin; oh < out_rows.end; ++oh) {
+                                 const float* line = in + oh * shape.w_out;
+                                 for (std::int64_t ow = out_cols.begin; ow < out_cols.end; ++ow) {
+                                     sum += line[ow] * scale;
+                                 }
+                             }
+                             out[iw] = sum;
                          }
                      }
                  });

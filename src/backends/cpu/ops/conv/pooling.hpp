@@ -59,4 +59,10 @@ void max_pool2d_f32_parallel(const float* x, float* y, std::int64_t* indices,
 void max_pool2d_backward_f32_parallel(const float* grad_y, const std::int64_t* indices,
                                       float* grad_x, const Pool2dShape& s);
 
+void avg_pool2d_f32_parallel(const float* x, float* y, const Pool2dShape& s);
+
+// One task per (plane, input row): each input cell gathers the windows that cover it, in the
+// order the sequential scatter adds them.
+void avg_pool2d_backward_f32_parallel(const float* grad_y, float* grad_x, const Pool2dShape& s);
+
 } // namespace mensurflow::cpu

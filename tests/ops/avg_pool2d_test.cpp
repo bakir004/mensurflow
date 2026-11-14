@@ -1,6 +1,8 @@
 // avg_pool2d forward and backward against the direct reference in tests/reference/pooling.hpp:
 // the divisor convention (padding counts, count_include_pad = true), a finite-difference check of
 // the gradient, autograd, views, empty shapes and errors.
+#include "backends/cpu/ops/conv/pooling.hpp"
+#include "backends/cpu/threads.hpp"
 #include "gradient_check.hpp"
 #include "mensurflow/mensurflow.hpp"
 #include "reference/pooling.hpp"
@@ -161,10 +163,72 @@ void test_errors() {
                             "undefined gradient");
 }
 
+cpu::Pool2dShape kernel_shape(const Pool2dSizes& p) {
+    cpu::Pool2dShape s;
+    s.n = p.n;
+    s.c = p.c;
+    s.h = p.h;
+    s.w = p.w;
+    s.kh = p.kh;
+    s.kw = p.kw;
+    s.stride_h = p.stride_h;
+    s.stride_w = p.stride_w;
+    s.pad_h = p.pad_h;
+    s.pad_w = p.pad_w;
+    s.h_out = p.h_out();
+    s.w_out = p.w_out();
+    return s;
+}
+
+// The parallel kernels against the sequential ones around the cutoff and for few large or many
+// small planes; every thread count gives the bits of one thread.
+void test_parallel() {
+    const std::vector<Pool2dSizes> sizes = {
+        {1, 1, 254, 256, 2, 2, 2, 2, 0, 0},
+        {1, 1, 256, 256, 2, 2, 2, 2, 0, 0},
+        {1, 1, 258, 256, 2, 2, 2, 2, 0, 0},
+        {1, 3, 224, 224, 3, 3, 2, 2, 1, 1},
+        {2, 64, 57, 55, 3, 3, 2, 2, 1, 1},
+        {32, 3, 30, 30, 2, 2, 2, 2, 0, 0},
+        {2, 512, 7, 7, 7, 7, 7, 7, 0, 0},
+        {3, 5, 17, 13, 4, 3, 1, 2, 2, 1},
+        {1, 2, 300, 301, 5, 5, 1, 1, 2, 2}, // every cell in 25 windows
+    };
+    const int original = cpu::max_threads();
+    for (const Pool2dSizes& p : sizes) {
+        const cpu::Pool2dShape s = kernel_shape(p);
+        const auto x = test::random_values(p.x_size(), 81);
+        const auto gy = test::random_values(p.y_size(), 82);
+        std::vector<float> y_seq(static_cast<std::size_t>(p.y_size()));
+        std::vector<float> gx_seq(static_cast<std::size_t>(p.x_size()));
+        cpu::avg_pool2d_f32_sequential(x.data(), y_seq.data(), s);
+        cpu::avg_pool2d_backward_f32_sequential(gy.data(), gx_seq.data(), s);
+        std::vector<float> y_one, gx_one;
+        for (int threads : {1, 2, 3, 7, original}) {
+            cpu::set_max_threads(threads);
+            const std::string label = "parallel avg_pool2d " + to_string(x_shape(p)) + ", " +
+                                      std::to_string(threads) + " threads";
+            std::vector<float> y(y_seq.size()), gx(gx_seq.size());
+            cpu::avg_pool2d_f32_parallel(x.data(), y.data(), s);
+            cpu::avg_pool2d_backward_f32_parallel(gy.data(), gx.data(), s);
+            test::require(test::matches_f32(y, y_seq), label + ": forward");
+            test::require_close(gx, gx_seq, 1e-7, 1e-6, label + ": backward");
+            if (threads == 1) {
+                y_one = y;
+                gx_one = gx;
+            } else {
+                test::require(test::matches_f32(gx, gx_one), label + ": bits of one thread");
+            }
+        }
+    }
+    cpu::set_max_threads(original);
+}
+
 } // namespace
 
 int main() {
     return test::run("avg_pool2d_test", [] {
+        test_parallel();
         for (const Case& c : cases) {
             test_against_reference(c);
         }
