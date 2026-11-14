@@ -15,3 +15,4 @@
 #include "mensurflow/ops/softmax.hpp"
 #include "mensurflow/shape.hpp"
 #include "mensurflow/tensor.hpp"
+#include "mensurflow/tuning.hpp"

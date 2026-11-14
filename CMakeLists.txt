@@ -40,6 +40,7 @@ add_library(mensurflow
     src/core/storage.cpp
     src/core/autograd.cpp
     src/core/tensor.cpp
+    src/core/tuning.cpp
     src/ops/blas.cpp
     src/ops/elementwise.cpp
     src/ops/attention.cpp
@@ -110,8 +111,10 @@ if(NOT MENSURFLOW_METAL STREQUAL "OFF")
         find_library(MENSURFLOW_METAL_FW Metal)
         find_library(MENSURFLOW_MPS MetalPerformanceShaders)
         find_library(MENSURFLOW_MPSGRAPH MetalPerformanceShadersGraph)
-        target_sources(mensurflow PRIVATE src/backends/metal/backend.mm)
-        set_source_files_properties(src/backends/metal/backend.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+        target_sources(mensurflow PRIVATE src/backends/metal/backend.mm src/backends/metal/gemm.mm)
+        set_source_files_properties(src/backends/metal/backend.mm src/backends/metal/gemm.mm
+                                    PROPERTIES COMPILE_FLAGS -fobjc-arc)
+        set(MENSURFLOW_HAS_METAL ON)
         target_link_libraries(mensurflow PRIVATE ${MENSURFLOW_FOUNDATION} ${MENSURFLOW_METAL_FW}
                               ${MENSURFLOW_MPS} ${MENSURFLOW_MPSGRAPH})
         target_compile_definitions(mensurflow PRIVATE MENSURFLOW_HAS_METAL=1)
@@ -139,6 +142,7 @@ mensurflow_add_test(tensor_test tests/core/tensor_test.cpp)
 mensurflow_add_test(view_test tests/core/view_test.cpp)
 mensurflow_add_test(device_selection_test tests/core/device_selection_test.cpp)
 mensurflow_add_test(dispatcher_test tests/core/dispatcher_test.cpp)
+mensurflow_add_test(tuning_test tests/core/tuning_test.cpp)
 mensurflow_add_test(transfer_test tests/core/transfer_test.cpp)
 mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
@@ -149,6 +153,10 @@ mensurflow_add_test(parallel_cutoff_test tests/ops/parallel_cutoff_test.cpp)
 mensurflow_add_test(cast_test tests/ops/cast_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
+mensurflow_add_test(matmul_tile_test tests/ops/matmul_tile_test.cpp)
+if(MENSURFLOW_HAS_METAL)
+    target_compile_definitions(matmul_tile_test PRIVATE MENSURFLOW_TEST_METAL=1)
+endif()
 mensurflow_add_test(affinity_test tests/core/affinity_test.cpp)
 mensurflow_add_test(thread_pool_test tests/core/thread_pool_test.cpp)
 mensurflow_add_test(gemm_packed_test tests/ops/gemm_packed_test.cpp)
@@ -183,6 +191,10 @@ mensurflow_add_benchmark(bandwidth_benchmark benchmarks/bandwidth_benchmark.cpp)
 mensurflow_add_benchmark(activation_movement_benchmark benchmarks/activation_movement_benchmark.cpp)
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
 mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
+mensurflow_add_benchmark(matmul_tile_benchmark benchmarks/blas/matmul_tile_benchmark.cpp)
+if(MENSURFLOW_HAS_METAL)
+    target_compile_definitions(matmul_tile_benchmark PRIVATE MENSURFLOW_BENCH_METAL=1)
+endif()
 # Optional reference: matmul against OpenBLAS. AUTO builds it when OpenBLAS is found, ON requires
 # it, OFF skips it. Point CMake at an install with -DOPENBLAS_ROOT=<dir containing include/ lib/ bin/>
 # (the prebuilt Windows zip from the OpenBLAS releases works) or with vcpkg's toolchain file.
@@ -297,6 +309,8 @@ endif()
 
 add_executable(mlp_xor examples/mlp_xor.cpp)
 target_link_libraries(mlp_xor PRIVATE mensurflow)
+add_executable(tune_mlp examples/tune_mlp.cpp)
+target_link_libraries(tune_mlp PRIVATE mensurflow)
 
 add_executable(client client/main.cpp)
 target_link_libraries(client PRIVATE mensurflow)

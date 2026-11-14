@@ -22,6 +22,7 @@
 
 #include <cstring>
 #include <new>
+#include <stdexcept>
 #include <vector>
 
 namespace mensurflow::detail {
@@ -141,10 +142,76 @@ void matmul_kernel(const OpArgs& args, Stream&) {
     const Tensor x = a.is_contiguous() ? a : a.contiguous();
     const Tensor y = b.is_contiguous() ? b : b.contiguous();
     if (use_parallel) {
-        cpu::matmul_f32_parallel(data<float>(x), data<float>(y), c, m, n, k);
+        // Tile sizes from the auto-tuner when it chose some (see matmul_tunable below).
+        const cpu::MatmulBlocking blocking =
+            args.tuning.size == 3
+                ? cpu::MatmulBlocking{args.tuning.values[0], args.tuning.values[1],
+                                      args.tuning.values[2]}
+                : cpu::matmul_blocking();
+        if (blocking.rows < 0 || blocking.depth <= 0 || blocking.cols <= 0) {
+            // Only possible with a hand-edited results file.
+            throw std::invalid_argument("matmul tuning: rows must not be negative and depth and "
+                                        "cols must be positive");
+        }
+        cpu::matmul_f32_parallel(data<float>(x), data<float>(y), c, m, n, k, blocking);
     } else {
         cpu::matmul_f32_sequential(data<float>(x), data<float>(y), c, m, n, k);
     }
+}
+
+// The portable matmul's tile sizes (rows, depth, cols of MatmulBlocking) are tunable. The AVX2
+// packed kernel is not yet, and the sequential build has no tiles, so those offer no candidates.
+TunableKernel matmul_tunable() {
+    TunableKernel t;
+    t.name = "matmul";
+    t.version = 1;
+    t.key_names = {"m", "n", "k"};
+    t.key = [](const OpArgs& args) {
+        return std::vector<std::int64_t>{args.inputs[0].size(0), args.inputs[1].size(1),
+                                         args.inputs[0].size(1)};
+    };
+    t.params = {"rows", "depth", "cols"};
+    t.defaults = [] {
+        const cpu::MatmulBlocking b = cpu::matmul_blocking();
+        TuningConfig config;
+        config.values = {b.rows, b.depth, b.cols};
+        config.size = 3;
+        return config;
+    };
+    t.candidates = [](const OpArgs& args) {
+        std::vector<TuningConfig> list;
+        if (cpu::packed_gemm_supported() || !use_parallel) {
+            return list;
+        }
+        const std::int64_t m = args.inputs[0].size(0), k = args.inputs[0].size(1),
+                           n = args.inputs[1].size(1);
+        // A size at or above the matrix's own behaves like the matrix's size: keep only the first.
+        auto useful = [](std::initializer_list<std::int64_t> sizes, std::int64_t limit) {
+            std::vector<std::int64_t> kept;
+            for (const std::int64_t size : sizes) {
+                kept.push_back(size);
+                if (size >= limit) {
+                    break;
+                }
+            }
+            return kept;
+        };
+        const std::int64_t band = (m + cpu::max_threads() - 1) / cpu::max_threads();
+        std::vector<std::int64_t> rows = useful({4, 16, 64}, band);
+        rows.insert(rows.begin(), 0); // the whole band
+        for (const std::int64_t r : rows) {
+            for (const std::int64_t d : useful({64, 128, 256, 512}, k)) {
+                for (const std::int64_t c : useful({128, 256, 512, 1024}, n)) {
+                    TuningConfig config;
+                    config.values = {r, d, c};
+                    config.size = 3;
+                    list.push_back(config);
+                }
+            }
+        }
+        return list;
+    };
+    return t;
 }
 
 void ger_kernel(const OpArgs& args, Stream&) {
@@ -550,6 +617,7 @@ class CpuBackend final : public Backend {
         add(OpId::Matvec, matvec_kernel);
         add(OpId::Gemv, gemv_kernel);
         add(OpId::Matmul, matmul_kernel);
+        dispatcher.register_tunable({OpId::Matmul, DeviceType::CPU, DType::F32}, matmul_tunable());
 
         add(OpId::Add, binary_kernel<add_f32>);
         add(OpId::Sub, binary_kernel<sub_f32>);

@@ -260,7 +260,7 @@ not silently redirect an operation to another device.
 | Unary elementwise operations | Yes | No | No | No |
 | `dot` | Yes | Yes | Implemented, hardware validation pending | No |
 | `matvec` | Yes | No | No | No |
-| `matmul` | Yes | No | No | No |
+| `matmul` | Yes | No | Yes | No |
 | `argmax` | Yes | No | No | No |
 | Tensor transfers | Yes | Yes | Yes | No |
 
@@ -448,6 +448,7 @@ The detailed plans are:
 - [`docs/plan/ARCHITECTURE.md`](docs/plan/ARCHITECTURE.md)
 - [`docs/plan/KERNELS_ROADMAP.md`](docs/plan/KERNELS_ROADMAP.md)
 - [`docs/plan/VULKAN_DESIGN.md`](docs/plan/VULKAN_DESIGN.md)
+- [`docs/AUTOTUNING.md`](docs/AUTOTUNING.md): tuning kernel settings for an algorithm (`mf::Tuner`)
 
 The next implementation milestones are:
 

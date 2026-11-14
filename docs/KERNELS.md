@@ -50,7 +50,7 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`matvec`|OpenMP, double accumulation per row|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
-|`matmul`|packed AVX2/FMA GEMM on our own thread pool (scalar fallback without AVX2); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|—|
+|`matmul`|packed AVX2/FMA GEMM on our own thread pool (without AVX2: a cache-blocked loop whose tile sizes are set with `cpu::set_matmul_blocking`); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|own shaders: simdgroup_matrix tiles (default, 0.76-0.89x MPS from 1024^3, faster below), a plain tiled kernel, or MPS; tile sizes set with `metal::set_metal_gemm_config` (see `matmul_tile_benchmark`)|
 |`gemm`|alpha, beta and transposes|—|—|
 |`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|
 |`scal`, `asum`, `nrm2`, `copy`, `gemv`|OpenMP, float32|—|—|
@@ -74,7 +74,8 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
-CUDA was tested on an RTX 3060; Metal has never been built on real hardware. The
+CUDA was tested on an RTX 3060; Metal is built and tested on an M3 Pro (`dot`, the elementwise ops
+and `matmul` pass the device tests). The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
 exists only in git history.
 
