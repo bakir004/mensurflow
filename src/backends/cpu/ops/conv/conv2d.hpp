@@ -61,7 +61,8 @@ void conv2d_backward_bias_f32_sequential(const float* grad_y, float* grad_bias,
 
 // How the forward pass spreads its work over threads.
 enum class Conv2dStrategy {
-    // Chooses one of the two below from the shape (see conv2d.cpp).
+    // Chooses one of the strategies below from the shape and the thread count (see
+    // conv2d_forward_strategy).
     Auto,
     // A chunk of the batch at a time (bounded by conv2d_column_budget floats): im2col of all its
     // images into one matrix [K, chunk * h_out * w_out] in parallel, then one large product on
@@ -70,6 +71,10 @@ enum class Conv2dStrategy {
     // Whole images per thread: each thread runs im2col and the single-threaded product for its
     // own images, with its own column buffer. No synchronization inside an image.
     ImagePerThread,
+    // Tiles of output pixels (a few hundred of one image) per thread, the threads' share of the
+    // pixels split into about equal tiles: each thread runs im2col of its tile into its own
+    // buffer, the single-threaded product and the bias. For batches smaller than the thread count.
+    Tiles,
 };
 
 // The strategy Auto resolves to for this shape at the current max_threads() (Folded or

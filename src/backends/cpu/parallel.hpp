@@ -9,6 +9,7 @@
 // at every thread count too, though it can differ in the last bits from a plain sequential loop.
 #pragma once
 
+#include "backends/cpu/affinity.hpp"
 #include "backends/cpu/thread_pool.hpp"
 #include "backends/cpu/threads.hpp"
 
@@ -29,9 +30,19 @@ namespace mensurflow::cpu {
 // two alternate each set steals the cores the other one is about to need (conv2d at batch 1 lost
 // more than half its time to this). OpenMP is the fallback when the pool is busy.
 //
-// parallel_for_upto is the same on at most `threads` threads (and still at most max_threads()).
+// parallel_for_pinned is the same on at most `threads` threads (and still at most max_threads()),
+// each piece on its own physical core (while there are no more pieces than cores): piece p runs on
+// core p, the calling thread (piece 0) pinned to core 0 for the duration of its piece and pool
+// worker p pinned to core p (where it stays, as the GEMM leaves its workers). With more pieces than
+// cores, piece p shares core p modulo the core count. For bodies that run one long
+// single-threaded computation per piece
+// (whole images, tiles of a convolution): unpinned, the OS now and then keeps two of them on one
+// core for a whole process, and the piece there runs at half speed and holds up the call (batch-1
+// conv1 in tiles: 0.33 ms in some processes, 0.59 ms in others). Pinning costs a few system calls
+// per call, so short loops use parallel_for.
 template <typename Body>
-void parallel_for_upto(int threads, std::int64_t n, std::int64_t grain, Body&& body) {
+void parallel_for_placed(int threads, bool pinned, std::int64_t n, std::int64_t grain,
+                         Body&& body) {
     if (n <= 0) {
         return;
     }
@@ -42,7 +53,15 @@ void parallel_for_upto(int threads, std::int64_t n, std::int64_t grain, Body&& b
         body(std::int64_t{0}, n);
         return;
     }
-    auto piece = [&](int p) { body(n * p / pieces, n * (p + 1) / pieces); };
+    auto piece = [&](int p) {
+        if (pinned) {
+            set_thread_pin(p, 1);
+        }
+        body(n * p / pieces, n * (p + 1) / pieces);
+        if (pinned && p == 0) {
+            set_thread_pin(0, 0); // the caller gets its old placement back
+        }
+    };
     if (pool_run(static_cast<int>(pieces), piece)) {
         return;
     }
@@ -52,8 +71,13 @@ void parallel_for_upto(int threads, std::int64_t n, std::int64_t grain, Body&& b
     }
 }
 
+template <typename Body>
+void parallel_for_pinned(int threads, std::int64_t n, std::int64_t grain, Body&& body) {
+    parallel_for_placed(threads, true, n, grain, body);
+}
+
 template <typename Body> void parallel_for(std::int64_t n, std::int64_t grain, Body&& body) {
-    parallel_for_upto(max_threads(), n, grain, body);
+    parallel_for_placed(max_threads(), false, n, grain, body);
 }
 
 // The number of items that holds at least `work` units when one item costs `cost` units: the

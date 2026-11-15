@@ -407,7 +407,7 @@ void test_parallel() {
             cpu::set_max_threads(threads);
             for (cpu::Conv2dStrategy strategy :
                  {cpu::Conv2dStrategy::Auto, cpu::Conv2dStrategy::Folded,
-                  cpu::Conv2dStrategy::ImagePerThread}) {
+                  cpu::Conv2dStrategy::ImagePerThread, cpu::Conv2dStrategy::Tiles}) {
                 const Results parallel = run_kernels(
                     c,
                     [strategy](const float* x, const float* w, const float* b, float* y,
@@ -438,10 +438,11 @@ void test_parallel() {
     cpu::set_max_threads(original);
 }
 
-// The Auto rule (see choose_strategy in conv2d.cpp): a pointwise layer with a batch that spreads
-// evenly goes to whole images per thread, a 3x3 layer of the same size to the folded product, and
-// a single image always to the folded product. Independent of the core count: a batch of 4 images
-// per thread spreads evenly over any number of threads up to max_threads().
+// The Auto rule (see choose_strategy and conv2d_forward_strategy in conv2d.cpp): a pointwise
+// layer with a batch that spreads evenly goes to whole images per thread, a 3x3 layer of the same
+// size to the folded product; single images and short depths below. Independent of the core
+// count: a batch of 4 images per thread spreads evenly over any number of threads up to
+// max_threads().
 void test_strategy_rule() {
     auto shape = [](std::int64_t n, std::int64_t c, std::int64_t hw, std::int64_t k) {
         cpu::Conv2dShape s;
@@ -453,8 +454,8 @@ void test_strategy_rule() {
         return s;
     };
     const std::int64_t batch = 4 * cpu::max_threads();
-    const cpu::Conv2dShape pointwise = shape(batch, 64, 32, 1); // 4.2 M multiply-adds per image
-    const cpu::Conv2dShape square = shape(batch, 64, 16, 3);    // 9.4 M
+    const cpu::Conv2dShape pointwise = shape(batch, 256, 16, 1); // 16.8 M multiply-adds per image
+    const cpu::Conv2dShape square = shape(batch, 128, 16, 3);   // 37.7 M
     test::require(cpu::conv2d_forward_strategy(pointwise) == cpu::Conv2dStrategy::ImagePerThread &&
                       cpu::conv2d_backward_data_strategy(pointwise) ==
                           cpu::Conv2dStrategy::ImagePerThread,
@@ -462,8 +463,19 @@ void test_strategy_rule() {
     test::require(cpu::conv2d_forward_strategy(square) == cpu::Conv2dStrategy::Folded &&
                       cpu::conv2d_backward_data_strategy(square) == cpu::Conv2dStrategy::Folded,
                   "a 3x3 layer should run the folded product");
-    test::require(cpu::conv2d_forward_strategy(shape(1, 64, 32, 3)) == cpu::Conv2dStrategy::Folded,
-                  "a single image should run the folded product");
+    // One image: tiles of output pixels when every thread gets at least 64 of them (4096 pixels
+    // cover up to 64 threads), the folded product when there are too few (49).
+    test::require(cpu::conv2d_forward_strategy(shape(1, 64, 64, 3)) == cpu::Conv2dStrategy::Tiles,
+                  "a single wide image should run in tiles");
+    test::require(cpu::conv2d_forward_strategy(shape(1, 256, 7, 3)) == cpu::Conv2dStrategy::Folded &&
+                      cpu::conv2d_backward_data_strategy(shape(1, 64, 64, 3)) ==
+                          cpu::Conv2dStrategy::Folded,
+                  "a small deep image, and every data gradient of one image, should run folded");
+    // A short depth (3 channels, 3x3: 27) runs in tiles at any batch.
+    cpu::Conv2dShape stem = shape(batch, 3, 64, 3);
+    stem.c_out = 64;
+    test::require(cpu::conv2d_forward_strategy(stem) == cpu::Conv2dStrategy::Tiles,
+                  "a short-depth layer should run in tiles");
 }
 
 } // namespace

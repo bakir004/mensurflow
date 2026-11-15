@@ -2,14 +2,17 @@
 // parallel kernels on ResNet-18/50 layer shapes and a small layer, at batch 1 and 32.
 //
 //   conv2d_benchmark [--threads=1,6,12,24] [--batches=1,32] [--only=name] [--ref-threads=1,12]
-//                    [--more] [--compare [--rounds=3]]
+//                    [--more] [--compare [--rounds=3]] [--gemm]
 //
-// --more adds the other ResNet-18/50 layer shapes. --compare times only the two strategies
-// (folded, whole images per thread) forced, forward and data gradient, alternated over --rounds
-// rounds at each thread count, and marks the one Auto picks with "<-".
+// --more adds the other ResNet-18/50 layer shapes and a VGG stem. --compare times only the
+// strategies forced (forward: folded, whole images per thread, tiles; data gradient: folded, whole
+// images), alternated over --rounds rounds at each thread count, against folded, and marks the one
+// Auto picks with "<-".
 //
-// With MENSURFLOW_MKL_DLL and/or MENSURFLOW_AOCL_BLIS_DLL set, MKL's and AOCL-BLIS's sgemm are
-// timed on the forward pass's products ("fwd GEMM only") at the --ref-threads counts.
+// "fwd GEMM only" rows time only the forward pass's products on precomputed im2col columns, one
+// call per image, at the --ref-threads counts: our parallel packed GEMM ("ours", with --gemm or
+// whenever a reference is loaded) and, with MENSURFLOW_MKL_DLL and/or MENSURFLOW_AOCL_BLIS_DLL
+// set, MKL's and AOCL-BLIS's sgemm.
 //
 // Rate is GFLOP/s, 2 flops per multiply-add (forward N * C_out * C_in * kH * kW * H_out * W_out
 // multiply-adds; the backward pass does twice that, data and weight). Compare it with the FMA peak
@@ -18,6 +21,7 @@
 #include "blas/reference_blas.hpp"
 
 #include "backends/cpu/ops/conv/conv2d.hpp"
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>
@@ -53,7 +57,8 @@ const Layer layers[] = {
 };
 
 // With --more: the other distinct layer shapes of ResNet-18/50 (the 1x1 convolutions of every
-// ResNet-50 stage, the first convolution of each ResNet-18 stage, and the 3x3 at 28 px), used to
+// ResNet-50 stage, the first convolution of each ResNet-18 stage, the 3x3 at 28 px, and a VGG
+// stem with a depth of only 27), used to
 // check that the strategy rule holds beyond the layers it was set on.
 const Layer more_layers[] = {
     {"r18.layer2 3x3", 128, 28, 128, 3, 1, 1},
@@ -66,6 +71,7 @@ const Layer more_layers[] = {
     {"r50.layer3 1x1 1024>256", 1024, 14, 256, 1, 1, 0},
     {"r50.layer3 1x1 256>1024", 256, 14, 1024, 1, 1, 0},
     {"r50.layer4 1x1 2048>512", 2048, 7, 512, 1, 1, 0},
+    {"vgg.conv1 3x3 3>64", 3, 224, 64, 3, 1, 1},
 };
 
 // OpenMP and pool workers keep spinning after a call; let them go idle before the next variant.
@@ -118,6 +124,7 @@ int main(int argc, char** argv) {
     std::vector<int> reference_threads = {1, std::max(1, maximum_threads / 2)};
     std::string only;
     bool compare = false;
+    bool gemm_rows = false;
     bool more = false;
     int rounds = 3;
     for (int i = 1; i < argc; ++i) {
@@ -131,6 +138,8 @@ int main(int argc, char** argv) {
             batches = parse_list(arg.substr(10));
         } else if (arg.rfind("--only=", 0) == 0) {
             only = arg.substr(7);
+        } else if (arg == "--gemm") {
+            gemm_rows = true;
         } else if (arg == "--more") {
             more = true;
         } else if (arg == "--compare") {
@@ -153,20 +162,22 @@ int main(int argc, char** argv) {
             references.push_back(std::move(library));
         }
     }
+    gemm_rows = gemm_rows || !references.empty(); // our GEMM next to theirs
 
     const bench::Config config;
     bench::print_header(
         "conv2d forward and backward, float32 NCHW, im2col + packed GEMM",
         config,
         {"seq = conv2d_*_f32_sequential on one thread; par = conv2d_*_f32_parallel (Auto)",
-         "fwd GEMM only = a reference sgemm per image on precomputed im2col columns",
-         "folded / per-image = the two forward strategies forced, at the largest thread count",
+         "fwd GEMM only = our GEMM or a reference sgemm per image on precomputed im2col columns",
+         "par tiles = tiles forced, at every thread count",
+         "par folded / par per-image = the strategy forced, at the largest thread count",
          "backward = data + weight + bias gradients, as autograd runs them",
          "rate = GFLOP/s at 2 flops per multiply-add; ceiling: fma_peak_benchmark"});
     for (const auto& library : references) {
         std::printf("reference %s: %s\n", library.name.c_str(), library.detail.c_str());
     }
-    bench::Table table("GFLOP/s", 1e9, compare ? "vs other" : "vs seq", "");
+    bench::Table table("GFLOP/s", 1e9, compare ? "vs folded" : "vs seq", "");
 
     std::vector<Layer> run_layers(std::begin(layers), std::end(layers));
     if (more) {
@@ -217,6 +228,7 @@ int main(int argc, char** argv) {
                 const Variant variants[] = {
                     {"forward", cpu::Conv2dStrategy::Folded, "folded"},
                     {"forward", cpu::Conv2dStrategy::ImagePerThread, "per-image"},
+                    {"forward", cpu::Conv2dStrategy::Tiles, "tiles"},
                     {"bwd data", cpu::Conv2dStrategy::Folded, "folded"},
                     {"bwd data", cpu::Conv2dStrategy::ImagePerThread, "per-image"},
                 };
@@ -247,12 +259,12 @@ int main(int argc, char** argv) {
                             forward ? cpu::conv2d_forward_strategy(s)
                                     : cpu::conv2d_backward_data_strategy(s);
                         const bench::Sample sample = merge(samples[v]);
-                        const bench::Sample other = merge(samples[v ^ 1]);
+                        const bench::Sample folded = merge(samples[forward ? 0 : 3]);
                         table.row(variants[v].pass,
                                   std::string(variants[v].name) +
                                       (picked == variants[v].strategy ? " <-" : ""),
                                   std::to_string(threads), sample, 2 * macs,
-                                  &other);
+                                  &folded);
                     }
                 }
                 continue;
@@ -281,6 +293,7 @@ int main(int argc, char** argv) {
             };
             for (int threads : thread_counts) {
                 time_forward(cpu::Conv2dStrategy::Auto, "par", threads);
+                time_forward(cpu::Conv2dStrategy::Tiles, "par tiles", threads);
             }
             const int top = thread_counts.back();
             time_forward(cpu::Conv2dStrategy::Folded, "par folded", top);
@@ -289,13 +302,31 @@ int main(int argc, char** argv) {
             // Reference BLAS: only the products of the forward pass (weight times each image's
             // column matrix, prepared outside the timing), one sgemm per image. A lower bound for
             // an im2col + GEMM convolution built on that library; our rows above include im2col.
-            if (!references.empty() && s.c_in * s.kh * s.kw > 0) {
+            // "ours" is our parallel packed GEMM on the same columns, the same way (one call per
+            // image), so the products can be compared without im2col on either side.
+            if (gemm_rows && s.c_in * s.kh * s.kw > 0) {
                 const std::int64_t k = s.c_in * s.kh * s.kw;
                 const std::int64_t spatial = s.h_out * s.w_out;
                 std::vector<float> all_cols(static_cast<std::size_t>(s.n * k * spatial));
                 for (std::int64_t img = 0; img < s.n; ++img) {
                     cpu::im2col_f32(x + img * s.c_in * s.h * s.w, all_cols.data() + img * k * spatial,
                                     s);
+                }
+                for (int threads : reference_threads) {
+                    cpu::set_max_threads(threads);
+                    auto run = [&] {
+                        for (std::int64_t img = 0; img < s.n; ++img) {
+                            cpu::matmul_f32_packed_parallel_strided(
+                                w, k, 1, all_cols.data() + img * k * spatial, spatial, 1,
+                                y + img * s.c_out * spatial, spatial, s.c_out, spatial, k);
+                        }
+                    };
+                    settle();
+                    const bench::Sample sample = bench::measure(config, run, [&] {
+                        return bench::checksum(y, static_cast<std::size_t>(y_size));
+                    });
+                    table.row("fwd GEMM only", "ours", std::to_string(threads), sample, 2 * macs,
+                              &fseq);
                 }
                 for (auto& library : references) {
                     for (int threads : reference_threads) {
