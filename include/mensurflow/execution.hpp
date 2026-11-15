@@ -3,7 +3,9 @@
 //   Execution::CPU   run on the CPU.
 //   Execution::GPU   run on a GPU: the one the inputs already live on, otherwise the first
 //                    available of CUDA and Metal. Throws runtime_error if there is none.
-//   Execution::Auto  let the library choose. For now it always chooses the CPU.
+//   Execution::Auto  let the library choose: inside Algorithm::run(inputs, tuner), the device the
+//                    tuner measured as fastest for this op and these input shapes (see
+//                    mensurflow/tuning.hpp); otherwise the CPU.
 //
 // Where an op runs is independent of where its data lives. If they differ, the inputs are copied
 // to the execution device and the result is copied back, so the returned tensor is always on the

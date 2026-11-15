@@ -6,8 +6,12 @@ by side and nobody edits the same big file at the same time.
 - [`docs/BENCHMARKING.md`](../BENCHMARKING.md): how the benchmarks are written (the rules).
 - [`docs/BENCHMARKS.md`](../BENCHMARKS.md): the shared summary and comparisons between machines.
 - [`vgastan-ryzen5-5500-2026-11-08.md`](vgastan-ryzen5-5500-2026-11-08.md): activation-backward and tensor-movement reference comparison.
+- [`vgastan-ryzen5-5500-2026-11-14.md`](vgastan-ryzen5-5500-2026-11-14.md): SGD, Adam, AdamW, layer / RMS / batch normalization (forward and backward), compared with PyTorch's fused and ATen kernels.
 - [`aldin-ryzen5-6600h-2026-11-11.md`](aldin-ryzen5-6600h-2026-11-11.md): Philox RNG, dropout and indexing, including backward, compared with native PyTorch.
 - [`asja-ryzen9-5900x-2026-11-14.md`](asja-ryzen9-5900x-2026-11-14.md): parallel conv2d, max/avg pooling, argmin, var and std (forward and backward) against their sequential versions, the FMA and bandwidth ceilings and MKL / AOCL-BLIS sgemm; PyTorch not measured.
+- [`bakir-m3pro-2026-11-07.md`](bakir-m3pro-2026-11-07.md): batched GEMM, concat / split / pad and ger, compared with PyTorch and NumPy.
+- [`bakir-m3pro-2026-11-12.md`](bakir-m3pro-2026-11-12.md): softmax, log-softmax, the losses and naive attention, forward and backward, compared with PyTorch.
+- [`bakir-m3pro-2026-11-14.md`](bakir-m3pro-2026-11-14.md): matmul by tile size, the Metal kernels against MPS and the CPU tile sizes.
 - **This folder**: your own result file, one per person, CPU, and day.
 - `benchmarks/` (in the repository root) is the benchmark **source code**, not results.
 

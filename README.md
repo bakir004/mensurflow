@@ -160,8 +160,21 @@ result is copied back.
 - Differentiable elementwise operations, reductions, `matmul`, and `bias_add`
 - General `gemm` with scaling and transpose flags
 
-The training path is currently CPU-only. Losses and the parameter update are
-written with the operations above; see `examples/mlp_xor.cpp`.
+The training path is currently CPU-only. The parameter update is written with the operations
+above; see `examples/mlp_xor.cpp`.
+
+### Softmax, losses and attention (CPU float32)
+
+- `softmax`, `log_softmax` along any axis, numerically stable, with `softmax_backward` and
+  `log_softmax_backward`
+- `cross_entropy` (logits and int64 labels, fused log-softmax and NLL), `mse_loss`,
+  `binary_cross_entropy_with_logits`, each with a `*_backward` op and a `Reduction` of `None`,
+  `Sum` or `Mean`
+- `attention(q, k, v, mask, causal)`: naive scaled dot-product attention from two batched GEMMs and
+  a masked softmax (forward only)
+
+All of them except `attention` record autograd. Conventions (masked rows, reductions, stability)
+are in [KERNELS.md](docs/KERNELS.md#cpu-softmax-losses-and-attention).
 
 ### Elementwise operations
 
@@ -247,7 +260,7 @@ not silently redirect an operation to another device.
 | Unary elementwise operations | Yes | No | No | No |
 | `dot` | Yes | Yes | Implemented, hardware validation pending | No |
 | `matvec` | Yes | No | No | No |
-| `matmul` | Yes | No | No | No |
+| `matmul` | Yes | No | Yes | No |
 | `argmax` | Yes | No | No | No |
 | Tensor transfers | Yes | Yes | Yes | No |
 
@@ -435,6 +448,7 @@ The detailed plans are:
 - [`docs/plan/ARCHITECTURE.md`](docs/plan/ARCHITECTURE.md)
 - [`docs/plan/KERNELS_ROADMAP.md`](docs/plan/KERNELS_ROADMAP.md)
 - [`docs/plan/VULKAN_DESIGN.md`](docs/plan/VULKAN_DESIGN.md)
+- [`docs/AUTOTUNING.md`](docs/AUTOTUNING.md): tuning kernel settings for an algorithm (`mf::Tuner`)
 
 The next implementation milestones are:
 

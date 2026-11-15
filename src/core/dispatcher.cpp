@@ -2,6 +2,7 @@
 #include "core/dispatcher.hpp"
 
 #include "core/registry.hpp"
+#include "core/tuning.hpp"
 #include "mensurflow/trace.hpp"
 
 namespace mensurflow::detail {
@@ -182,6 +183,44 @@ const char* op_name(OpId op) {
         return "std";
     case OpId::StdBackward:
         return "std_backward";
+    case OpId::Softmax:
+        return "softmax";
+    case OpId::LogSoftmax:
+        return "log_softmax";
+    case OpId::SoftmaxBackward:
+        return "softmax_backward";
+    case OpId::LogSoftmaxBackward:
+        return "log_softmax_backward";
+    case OpId::CrossEntropy:
+        return "cross_entropy";
+    case OpId::CrossEntropyBackward:
+        return "cross_entropy_backward";
+    case OpId::MseLoss:
+        return "mse_loss";
+    case OpId::MseLossBackward:
+        return "mse_loss_backward";
+    case OpId::BceWithLogits:
+        return "binary_cross_entropy_with_logits";
+    case OpId::BceWithLogitsBackward:
+        return "binary_cross_entropy_with_logits_backward";
+    case OpId::Sgd:
+        return "sgd";
+    case OpId::Adam:
+        return "adam";
+    case OpId::AdamW:
+        return "adamw";
+    case OpId::LayerNorm:
+        return "layer_norm";
+    case OpId::LayerNormBackward:
+        return "layer_norm_backward";
+    case OpId::RmsNorm:
+        return "rms_norm";
+    case OpId::RmsNormBackward:
+        return "rms_norm_backward";
+    case OpId::BatchNorm:
+        return "batch_norm";
+    case OpId::BatchNormBackward:
+        return "batch_norm_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }
@@ -199,6 +238,25 @@ void Dispatcher::register_kernel(KernelKey key, KernelFn kernel) {
 KernelFn Dispatcher::find(KernelKey key) const {
     const auto it = kernels_.find(key);
     return it == kernels_.end() ? nullptr : it->second;
+}
+
+void Dispatcher::register_tunable(KernelKey key, TunableKernel tunable) {
+    if (tunable.key == nullptr || tunable.defaults == nullptr || tunable.candidates == nullptr) {
+        throw std::invalid_argument("register_tunable: " + tunable.name + " is missing a function");
+    }
+    if (tunable.params.size() > static_cast<std::size_t>(TuningConfig::capacity)) {
+        throw std::invalid_argument("register_tunable: " + tunable.name + " has more than " +
+                                    std::to_string(TuningConfig::capacity) + " parameters");
+    }
+    const std::string name = tunable.name;
+    if (!tunables_.emplace(key, std::move(tunable)).second) {
+        throw std::logic_error("tunable kernel registered twice: " + name);
+    }
+}
+
+const TunableKernel* Dispatcher::tunable(KernelKey key) const {
+    const auto it = tunables_.find(key);
+    return it == tunables_.end() ? nullptr : &it->second;
 }
 
 KernelFn Dispatcher::lookup(KernelKey key) const {
@@ -247,13 +305,31 @@ void dispatch(OpId op, const OpArgs& args, Execution execution) {
         }
     }
 
-    const Device target = execution_device(execution, data_device);
+    // Execution::Auto inside a tuned algorithm: the device the tuner measured as fastest for this
+    // call, if it stored one (see core/tuning.hpp).
+    Execution chosen = execution;
+    if (execution == Execution::Auto && tuning_active()) {
+        const Execution stored = auto_execution(op, args, data_device);
+        if (stored != Execution::Auto) {
+            chosen = stored;
+        }
+    }
+    const Device target = execution_device(chosen, data_device);
     MENSURFLOW_TRACE(op_name(op), target, args.inputs, args.outputs);
     Registry& registry = Registry::instance();
     Backend& backend = registry.get(target);
-    const KernelFn kernel = registry.dispatcher().lookup({op, target.type, source.dtype()});
+    const KernelKey key{op, target.type, source.dtype()};
+    const KernelFn kernel = registry.dispatcher().lookup(key);
+    // A tunable kernel gets the settings the active tuner chose (see core/tuning.hpp).
+    const TunableKernel* tunable = tuning_active() ? registry.dispatcher().tunable(key) : nullptr;
     if (target == data_device) {
         MENSURFLOW_TRACE("kernel", target, args.inputs, args.outputs);
+        if (tunable != nullptr) {
+            OpArgs tuned = args;
+            apply_tuning(key, *tunable, target, tuned);
+            kernel(tuned, backend.stream(target.index));
+            return;
+        }
         kernel(args, backend.stream(target.index));
         return;
     }
@@ -265,6 +341,9 @@ void dispatch(OpId op, const OpArgs& args, Execution execution) {
     }
     for (Tensor& output : moved.outputs) {
         output = Tensor::empty(output.shape(), output.dtype(), target);
+    }
+    if (tunable != nullptr) {
+        apply_tuning(key, *tunable, target, moved);
     }
     {
         MENSURFLOW_TRACE("kernel", target, moved.inputs, moved.outputs);

@@ -1,7 +1,8 @@
 // The Metal backend: shared-memory MTLBuffers, with dot() and elementwise add/sub/mul/div
-// through MPSGraph. Objective-C++ compiled with ARC. Registered only on macOS
+// through MPSGraph, and matmul through our own shaders (gemm.mm). Objective-C++ compiled with ARC. Registered only on macOS
 // (MENSURFLOW_HAS_METAL).
 #include "backends/backend.hpp"
+#include "backends/metal/gemm.hpp"
 
 #include "core/dispatcher.hpp"
 #include "core/registry.hpp"
@@ -191,6 +192,98 @@ template <GraphKind Kind> void binary_kernel(const OpArgs& args, Stream& stream)
     run_graph(stream, Kind, args.inputs[0], args.inputs[1], out, out.numel(), out.numel());
 }
 
+// The op hands Metal kernels contiguous inputs; a view may still start partway into its buffer,
+// which the encoder takes as a byte offset.
+void matmul_kernel(const OpArgs& args, Stream& base) {
+    auto& stream = static_cast<MetalStream&>(base);
+    const Tensor& a = args.inputs[0];
+    const Tensor& b = args.inputs[1];
+    const Tensor& c = args.outputs[0];
+    auto buffer = [](const Tensor& t) {
+        return (__bridge id<MTLBuffer>)TensorAccess::buffer(t).native();
+    };
+    auto bytes = [](const Tensor& t) {
+        return static_cast<std::size_t>(t.offset()) * sizeof(float);
+    };
+    metal::MetalGemmConfig config = metal::metal_gemm_config();
+    if (args.tuning.size == 8) { // chosen by the auto-tuner, in matmul_tunable's order
+        const auto& v = args.tuning.values;
+        config = {v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]};
+    }
+    metal::gemm_f32(stream.device(), stream.queue(), buffer(a), bytes(a), buffer(b), bytes(b),
+                    buffer(c), bytes(c), a.size(0), b.size(1), a.size(1), config);
+}
+
+// Parameters the chosen kernel does not use are 0, so the results file and the dashboard show
+// only what matters (MPS uses none; tiled ignores the simdgroups; simdgroup ignores tm and tn).
+TuningConfig to_tuning(const metal::MetalGemmConfig& c) {
+    TuningConfig config;
+    if (c.kernel == 2) {
+        config.values = {2, 0, 0, 0, 0, 0, 0, 0};
+    } else if (c.kernel == 0) {
+        config.values = {0, c.bm, c.bn, c.bk, c.tm, c.tn, 0, 0};
+    } else {
+        config.values = {c.kernel, c.bm, c.bn, c.bk, 0, 0, c.sg_m, c.sg_n};
+    }
+    config.size = 8;
+    return config;
+}
+
+// The kernel, tile sizes and simdgroup layout of the Metal matmul (gemm.hpp) are tunable. The
+// candidates: MPS; simdgroup tiles with 1 to 8 accumulator blocks per simdgroup (16 ran at a third
+// of the speed on an M3 Pro) and 64 to 512 threads; three tiled-kernel shapes. Tiles more than twice
+// the matrix are left out, since most of their threads would have nothing to do.
+TunableKernel matmul_tunable() {
+    TunableKernel t;
+    t.name = "matmul";
+    t.version = 1;
+    t.key_names = {"m", "n", "k"};
+    t.key = [](const OpArgs& args) {
+        return std::vector<std::int64_t>{args.inputs[0].size(0), args.inputs[1].size(1),
+                                         args.inputs[0].size(1)};
+    };
+    t.params = {"kernel", "bm", "bn", "bk", "tm", "tn", "sg_m", "sg_n"};
+    t.defaults = [] { return to_tuning(metal::metal_gemm_config()); };
+    t.candidates = [](const OpArgs& args) {
+        const std::int64_t m = args.inputs[0].size(0), n = args.inputs[1].size(1);
+        std::vector<TuningConfig> list;
+        auto add = [&](const metal::MetalGemmConfig& c) {
+            if (c.kernel != 2 && (c.bm > 2 * m || c.bn > 2 * n) && !(c.bm <= 16 && c.bn <= 32)) {
+                return;
+            }
+            try {
+                metal::validate(c);
+            } catch (const std::invalid_argument&) {
+                return;
+            }
+            list.push_back(to_tuning(c));
+        };
+        add({2, 0, 0, 0, 0, 0, 0, 0});
+        for (std::int64_t bm : {16, 32, 64}) {
+            for (std::int64_t bn : {32, 64, 128}) {
+                for (std::int64_t bk : {16, 32}) {
+                    for (std::int64_t sg_m : {1, 2, 4}) {
+                        for (std::int64_t sg_n : {1, 2, 4}) {
+                            const std::int64_t blocks = (bm / sg_m / 8) * (bn / sg_n / 8);
+                            const std::int64_t threads = sg_m * sg_n * 32;
+                            if (bm % (8 * sg_m) != 0 || bn % (8 * sg_n) != 0 || blocks < 1 ||
+                                blocks > 8 || threads < 64 || threads > 512) {
+                                continue;
+                            }
+                            add({1, bm, bn, bk, 0, 0, sg_m, sg_n});
+                        }
+                    }
+                }
+            }
+        }
+        add({0, 64, 64, 16, 4, 4, 0, 0});
+        add({0, 128, 64, 8, 8, 4, 0, 0});
+        add({0, 32, 32, 16, 2, 2, 0, 0});
+        return list;
+    };
+    return t;
+}
+
 class MetalBackend final : public Backend {
   public:
     MetalBackend() {
@@ -222,6 +315,8 @@ class MetalBackend final : public Backend {
         dispatcher.register_kernel({OpId::Sub, metal, DType::F32}, binary_kernel<GraphKind::Sub>);
         dispatcher.register_kernel({OpId::Mul, metal, DType::F32}, binary_kernel<GraphKind::Mul>);
         dispatcher.register_kernel({OpId::Div, metal, DType::F32}, binary_kernel<GraphKind::Div>);
+        dispatcher.register_kernel({OpId::Matmul, metal, DType::F32}, matmul_kernel);
+        dispatcher.register_tunable({OpId::Matmul, metal, DType::F32}, matmul_tunable());
     }
 
   private:
