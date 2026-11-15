@@ -72,6 +72,11 @@ enum class Conv2dStrategy {
     ImagePerThread,
 };
 
+// The strategy Auto resolves to for this shape at the current max_threads() (Folded or
+// ImagePerThread), for the forward pass and for the data gradient.
+Conv2dStrategy conv2d_forward_strategy(const Conv2dShape& s);
+Conv2dStrategy conv2d_backward_data_strategy(const Conv2dShape& s);
+
 // Multiply-adds below which the parallel versions stay on the calling thread.
 constexpr std::int64_t conv2d_parallel_cutoff = std::int64_t{1} << 20;
 
@@ -88,6 +93,11 @@ void conv2d_f32_parallel(const float* x, const float* weight, const float* bias,
 // same cell of grad_x, and both give the same bits.
 void conv2d_backward_data_f32_parallel(const float* grad_y, const float* weight, float* grad_x,
                                        const Conv2dShape& s);
+// The same with the strategy forced (Folded = one product per chunk, ImagePerThread = whole
+// images per task); for tests and benchmarks. Auto is the function above.
+void conv2d_backward_data_f32_parallel_strategy(const float* grad_y, const float* weight,
+                                                float* grad_x, const Conv2dShape& s,
+                                                Conv2dStrategy strategy);
 
 // A small gradient (c_out * K below 2^18 floats): fixed groups of images, each group summed on one
 // thread into its own partial matrix, the partials added in group order. Otherwise per chunk of

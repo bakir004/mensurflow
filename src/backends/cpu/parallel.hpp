@@ -28,12 +28,16 @@ namespace mensurflow::cpu {
 // threads: OpenMP's workers and the pool's workers both spin for a while after a job, and when the
 // two alternate each set steals the cores the other one is about to need (conv2d at batch 1 lost
 // more than half its time to this). OpenMP is the fallback when the pool is busy.
-template <typename Body> void parallel_for(std::int64_t n, std::int64_t grain, Body&& body) {
+//
+// parallel_for_upto is the same on at most `threads` threads (and still at most max_threads()).
+template <typename Body>
+void parallel_for_upto(int threads, std::int64_t n, std::int64_t grain, Body&& body) {
     if (n <= 0) {
         return;
     }
     const std::int64_t by_grain = n / std::max<std::int64_t>(grain, 1);
-    const std::int64_t pieces = std::min<std::int64_t>(max_threads(), by_grain);
+    const std::int64_t pieces =
+        std::min<std::int64_t>(std::min(threads, max_threads()), by_grain);
     if (pieces <= 1 || in_parallel_region() || pool_thread_index() >= 0) {
         body(std::int64_t{0}, n);
         return;
@@ -46,6 +50,10 @@ template <typename Body> void parallel_for(std::int64_t n, std::int64_t grain, B
     for (std::int64_t p = 0; p < pieces; ++p) {
         body(n * p / pieces, n * (p + 1) / pieces);
     }
+}
+
+template <typename Body> void parallel_for(std::int64_t n, std::int64_t grain, Body&& body) {
+    parallel_for_upto(max_threads(), n, grain, body);
 }
 
 // The number of items that holds at least `work` units when one item costs `cost` units: the

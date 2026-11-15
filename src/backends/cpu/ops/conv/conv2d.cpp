@@ -3,6 +3,7 @@
 // h_out * w_out floats; the parallel versions are further down.
 #include "backends/cpu/ops/conv/conv2d.hpp"
 
+#include "backends/cpu/affinity.hpp"
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/parallel.hpp"
 
@@ -299,6 +300,15 @@ bool is_pointwise(const Conv2dShape& s) {
            s.pad_w == 0;
 }
 
+// Threads for whole images per thread: at most one per physical core. Two single-threaded products
+// on the two hardware threads of one core run at about half speed each, so 24 threads gain nothing
+// over 12 on a 12-core CPU and spread a batch of 32 less evenly (2 images on some threads, 1 on
+// others); measured at batch 32 the 1x1 layers ran 1.0-1.7x faster on 12 threads than on 24.
+int image_threads() {
+    const int cores = physical_core_count();
+    return cores > 0 ? std::min(max_threads(), cores) : max_threads();
+}
+
 // y_b += bias for images [b0, b0 + count), one task per (image, channel).
 void add_bias(float* y, const float* bias, const Conv2dShape& s, std::int64_t b0,
               std::int64_t count) {
@@ -372,7 +382,7 @@ void conv2d_image_per_thread(const float* x, const float* weight, const float* b
     const std::int64_t k = s.c_in * s.kh * s.kw;
     const std::int64_t spatial = s.h_out * s.w_out;
     const bool pointwise = is_pointwise(s);
-    parallel_for(s.n, grain, [&](std::int64_t b0, std::int64_t b1) {
+    parallel_for_upto(image_threads(), s.n, grain, [&](std::int64_t b0, std::int64_t b1) {
         float* cols = pointwise ? nullptr : workspace(0, std::max<std::int64_t>(k, 1) * spatial);
         for (std::int64_t b = b0; b < b1; ++b) {
             const float* image = x + b * s.c_in * s.h * s.w;
@@ -402,7 +412,7 @@ void backward_data_per_image(const float* grad_y, const float* weight, float* gr
     const std::int64_t spatial = s.h_out * s.w_out;
     const std::int64_t image = s.c_in * s.h * s.w;
     const bool pointwise = is_pointwise(s);
-    parallel_for(s.n, grain, [&](std::int64_t b0, std::int64_t b1) {
+    parallel_for_upto(image_threads(), s.n, grain, [&](std::int64_t b0, std::int64_t b1) {
         float* cols = pointwise ? nullptr : workspace(0, k * spatial);
         for (std::int64_t b = b0; b < b1; ++b) {
             float* out = grad_x + b * image;
@@ -546,7 +556,38 @@ void backward_weight_folded(const float* grad_y, const float* x, float* grad_wei
 // is at least one image per thread).
 constexpr std::int64_t per_image_limit = std::int64_t{1} << 22;
 
+// The rule for Auto, the same for the forward pass and the data gradient. Both strategies give the
+// same bits, so it may depend on the thread count. Measured at batch 32 on 17 ResNet-18/50 layers
+// (conv2d_benchmark --compare --more), forward and data gradient:
+// - Folded really folds a 3x3 or 7x7 layer: one large product over a chunk of the batch, after an
+//   im2col that per-image needs as well. It won or tied on every such layer at 12 and 24 threads.
+// - A pointwise (1x1, stride 1) layer has no im2col, and Folded runs one product per image on all
+//   threads, n products in a row, each paying the team's start and its uneven split. Whole images
+//   per thread won 11 of 14 such cases at 12 threads (1.1-1.5x), lost 3 by up to 10%, and beat
+//   Folded at 24 threads as well once limited to one thread per core (image_threads).
+// - Whole images per thread need the batch to spread evenly: the busiest thread has
+//   ceil(n / threads) images, so allow at most 1.25 times the average (32 images on 12 threads:
+//   3 against 2.67, 1.125; 16 images on 12 threads would be 2 against 1.33, 1.5).
+// - Small images (under per_image_limit multiply-adds) give one product too little work to split,
+//   whatever the kernel.
+Conv2dStrategy choose_strategy(const Conv2dShape& s) {
+    const std::int64_t threads = image_threads();
+    if (s.n < threads) {
+        return Conv2dStrategy::Folded;
+    }
+    if (multiply_adds(s) / s.n < per_image_limit) {
+        return Conv2dStrategy::ImagePerThread;
+    }
+    const std::int64_t busiest = (s.n + threads - 1) / threads;
+    const bool even = 4 * busiest * threads <= 5 * s.n;
+    return is_pointwise(s) && even ? Conv2dStrategy::ImagePerThread : Conv2dStrategy::Folded;
+}
+
 } // namespace
+
+Conv2dStrategy conv2d_forward_strategy(const Conv2dShape& s) { return choose_strategy(s); }
+
+Conv2dStrategy conv2d_backward_data_strategy(const Conv2dShape& s) { return choose_strategy(s); }
 
 void conv2d_f32_parallel(const float* x, const float* weight, const float* bias, float* y,
                          const Conv2dShape& s, Conv2dStrategy strategy) {
@@ -559,14 +600,9 @@ void conv2d_f32_parallel(const float* x, const float* weight, const float* bias,
         conv2d_image_per_thread(x, weight, bias, y, s, s.n);
         return;
     }
-    // Both strategies give the same bits, so the choice may depend on the thread count. Measured
-    // at batch 32 on 24 threads, the folded product won on all 7 ResNet layers (by 1.1x to 1.7x);
-    // whole images per thread won only on a small layer (0.6 M multiply-adds per image), where one
-    // product is too small to split well.
+    // Both strategies give the same bits; see choose_strategy for the rule.
     if (strategy == Conv2dStrategy::Auto) {
-        strategy = s.n >= max_threads() && multiply_adds(s) / s.n < per_image_limit
-                       ? Conv2dStrategy::ImagePerThread
-                       : Conv2dStrategy::Folded;
+        strategy = conv2d_forward_strategy(s);
     }
     if (strategy == Conv2dStrategy::ImagePerThread) {
         conv2d_image_per_thread(x, weight, bias, y, s);
@@ -577,6 +613,12 @@ void conv2d_f32_parallel(const float* x, const float* weight, const float* bias,
 
 void conv2d_backward_data_f32_parallel(const float* grad_y, const float* weight, float* grad_x,
                                        const Conv2dShape& s) {
+    conv2d_backward_data_f32_parallel_strategy(grad_y, weight, grad_x, s, Conv2dStrategy::Auto);
+}
+
+void conv2d_backward_data_f32_parallel_strategy(const float* grad_y, const float* weight,
+                                                float* grad_x, const Conv2dShape& s,
+                                                Conv2dStrategy strategy) {
     if (s.n == 0 || s.c_in * s.kh * s.kw == 0) {
         conv2d_backward_data_f32_sequential(grad_y, weight, grad_x, s);
         return;
@@ -587,7 +629,10 @@ void conv2d_backward_data_f32_parallel(const float* grad_y, const float* weight,
     }
     // The same bits either way (the products have the same depth, c_out); the same rule as the
     // forward pass.
-    if (s.n >= max_threads() && multiply_adds(s) / s.n < per_image_limit) {
+    if (strategy == Conv2dStrategy::Auto) {
+        strategy = conv2d_backward_data_strategy(s);
+    }
+    if (strategy == Conv2dStrategy::ImagePerThread) {
         backward_data_per_image(grad_y, weight, grad_x, s);
     } else {
         backward_data_folded(grad_y, weight, grad_x, s);

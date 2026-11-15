@@ -2,6 +2,11 @@
 // parallel kernels on ResNet-18/50 layer shapes and a small layer, at batch 1 and 32.
 //
 //   conv2d_benchmark [--threads=1,6,12,24] [--batches=1,32] [--only=name] [--ref-threads=1,12]
+//                    [--more] [--compare [--rounds=3]]
+//
+// --more adds the other ResNet-18/50 layer shapes. --compare times only the two strategies
+// (folded, whole images per thread) forced, forward and data gradient, alternated over --rounds
+// rounds at each thread count, and marks the one Auto picks with "<-".
 //
 // With MENSURFLOW_MKL_DLL and/or MENSURFLOW_AOCL_BLIS_DLL set, MKL's and AOCL-BLIS's sgemm are
 // timed on the forward pass's products ("fwd GEMM only") at the --ref-threads counts.
@@ -15,10 +20,12 @@
 #include "backends/cpu/ops/conv/conv2d.hpp"
 #include "backends/cpu/threads.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -45,6 +52,22 @@ const Layer layers[] = {
     {"small 3x3 16ch 16px", 16, 16, 16, 3, 1, 1},
 };
 
+// With --more: the other distinct layer shapes of ResNet-18/50 (the 1x1 convolutions of every
+// ResNet-50 stage, the first convolution of each ResNet-18 stage, and the 3x3 at 28 px), used to
+// check that the strategy rule holds beyond the layers it was set on.
+const Layer more_layers[] = {
+    {"r18.layer2 3x3", 128, 28, 128, 3, 1, 1},
+    {"r18.layer3.0 3x3/2", 128, 28, 256, 3, 2, 1},
+    {"r18.layer4.0 3x3/2", 256, 14, 512, 3, 2, 1},
+    {"r50.layer1 1x1 64>64", 64, 56, 64, 1, 1, 0},
+    {"r50.layer1 1x1 64>256", 64, 56, 256, 1, 1, 0},
+    {"r50.layer2 1x1 512>128", 512, 28, 128, 1, 1, 0},
+    {"r50.layer2 1x1 128>512", 128, 28, 512, 1, 1, 0},
+    {"r50.layer3 1x1 1024>256", 1024, 14, 256, 1, 1, 0},
+    {"r50.layer3 1x1 256>1024", 256, 14, 1024, 1, 1, 0},
+    {"r50.layer4 1x1 2048>512", 2048, 7, 512, 1, 1, 0},
+};
+
 // OpenMP and pool workers keep spinning after a call; let them go idle before the next variant.
 void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(500)); }
 
@@ -56,6 +79,21 @@ std::vector<std::int64_t> parse_list(const std::string& text) {
         values.push_back(std::stoll(item));
     }
     return values;
+}
+
+// One sample from the timed runs of several: median, min and max over all of them.
+bench::Sample merge(const std::vector<bench::Sample>& samples) {
+    bench::Sample merged;
+    for (const bench::Sample& s : samples) {
+        merged.runs_s.insert(merged.runs_s.end(), s.runs_s.begin(), s.runs_s.end());
+        merged.calls_per_sample = s.calls_per_sample;
+    }
+    std::vector<double> sorted = merged.runs_s;
+    std::sort(sorted.begin(), sorted.end());
+    merged.median_s = sorted[sorted.size() / 2];
+    merged.min_s = sorted.front();
+    merged.max_s = sorted.back();
+    return merged;
 }
 
 cpu::Conv2dShape shape_of(const Layer& layer, std::int64_t batch) {
@@ -79,6 +117,9 @@ int main(int argc, char** argv) {
     std::vector<std::int64_t> batches = {1, 32};
     std::vector<int> reference_threads = {1, std::max(1, maximum_threads / 2)};
     std::string only;
+    bool compare = false;
+    bool more = false;
+    int rounds = 3;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg.rfind("--threads=", 0) == 0) {
@@ -90,6 +131,12 @@ int main(int argc, char** argv) {
             batches = parse_list(arg.substr(10));
         } else if (arg.rfind("--only=", 0) == 0) {
             only = arg.substr(7);
+        } else if (arg == "--more") {
+            more = true;
+        } else if (arg == "--compare") {
+            compare = true;
+        } else if (arg.rfind("--rounds=", 0) == 0) {
+            rounds = std::max(1, std::stoi(arg.substr(9)));
         } else if (arg.rfind("--ref-threads=", 0) == 0) {
             reference_threads.clear();
             for (std::int64_t t : parse_list(arg.substr(14))) {
@@ -119,9 +166,13 @@ int main(int argc, char** argv) {
     for (const auto& library : references) {
         std::printf("reference %s: %s\n", library.name.c_str(), library.detail.c_str());
     }
-    bench::Table table("GFLOP/s", 1e9, "vs seq", "");
+    bench::Table table("GFLOP/s", 1e9, compare ? "vs other" : "vs seq", "");
 
-    for (const Layer& layer : layers) {
+    std::vector<Layer> run_layers(std::begin(layers), std::end(layers));
+    if (more) {
+        run_layers.insert(run_layers.end(), std::begin(more_layers), std::end(more_layers));
+    }
+    for (const Layer& layer : run_layers) {
         if (!only.empty() && std::string(layer.name).find(only) == std::string::npos) {
             continue;
         }
@@ -153,6 +204,59 @@ int main(int argc, char** argv) {
             const std::string label = std::string(layer.name) + " N=" + std::to_string(batch);
             table.section(label + "  (" + std::to_string(static_cast<long long>(macs / 1e6)) +
                           " M multiply-adds)");
+
+            if (compare) {
+                // The two strategies forced, forward and backward data, alternated over `rounds`
+                // rounds at each thread count (one process, so a slow spell hits both alike).
+                // "<-" marks the one Auto picks.
+                struct Variant {
+                    const char* pass;
+                    cpu::Conv2dStrategy strategy;
+                    const char* name;
+                };
+                const Variant variants[] = {
+                    {"forward", cpu::Conv2dStrategy::Folded, "folded"},
+                    {"forward", cpu::Conv2dStrategy::ImagePerThread, "per-image"},
+                    {"bwd data", cpu::Conv2dStrategy::Folded, "folded"},
+                    {"bwd data", cpu::Conv2dStrategy::ImagePerThread, "per-image"},
+                };
+                for (int threads : thread_counts) {
+                    cpu::set_max_threads(threads);
+                    std::vector<std::vector<bench::Sample>> samples(std::size(variants));
+                    for (int r = 0; r < rounds; ++r) {
+                        for (std::size_t v = 0; v < std::size(variants); ++v) {
+                            const Variant& variant = variants[v];
+                            auto run = [&] {
+                                if (variant.pass[0] == 'f') {
+                                    cpu::conv2d_f32_parallel(x, w, b, y, s, variant.strategy);
+                                } else {
+                                    cpu::conv2d_backward_data_f32_parallel_strategy(
+                                        gy, w, gx, s, variant.strategy);
+                                }
+                            };
+                            settle();
+                            samples[v].push_back(bench::measure(config, run, [&] {
+                                return bench::checksum(y, static_cast<std::size_t>(y_size)) +
+                                       bench::checksum(gx, static_cast<std::size_t>(x_size));
+                            }));
+                        }
+                    }
+                    for (std::size_t v = 0; v < std::size(variants); ++v) {
+                        const bool forward = variants[v].pass[0] == 'f';
+                        const cpu::Conv2dStrategy picked =
+                            forward ? cpu::conv2d_forward_strategy(s)
+                                    : cpu::conv2d_backward_data_strategy(s);
+                        const bench::Sample sample = merge(samples[v]);
+                        const bench::Sample other = merge(samples[v ^ 1]);
+                        table.row(variants[v].pass,
+                                  std::string(variants[v].name) +
+                                      (picked == variants[v].strategy ? " <-" : ""),
+                                  std::to_string(threads), sample, 2 * macs,
+                                  &other);
+                    }
+                }
+                continue;
+            }
 
             // Forward.
             cpu::set_max_threads(1);
