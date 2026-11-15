@@ -467,7 +467,8 @@ void test_strategy_rule() {
     // cover up to 64 threads), the folded product when there are too few (49).
     test::require(cpu::conv2d_forward_strategy(shape(1, 64, 64, 3)) == cpu::Conv2dStrategy::Tiles,
                   "a single wide image should run in tiles");
-    test::require(cpu::conv2d_forward_strategy(shape(1, 256, 7, 3)) == cpu::Conv2dStrategy::Folded &&
+    test::require(cpu::conv2d_forward_strategy(shape(1, 256, 7, 3)) ==
+                          cpu::Conv2dStrategy::Folded &&
                       cpu::conv2d_backward_data_strategy(shape(1, 64, 64, 3)) ==
                           cpu::Conv2dStrategy::Folded,
                   "a small deep image, and every data gradient of one image, should run folded");

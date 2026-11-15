@@ -3,6 +3,13 @@
 //
 //   conv2d_benchmark [--threads=1,6,12,24] [--batches=1,32] [--only=name] [--ref-threads=1,12]
 //                    [--more] [--compare [--rounds=3]] [--gemm]
+//                    [--pauses=1,3,10 [--rounds=3] [--strategy=folded|per-image|tiles]]
+//                    [--spin-us=2000]
+//
+// --pauses times the parallel forward and backward passes call by call, back to back and after
+// each idle pause (milliseconds), as inside a network where other work runs between two
+// convolutions; --strategy forces the forward strategy there. --spin-us sets how long idle pool
+// workers spin before they sleep (set_pool_spin_us).
 //
 // --more adds the other ResNet-18/50 layer shapes and a VGG stem. --compare times only the
 // strategies forced (forward: folded, whole images per thread, tiles; data gradient: folded, whole
@@ -22,6 +29,7 @@
 
 #include "backends/cpu/ops/conv/conv2d.hpp"
 #include "backends/cpu/ops/gemm/gemm_packed.hpp"
+#include "backends/cpu/thread_pool.hpp"
 #include "backends/cpu/threads.hpp"
 
 #include <algorithm>
@@ -34,6 +42,16 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace cpu = mensurflow::cpu;
 
@@ -76,6 +94,49 @@ const Layer more_layers[] = {
 
 // OpenMP and pool workers keep spinning after a call; let them go idle before the next variant.
 void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(500)); }
+
+// The calling thread sleeps (the CPU is idle, as when other operations of a network run on other
+// threads or wait) for about `ms` milliseconds. Windows' Sleep rounds up to the 15.6 ms timer tick,
+// so there a high-resolution waitable timer is used (about 0.5 ms precision).
+void idle_for(double ms) {
+    if (ms <= 0) {
+        return;
+    }
+#ifdef _WIN32
+    static HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr,
+                                                 CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                                 TIMER_ALL_ACCESS);
+    if (timer != nullptr) {
+        LARGE_INTEGER due;
+        due.QuadPart = -static_cast<LONGLONG>(ms * 1e4); // relative, in 100 ns units
+        if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+            WaitForSingleObject(timer, INFINITE);
+            return;
+        }
+    }
+#endif
+    std::this_thread::sleep_for(std::chrono::duration<double, std::milli>(ms));
+}
+
+// `calls` calls of run(), each after an idle pause of `pause_ms` (0: back to back), each timed on
+// its own. The pause is not timed.
+template <typename Run>
+bench::Sample time_after_pause(Run&& run, double pause_ms, int calls) {
+    using Clock = std::chrono::steady_clock;
+    bench::Sample sample;
+    for (int c = 0; c < calls; ++c) {
+        idle_for(pause_ms);
+        const auto t0 = Clock::now();
+        run();
+        sample.runs_s.push_back(std::chrono::duration<double>(Clock::now() - t0).count());
+    }
+    std::vector<double> sorted = sample.runs_s;
+    std::sort(sorted.begin(), sorted.end());
+    sample.median_s = sorted[sorted.size() / 2];
+    sample.min_s = sorted.front();
+    sample.max_s = sorted.back();
+    return sample;
+}
 
 std::vector<std::int64_t> parse_list(const std::string& text) {
     std::vector<std::int64_t> values;
@@ -126,6 +187,8 @@ int main(int argc, char** argv) {
     bool compare = false;
     bool gemm_rows = false;
     bool more = false;
+    cpu::Conv2dStrategy forced = cpu::Conv2dStrategy::Auto; // --strategy, for --pauses
+    std::vector<std::int64_t> pauses; // idle milliseconds before each call; empty: off
     int rounds = 3;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -140,6 +203,17 @@ int main(int argc, char** argv) {
             only = arg.substr(7);
         } else if (arg == "--gemm") {
             gemm_rows = true;
+        } else if (arg.rfind("--pauses=", 0) == 0) {
+            pauses = parse_list(arg.substr(9));
+            pauses.insert(pauses.begin(), 0); // back to back first, the baseline
+        } else if (arg.rfind("--spin-us=", 0) == 0) {
+            cpu::set_pool_spin_us(std::stoll(arg.substr(10)));
+        } else if (arg.rfind("--strategy=", 0) == 0) {
+            const std::string name = arg.substr(11);
+            forced = name == "folded"      ? cpu::Conv2dStrategy::Folded
+                     : name == "per-image" ? cpu::Conv2dStrategy::ImagePerThread
+                     : name == "tiles"     ? cpu::Conv2dStrategy::Tiles
+                                           : cpu::Conv2dStrategy::Auto;
         } else if (arg == "--more") {
             more = true;
         } else if (arg == "--compare") {
@@ -177,7 +251,8 @@ int main(int argc, char** argv) {
     for (const auto& library : references) {
         std::printf("reference %s: %s\n", library.name.c_str(), library.detail.c_str());
     }
-    bench::Table table("GFLOP/s", 1e9, compare ? "vs folded" : "vs seq", "");
+    bench::Table table("GFLOP/s", 1e9,
+                       compare ? "vs folded" : !pauses.empty() ? "vs b2b" : "vs seq", "");
 
     std::vector<Layer> run_layers(std::begin(layers), std::end(layers));
     if (more) {
@@ -265,6 +340,48 @@ int main(int argc, char** argv) {
                                       (picked == variants[v].strategy ? " <-" : ""),
                                   std::to_string(threads), sample, 2 * macs,
                                   &folded);
+                    }
+                }
+                continue;
+            }
+
+            if (!pauses.empty()) {
+                // The parallel forward and backward passes, each call timed on its own after an
+                // idle pause (0 = back to back), the pauses alternated over `rounds` rounds of 20
+                // calls. Inside a network other operations run between two convolutions, so the
+                // pool's workers may have gone to sleep; this shows what waking them costs.
+                // "vs b2b" = back-to-back time / this time.
+                for (int threads : thread_counts) {
+                    cpu::set_max_threads(threads);
+                    for (const char* pass : {"forward", "backward"}) {
+                        const bool forward = pass[0] == 'f';
+                        auto run = [&] {
+                            if (forward) {
+                                cpu::conv2d_f32_parallel(x, w, b, y, s, forced);
+                            } else {
+                                cpu::conv2d_backward_data_f32_parallel(gy, w, gx, s);
+                                cpu::conv2d_backward_weight_f32_parallel(gy, x, gw, s);
+                                cpu::conv2d_backward_bias_f32_parallel(gy, gb, s);
+                            }
+                        };
+                        std::vector<std::vector<bench::Sample>> samples(pauses.size());
+                        settle();
+                        run(); // buffers, page faults
+                        for (int r = 0; r < rounds; ++r) {
+                            for (std::size_t p = 0; p < pauses.size(); ++p) {
+                                samples[p].push_back(
+                                    time_after_pause(run, static_cast<double>(pauses[p]), 20));
+                            }
+                        }
+                        const bench::Sample back_to_back = merge(samples[0]);
+                        for (std::size_t p = 0; p < pauses.size(); ++p) {
+                            table.row(pass,
+                                      pauses[p] == 0
+                                          ? std::string("back to back")
+                                          : "after " + std::to_string(pauses[p]) + " ms",
+                                      std::to_string(threads), merge(samples[p]),
+                                      (forward ? 2 : 4) * macs, &back_to_back);
+                        }
                     }
                 }
                 continue;

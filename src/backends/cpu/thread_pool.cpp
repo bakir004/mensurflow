@@ -32,6 +32,21 @@ inline bool is_member(int w, std::uint64_t word) {
            w != static_cast<int>((word >> team_bits) & team_mask);
 }
 
+// How often an idle worker that spins for the next job gives its hardware thread away with
+// std::this_thread::yield. When a team uses every hardware thread (24 on a 12-core CPU with SMT),
+// a worker woken from sleep may find all the processors it may run on taken by the pool's own idle
+// spinners, and the OS lets it wait until one of them stops: up to the whole spin budget (2 ms),
+// while the rest of the team waits for it. Measured on conv2d at batch 1 with the folded strategy
+// on 24 threads (teams of 24, 12 and 21 threads in turn, so each 24-thread job wakes 21 workers):
+// a start later than 300 us in 23-69 of 162 such jobs without yielding, 1-2 of 162 with it; the
+// forward pass after 1 ms of idle took 2.6-2.7 ms per call in 5 of 6 processes without, 0.62-0.74
+// ms in all 6 with it.
+// yield returns at once when nothing else waits for the processor, so a spinner reacts to the
+// next job as fast as before. The caller does not yield while it waits for the team: it could hand
+// its processor to another program's thread and lose the rest of its time slice (the conv1
+// backward pass back to back was 5% slower when it did).
+constexpr auto yield_every = std::chrono::microseconds(20);
+
 // What a sleeping worker waits on. One per worker, so waking the team wakes exactly its members and
 // they do not queue up behind one mutex.
 struct alignas(64) Sleeper {
@@ -75,13 +90,20 @@ void worker_loop(int w, std::uint64_t seen, Sleeper* self) {
         std::uint64_t now = p.job.load(std::memory_order_acquire);
         if (now == seen) {
             // A member of the last team spins for spin_us (the next call usually wants it again),
-            // checking the clock every 256 pauses, then sleeps. A worker the last team did not need
-            // sleeps at once: spinning, it would only take the other hardware thread of a core from
-            // a thread that is working.
+            // checking the clock every 256 pauses, then sleeps. While it spins it gives its
+            // hardware thread away every yield_every (see there). A worker the last team did not
+            // need sleeps at once: spinning, it would only take the other hardware thread of a core
+            // from a thread that is working.
             const auto start = std::chrono::steady_clock::now();
             const auto budget = std::chrono::microseconds(p.spin_us.load(std::memory_order_relaxed));
+            auto last_yield = start;
             for (int i = member ? 1 : 256; (now = p.job.load(std::memory_order_acquire)) == seen; ++i) {
-                if ((i & 255) == 0 && (!member || std::chrono::steady_clock::now() - start > budget)) {
+                if ((i & 255) != 0) {
+                    MENSURFLOW_CPU_RELAX();
+                    continue;
+                }
+                const auto t = std::chrono::steady_clock::now();
+                if (!member || t - start > budget) {
                     std::unique_lock<std::mutex> lock(self->mutex);
                     self->asleep.store(true, std::memory_order_seq_cst);
                     // Woken only for a job it is a member of; other jobs pass it by.
@@ -90,6 +112,9 @@ void worker_loop(int w, std::uint64_t seen, Sleeper* self) {
                         return j != seen && is_member(w, j);
                     });
                     self->asleep.store(false, std::memory_order_relaxed);
+                } else if (t - last_yield > yield_every) {
+                    std::this_thread::yield();
+                    last_yield = t;
                 } else {
                     MENSURFLOW_CPU_RELAX();
                 }

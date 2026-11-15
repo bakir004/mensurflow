@@ -17,8 +17,9 @@
 namespace mensurflow::cpu {
 
 // How long an idle worker keeps spinning on the job counter before it sleeps (microseconds). Spinning
-// makes the next call start immediately but keeps a core busy; sleeping costs a wake-up of tens of
-// microseconds. Default 2000 (2 ms).
+// makes the next call start immediately but keeps a core busy (a spinning worker yields its hardware
+// thread every 20 microseconds, so a woken worker that needs it is not kept waiting); sleeping costs
+// a wake-up of tens of microseconds. Default 2000 (2 ms).
 void set_pool_spin_us(std::int64_t microseconds);
 std::int64_t pool_spin_us();
 
