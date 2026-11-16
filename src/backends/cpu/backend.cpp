@@ -163,8 +163,9 @@ void matmul_kernel(const OpArgs& args, Stream&) {
     }
 }
 
-// The portable matmul's tile sizes (rows, depth, cols of MatmulBlocking) are tunable. The AVX2
-// packed kernel is not yet, and the sequential build has no tiles, so those offer no candidates.
+// The portable matmul's tile sizes (rows, depth, cols of MatmulBlocking) are tunable: one region,
+// three axes. The AVX2 packed kernel is not yet, and the sequential build has no tiles, so those have
+// nothing to search.
 TunableKernel matmul_tunable() {
     TunableKernel t;
     t.name = "matmul";
@@ -182,10 +183,10 @@ TunableKernel matmul_tunable() {
         config.size = 3;
         return config;
     };
-    t.candidates = [](const OpArgs& args) {
-        std::vector<TuningConfig> list;
+    t.space = [](const OpArgs& args) {
+        std::vector<SearchRegion> regions;
         if (cpu::packed_gemm_supported() || !use_parallel) {
-            return list;
+            return regions;
         }
         const std::int64_t m = args.inputs[0].size(0), k = args.inputs[0].size(1),
                            n = args.inputs[1].size(1);
@@ -201,19 +202,24 @@ TunableKernel matmul_tunable() {
             return kept;
         };
         const std::int64_t band = (m + cpu::max_threads() - 1) / cpu::max_threads();
+        SearchRegion region;
+        region.name = "tiles";
+        TuningConfig start;
+        const cpu::MatmulBlocking b = cpu::matmul_blocking();
+        start.values = {b.rows, b.depth, b.cols};
+        start.size = 3;
+        region.start = start;
+        // rows: 0 is the thread's whole band, the largest tile, so it goes last on the axis.
         std::vector<std::int64_t> rows = useful({4, 16, 64}, band);
-        rows.insert(rows.begin(), 0); // the whole band
-        for (const std::int64_t r : rows) {
-            for (const std::int64_t d : useful({64, 128, 256, 512}, k)) {
-                for (const std::int64_t c : useful({128, 256, 512, 1024}, n)) {
-                    TuningConfig config;
-                    config.values = {r, d, c};
-                    config.size = 3;
-                    list.push_back(config);
-                }
-            }
-        }
-        return list;
+        rows.push_back(0);
+        region.axes = {{0, rows},
+                       {1, useful({32, 64, 128, 256, 512}, k)},
+                       {2, useful({64, 128, 256, 512, 1024, 2048}, n)}};
+        regions.push_back(region);
+        return regions;
+    };
+    t.allowed = [](const OpArgs&, const TuningConfig& c) {
+        return c.values[0] >= 0 && c.values[1] > 0 && c.values[2] > 0;
     };
     return t;
 }

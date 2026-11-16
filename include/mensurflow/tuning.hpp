@@ -54,24 +54,77 @@ class Algorithm {
     Function function_;
 };
 
+// How the arguments that minimize a call's time are searched for (see TunableKernel in
+// src/core/dispatcher.hpp: per region of the kernel's settings, the time is a function of a few
+// discrete, ordered arguments, with the call's key held fixed).
+enum class SearchMethod {
+    // Coordinate binary sampling: from the region's start point, along one argument at a time with
+    // the others held, the values the others allow are sampled coarse to fine (level 0: the two
+    // ends; level 1: the middle; level 2: the quarter points; ... down to `levels`), every sample is
+    // measured, and the best becomes the new point. Repeated over every axis until a pass changes
+    // nothing. Nothing is ruled out by comparing two noisy times, so a plateau cannot mislead it;
+    // it can still miss a minimum between samples, or one that needs two arguments changed at once.
+    BinarySampling,
+    // Every allowed point of every region. Finds the true minimum of what was measured; slow.
+    Exhaustive,
+};
+
+const char* search_method_name(SearchMethod method);       // "binary" (sampling), "exhaustive"
+SearchMethod parse_search_method(const std::string& name); // invalid_argument for other names
+
 struct TuneOptions {
+    SearchMethod search = SearchMethod::BinarySampling;
+    int max_sweeps = 4; // binary sampling: at most this many passes over the axes of a region
+    // binary sampling: the finest level sampled on each line. Level 2 (ends, middle, quarters) is 5
+    // samples, which covers every value of a line of up to 5 and 5 of 6 values.
+    int levels = 2;
+    // After the search, the default and this many of the fastest points are timed again, taking
+    // turns in three rounds, so the chosen point and the reported speedup come from times measured
+    // together rather than seconds apart (when the GPU clock or the load may have changed). 0: off.
+    int confirm = 3;
     bool retune = false;      // also tune calls that already have a stored result
     bool save = true;         // write the file at the end of tune()
     double min_time_s = 0.05; // per configuration: time samples until this much has passed ...
     int min_samples = 3;      // ... and at least this many samples (the median is kept)
-    bool verbose = false;     // print each call's result to std::cout as it is found
+    // Early stop: after min_samples samples, a point whose fastest sample is already this many times
+    // the best median so far stops being timed (it cannot win). 0: always time to the end.
+    double give_up = 1.3;
+    bool verbose = false; // print each call's result to std::cout as it is found
 };
 
 using TuningValues = std::vector<std::pair<std::string, std::int64_t>>; // name = value, in order
 
-// One configuration measured for a call.
+// One point the search measured for a call.
 struct TunedCandidate {
     TuningValues settings;
     double ms = 0;         // median per call; 0 when rejected
     bool rejected = false; // its result disagreed with the default's, so it was not timed
+    std::string region;    // the region it belongs to ("" for the default)
+    // What the search was doing when it measured the point: "default", "start" (of a region), the
+    // name of the argument being sampled, or "grid" (exhaustive).
+    std::string step;
+    int sweep = 0; // binary sampling: the pass over the axes, from 1
+    int level = 0; // binary sampling: 0 the ends of the line, 1 the middle, 2 the quarters, ...
+    bool stopped = false; // timing stopped early: already slower than give_up x the best
 };
 
-// One tunable call of the algorithm and what tuning found for it.
+// One argument of the minimized function: a kernel parameter and the values it may take.
+struct TuningArgument {
+    std::string name;
+    std::vector<std::int64_t> values; // in order along the axis
+};
+
+// One region of a kernel's settings (a kernel variant): its arguments, and the fixed parameters.
+struct TuningRegion {
+    std::string name;
+    TuningValues start; // where binary sampling starts
+    std::vector<TuningArgument> arguments;
+    std::size_t points = 0; // allowed points (what an exhaustive search measures)
+};
+
+// One tunable call of the algorithm and what tuning found for it: the minimum of
+//   time(settings; key)
+// over the kernel's search space, with the key (the call's input sizes) fixed.
 struct TunedCall {
     std::string op;          // e.g. "matmul"
     std::string device;      // e.g. "metal:0"
@@ -85,7 +138,13 @@ struct TunedCall {
     int tried = 0;       // configurations measured
     int rejected = 0;    // configurations whose result disagreed with the default's (not used)
     bool reused = false; // the result was already stored and was not measured again
-    std::vector<TunedCandidate> candidates; // every configuration tried, in the order tried
+    std::string method;  // the search method, e.g. "binary"
+    std::vector<TuningRegion> regions;      // the search space
+    std::size_t space_size = 0;             // allowed points in all regions
+    std::size_t confirmed = 0;              // points timed again at the end, the default included
+    int stopped = 0;                        // points whose timing stopped early
+    double search_s = 0;                    // seconds the search took (confirmation excluded)
+    std::vector<TunedCandidate> candidates; // every point measured, in the order measured
 };
 
 // One op called with Execution::Auto and the device tuning chose for it. Times include copying the

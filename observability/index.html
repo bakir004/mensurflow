@@ -282,7 +282,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       </select></label>
       <div class="f" style="flex-basis:100%"><label class="f"><span>Size, <span id="a-unit">elements</span> (2<sup>k</sup>, pick one): the input the op is tuned for</span></label>
         <div class="p2s" id="a-size"></div></div>
-      <label class="f" title="Measure every candidate again even if a result is stored for this call">Measure again<input type="checkbox" id="a-retune"></label>
+      <label class="f" title="How the arguments that minimize the time are searched for">Search<select id="a-search">
+        <option value="binary" selected>binary sampling along each argument, keep the best</option>
+        <option value="exhaustive">every point (exhaustive, slow: up to ~1,100 points on Metal)</option>
+      </select></label>
+      <label class="f" title="Stop timing a point after 3 samples when even its fastest sample is 1.3× the best time so far: it cannot win">Early stop<input type="checkbox" id="a-giveup" checked></label>
+      <label class="f" title="Measure again even if a result is stored for this call">Measure again<input type="checkbox" id="a-retune"></label>
       <button class="b primary" id="a-run">Autotune</button>
       <span class="progress" id="a-progress"></span>
     </div>
@@ -1194,10 +1199,13 @@ $("a-device").addEventListener("change", () => {
 $("a-run").addEventListener("click", async () => {
   const op = opByName(state.current);
   $("a-run").disabled = true;
-  $("a-progress").textContent = "tuning… every candidate is checked and timed (this can take a minute)";
+  $("a-progress").textContent = $("a-search").value === "exhaustive"
+    ? "tuning… measuring every point of the space (this can take a few minutes)"
+    : "tuning… binary sampling along each argument (a few seconds per call)";
   try {
     const data = await api("/api/tune", { op: op.name, device: $("a-device").value, execution: $("a-exec").value,
-      size: getPow2("a-size")[0] || null, retune: $("a-retune").checked, threads: Number($("threads").value) || null });
+      size: getPow2("a-size")[0] || null, retune: $("a-retune").checked, search: $("a-search").value,
+      give_up: $("a-giveup").checked ? 1.3 : 0, threads: Number($("threads").value) || null });
     if (data.tuning_file) state.tuningFile = data.tuning_file;
     state.tunes[data.op] = state.tunes[data.op + "|" + data.device] = tuneData = data;
     $("a-progress").textContent = `done in ${data.seconds.toFixed(1)} s`;
@@ -1217,12 +1225,17 @@ function renderTune() {
         fastest is stored (without a stored choice, Auto runs on the CPU).`
     : "";
   $("a-about").innerHTML = kernels.length
-    ? kernels.map((k) => `On <b>${esc(k.device)}</b>, <code>${esc(k.name)}</code> is tuned per call: for each
-        <b>input</b> <code>(${k.key.map(esc).join(", ")})</code> it picks the <b>settings</b>
-        <code>(${k.params.map(esc).join(", ")})</code>.`).join("<br>") +
-      `<br><span class="note">Autotune runs this op once at the chosen size, measures every candidate setting on each
-        tunable call it makes (after checking that its result matches the default's), and keeps the fastest in the
-        tuning file.</span>` + deviceChoiceNote
+    ? `Tuning is the minimization of a function. For one call, the <b>kernel parameters</b> are fixed by the inputs
+        and the <b>arguments</b> are the kernel's settings; the objective is the time per call:` +
+      kernels.map((k) => `<div class="mono" style="margin:6px 0 6px 12px">${esc(k.device)}: time(<b>${k.params.map(esc).join(", ")}</b> ; ${k.key.map(esc).join(", ")}) → min</div>`).join("") +
+      `<span class="note">Each argument takes a few discrete values in order. A kernel variant (Metal: tiled, simdgroup,
+        MPS) is a category rather than an axis, so each variant is its own region of the space with its own arguments.
+        <b>Binary sampling</b>: from a start point, along one argument at a time with the others held, sample its
+        values coarse to fine (the two ends, then the middle, then the quarter points), measure every sample and move to
+        the best; repeat over every argument until a pass changes nothing. Nothing is ruled out by comparing two noisy
+        times; it can miss a minimum that needs two arguments changed together.
+        <b>Exhaustive</b> measures every allowed point. A point whose result differs from the default's is rejected.
+        More methods can be added in <span class="mono">detail::search</span>.</span>` + deviceChoiceNote
     : `<span class="note">No tunable kernel is named after <code>${esc(op.name)}</code> on this build, so there are no
         settings to tune; so far only <code>matmul</code> has some.</span>` + deviceChoiceNote;
   renderTuneResult();
@@ -1250,35 +1263,111 @@ function renderTuneResult() {
     [`${d.op} on ${d.device} (${d.execution})`, shapes(d.inputs)],
   ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span class="mono">${esc(l)}</span></div>`).join("")}</div></div>`;
   if (placements.length) html += placementPanel(placements);
-  d.calls.forEach((c, i) => {
-    const key = asObj(c.key);
-    const changed = (name) => asObj(c.best)[name] !== asObj(c.default)[name];
-    html += `<div class="panel"><h2>call ${i + 1}: ${esc(c.op)} on ${esc(c.device)} · ${esc(pairsText(c.key))}</h2>
-      <div class="stats">${[
-        [fmtMs(c.best_ms), "tuned: " + candLabel(c.best)],
-        [fmtMs(c.default_ms), "default: " + candLabel(c.default)],
-        [(c.default_ms / c.best_ms).toFixed(2) + "×", "speedup of this call"],
-        [c.reused ? "stored" : `${c.tried}` + (c.rejected ? ` (+${c.rejected} rejected)` : ""), c.reused ? "measured earlier, not again" : "candidates timed"],
-      ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span class="mono">${esc(l)}</span></div>`).join("")}</div>
-      <div class="charts">
-        <div><h2>Input parameters (the key the result is stored under)</h2><table>
-          <thead><tr><th>name</th><th class="num">value</th><th>meaning</th></tr></thead><tbody>
-          ${c.key.map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num mono"><b>${v}</b></td><td class="note">${esc(TUNE_HELP[k] || "")}</td></tr>`).join("")}
-          </tbody></table></div>
-        <div><h2>Tuned parameters</h2><table>
-          <thead><tr><th>setting</th><th class="num">default</th><th class="num">tuned</th><th>meaning</th></tr></thead><tbody>
-          ${(c.best.length ? c.best : c.default).map(([k]) => `<tr><td class="mono">${esc(k)}</td><td class="num mono">${asObj(c.default)[k] ?? "–"}</td>
-            <td class="num mono" style="${changed(k) ? "color:var(--good);font-weight:700" : ""}">${asObj(c.best)[k] ?? "–"}</td>
-            <td class="note">${esc(TUNE_HELP[k] || "")}</td></tr>`).join("")}
-          </tbody></table>
-          <p class="note">Green: changed by tuning. A setting a kernel does not use is 0.</p></div>
-      </div>
-      ${c.candidates.length ? `<h2 style="margin-top:14px">Every candidate, fastest first</h2><div class="a-chart" data-i="${i}"></div>
-        <div class="legend" id="a-legend-${i}"></div>` : `<p class="note">Stored earlier, so no candidates were measured this time; tick <i>Measure again</i> to see them.</p>`}
-    </div>`;
-  });
+  d.calls.forEach((c, i) => { html += callPanel(c, i); });
   el.innerHTML = html;
-  el.querySelectorAll(".a-chart").forEach((chart) => candidateChart(chart, d.calls[Number(chart.dataset.i)], Number(chart.dataset.i)));
+  el.querySelectorAll(".a-trace").forEach((chart) => traceChart(chart, d.calls[Number(chart.dataset.i)], Number(chart.dataset.i)));
+  el.querySelectorAll(".a-slice").forEach((chart) => sliceChart(chart, d.calls[Number(chart.dataset.i)], chart.dataset.arg));
+}
+
+// The region (kernel variant) a configuration belongs to, by its settings.
+function regionOf(call, settings) {
+  const s = asObj(settings);
+  for (const r of call.regions || []) {
+    const start = asObj(r.start);
+    const fixed = Object.keys(start).filter((k) => !r.arguments.some((a) => a.name === k));
+    if (fixed.every((k) => s[k] === start[k])) return r;
+  }
+  return null;
+}
+
+function callPanel(c, i) {
+  const best = asObj(c.best), def = asObj(c.default);
+  const region = regionOf(c, c.best);
+  const defRegion = regionOf(c, c.default);
+  const args = region ? region.arguments : [];
+  const fixedParams = c.key.map(([k]) => k);
+  const regions = c.regions || [];
+  const allArgs = [...new Set(regions.flatMap((r) => r.arguments.map((a) => a.name)))];
+  const signature = `time(${[...(regions.length > 1 ? ["variant"] : []), ...(allArgs.length ? allArgs : c.best.map(([k]) => k))].join(", ")} ; ${fixedParams.join(", ")})`;
+  // The lowest time measured in each region, and where.
+  const perRegion = regions.map((r) => {
+    const pts = c.candidates.filter((p) => !p.rejected && p.ms != null && regionOf(c, p.settings) === r);
+    const low = pts.reduce((m, p) => (!m || p.ms < m.ms ? p : m), null);
+    return { r, low, n: c.candidates.filter((p) => regionOf(c, p.settings) === r).length };
+  });
+  const showV = (name, v) => (v === 0 && name === "rows" ? "band" : v);
+  const measured = c.candidates.length;
+  const domain = (a) => a.values.map((v) => {
+    const isBest = best[a.name] === v, isDef = def[a.name] === v && defRegion === region;
+    return `<span class="mono" style="display:inline-block;min-width:22px;text-align:center;padding:1px 4px;margin:1px;border-radius:3px;
+      ${isBest ? "background:var(--good);color:var(--panel);font-weight:700;" : ""}${isDef ? "box-shadow:inset 0 0 0 1.5px var(--ink);" : ""}">${v === 0 && a.name === "rows" ? "band" : v}</span>`;
+  }).join("");
+  const argRows = args.map((a) => {
+    const changed = best[a.name] !== def[a.name] || defRegion !== region;
+    return `<tr><td class="mono"><b>${esc(a.name)}</b></td><td>${domain(a)}</td>
+      <td class="num mono">${defRegion === region ? showV(a.name, def[a.name]) ?? "–" : "–"}</td>
+      <td class="num mono" style="${changed ? "color:var(--good);font-weight:700" : "font-weight:700"}">${showV(a.name, best[a.name])}</td>
+      <td class="note">${esc(TUNE_HELP[a.name] || "")}</td></tr>`;
+  }).join("");
+  const regionRow = (c.regions || []).length > 1
+    ? `<tr><td class="mono"><b>variant</b></td><td>${c.regions.map((r) => `<span class="mono" style="display:inline-block;padding:1px 6px;margin:1px;border-radius:3px;
+        ${r === region ? "background:var(--good);color:var(--panel);font-weight:700;" : ""}${r === defRegion ? "box-shadow:inset 0 0 0 1.5px var(--ink);" : ""}">${esc(r.name)}</span>`).join("")}</td>
+        <td class="num mono">${esc(defRegion?.name || "–")}</td><td class="num mono" style="font-weight:700;${region !== defRegion ? "color:var(--good)" : ""}">${esc(region?.name || "–")}</td>
+        <td class="note">the kernel variant: a category, so each one is a separate region of the space</td></tr>`
+    : "";
+  return `<div class="panel"><h2>call ${i + 1}: ${esc(c.op)} on ${esc(c.device)}</h2>
+    <div class="mono" style="font-size:15px;margin:2px 0 10px">${esc(signature)} → min &nbsp;<span class="note">with ${esc(pairsText(c.key))}</span></div>
+    <div class="stats">${[
+      [fmtMs(c.default_ms) + " → " + fmtMs(c.best_ms), c.confirmed ? "default → argmin, timed together at the end" : "time at the default → at the argmin"],
+      [(c.default_ms / c.best_ms).toFixed(2) + "×", "speedup of this call"],
+      [c.reused ? "stored" : `${measured} of ${(c.space_size || 0).toLocaleString()}`, c.reused ? "found earlier, not searched again" : "points measured" + (c.rejected ? ` (${c.rejected} rejected)` : "")],
+      [c.reused ? "–" : (c.method || "–"), c.confirmed ? `search method; best ${c.confirmed - 1} + default re-timed together` : "search method"],
+      ...(c.reused ? [] : [[c.search_s != null ? c.search_s.toFixed(2) + " s" : "–",
+        "search" +
+        (c.stopped ? `; ${c.stopped} stopped early` : "")]]),
+    ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span class="mono">${esc(l)}</span></div>`).join("")}</div>
+    <div class="charts">
+      <div><h2>Kernel parameters (fixed by the call)</h2><table>
+        <thead><tr><th>parameter</th><th class="num">value</th><th>meaning</th></tr></thead><tbody>
+        ${c.key.map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num mono"><b>${v}</b></td><td class="note">${esc(TUNE_HELP[k] || "")}</td></tr>`).join("")}
+        </tbody></table>
+        <p class="note">The result is stored under these values and applied only to calls with exactly them.</p></div>
+      <div><h2>Arguments that minimize the time</h2>${args.length || regionRow ? `<table>
+        <thead><tr><th>argument</th><th>values searched</th><th class="num">default</th><th class="num">argmin</th><th>meaning</th></tr></thead><tbody>
+        ${regionRow}${argRows}</tbody></table>
+        <p class="note">Filled: the argmin; outlined: the default. Green: changed by tuning.${region && !args.length ? ` The ${esc(region.name)} variant has no arguments of its own.` : ""}</p>`
+        : `<p class="note">${esc(c.best.length ? pairsText(c.best) : "no settings")}</p>`}
+      ${perRegion.length > 1 && measured ? `<h2 style="margin-top:12px">Lowest point of each variant</h2><table>
+        <thead><tr><th>variant</th><th class="num">points</th><th>lowest at</th><th class="num">time</th><th class="num">vs argmin</th></tr></thead><tbody>
+        ${perRegion.map(({ r, low, n }) => `<tr${r === region ? ' style="font-weight:700"' : ""}><td>${esc(r.name)}</td>
+          <td class="num">${n} of ${r.points.toLocaleString()}</td>
+          <td class="mono">${low ? esc(r.arguments.map((a) => `${a.name}=${showV(a.name, asObj(low.settings)[a.name])}`).join(" ") || "(no arguments)") : "–"}</td>
+          <td class="num">${low ? fmtMs(low.ms) : "–"}</td><td class="num">${low ? (low.ms / c.best_ms).toFixed(2) + "×" : "–"}</td></tr>`).join("")}
+        </tbody></table>` : ""}</div>
+    </div>
+    ${measured ? `<h2 style="margin-top:14px">The search, in the order points were measured</h2><div class="a-trace" data-i="${i}"></div>
+      <div class="legend" id="a-legend-${i}"></div>
+      ${args.length ? `<h2 style="margin-top:14px">Slices through the argmin: the time along one argument, the others held at the argmin</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+        ${args.map((a) => `<div><div class="mono" style="font-weight:700">${esc(a.name)}</div><div class="a-slice" data-i="${i}" data-arg="${esc(a.name)}"></div></div>`).join("")}</div>
+        <p class="note">Only measured points are drawn; a value the search did not visit on this line has no dot. When the
+          re-timing at the end prefers a near-tie that the search reached on a different line, the lines through it
+          were not sampled, so a slice can show a single dot.</p>` : ""}
+      <details style="margin-top:10px"><summary class="note">Every measured point (${measured})</summary>
+        <table><thead><tr><th class="num">#</th><th>region</th><th>step</th><th>settings</th><th class="num">ms</th></tr></thead><tbody>
+        ${c.candidates.map((p, k) => `<tr><td class="num">${k + 1}</td><td>${esc(p.region || "default")}</td>
+          <td class="mono">${esc(stepText(p))}</td><td class="mono">${esc(candLabel(p.settings))}</td>
+          <td class="num">${p.rejected ? '<span class="err">rejected</span>' : fmtMs(p.ms) + (p.stopped ? ' <span class="note">stopped early</span>' : "")}</td></tr>`).join("")}
+        </tbody></table></details>`
+      : `<p class="note">Found earlier, so nothing was measured this time; tick <i>Measure again</i> to see the search.</p>`}
+  </div>`;
+}
+
+function stepText(p) {
+  if (p.step === "default") return "default";
+  if (p.step === "start") return "start of region";
+  if (p.step === "grid") return "grid point";
+  return `pass ${p.sweep}, ${p.step}, ${["ends", "middle", "quarters", "eighths"][p.level] ?? "level " + p.level}`;
 }
 
 // Device choice for the Execution::Auto calls: each device's time (copies included) as a bar.
@@ -1302,36 +1391,101 @@ function placementPanel(placements) {
       inputs there and the result back, since the data stays where it lives. A device's tunable kernel settings are
       tuned before it is timed (listed below, if the op has any), so each device is compared at its best.</p></div>`;
 }
-// Column chart of the timed candidates, sorted by median time; the dashed line is the default.
-function candidateChart(el, call, index) {
-  const cs = call.candidates.filter((c) => !c.rejected && c.ms != null).sort((a, b) => a.ms - b.ms);
-  if (!cs.length) { el.innerHTML = '<p class="note">Every candidate was rejected.</p>'; return; }
-  const groups = [...new Set(cs.map((c) => candGroup(c.settings)))];
-  const color = groupColors(groups);
-  const W = Math.max(el.clientWidth, 400), H = 230, L = 58, R = 10, T = 10, B = 26;
-  const top = Math.max(...cs.map((c) => c.ms), call.default_ms) * 1.06;
-  const Y = (v) => T + (H - T - B) * (1 - v / top);
-  const bw = (W - L - R) / cs.length;
+// The search as it went: each measured point's time in the order measured, coloured by region; the
+// step line is the best time so far, the dashed line the default. Rejected points sit on the top edge.
+function traceChart(el, call, index) {
+  const ps = call.candidates;
+  const ok = ps.filter((p) => !p.rejected && p.ms != null);
+  if (!ok.length) { el.innerHTML = '<p class="note">Every point was rejected.</p>'; return; }
+  const groups = [...new Set(ps.map((p) => p.region || "default"))];
+  const palette = [css("--ink"), css("--accent"), css("--metal"), css("--other"), css("--muted")];
+  const color = Object.fromEntries(groups.map((g, i) => [g, palette[i % palette.length]]));
+  const W = Math.max(el.clientWidth, 400), H = 250, L = 58, R = 12, T = 12, B = 30;
+  // The default as the search measured it, on the same footing as the other points.
+  const defMs = ps.find((p) => p.step === "default" && !p.rejected)?.ms ?? call.default_ms;
+  const values = ok.map((p) => p.ms);
+  const lo = Math.min(...values) * 0.97, hi = Math.max(...values, defMs) * 1.08;
+  const log = hi / lo > 4;
+  const Y = log ? (v) => T + (H - T - B) * (1 - Math.log(v / lo) / Math.log(hi / lo)) : (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  const X = (k) => L + (W - L - R) * (ps.length === 1 ? 0.5 : k / (ps.length - 1));
   let svg = `<svg width="${W}" height="${H}">`;
-  for (const v of linTicks(0, top)) svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${fmtMs(v)}</text>`;
-  cs.forEach((c, i) => {
-    const x = L + i * bw, y = Y(c.ms);
-    const best = i === 0;
-    svg += `<rect data-i="${i}" x="${x + bw * 0.12}" y="${y}" width="${Math.max(bw * 0.76, 1)}" height="${Y(0) - y}" rx="2"
-      fill="${color[candGroup(c.settings)]}" fill-opacity="${best ? 1 : 0.75}" ${best ? `stroke="${css("--good")}" stroke-width="2"` : ""}/>`;
+  const ticks = log ? logTicksMs(lo, hi) : linTicks(lo, hi);
+  for (const v of ticks) svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${fmtMs(v)}</text>`;
+  // Region bands along the x axis.
+  let startK = 0;
+  for (let k = 1; k <= ps.length; k++) {
+    if (k === ps.length || (ps[k].region || "default") !== (ps[startK].region || "default")) {
+      const g = ps[startK].region || "default";
+      svg += `<rect x="${X(startK) - 3}" y="${H - B + 6}" width="${Math.max(X(k - 1) - X(startK) + 6, 4)}" height="4" rx="2" fill="${color[g]}"/>`;
+      startK = k;
+    }
+  }
+  // Best so far.
+  let best = Infinity, path = "";
+  ps.forEach((p, k) => {
+    if (!p.rejected && p.ms < best) { path += `${path ? "L" : "M"}${X(k)},${path ? Y(best) : Y(p.ms)}L${X(k)},${Y(p.ms)}`; best = p.ms; }
   });
-  svg += `<line x1="${L}" x2="${W - R}" y1="${Y(call.default_ms)}" y2="${Y(call.default_ms)}" stroke="${css("--ink")}" stroke-dasharray="5 4"/>
-    <text x="${L + 4}" y="${Y(call.default_ms) - 5}" style="fill:var(--ink);paint-order:stroke;stroke:var(--panel);stroke-width:3px">default ${fmtMs(call.default_ms)}</text>
-    <text x="${L}" y="${H - 6}">fastest</text><text x="${W - R}" y="${H - 6}" text-anchor="end">slowest (${cs.length} timed)</text></svg>`;
+  path += `L${X(ps.length - 1)},${Y(best)}`;
+  svg += `<path d="${path}" fill="none" stroke="${css("--good")}" stroke-width="2"/>`;
+  svg += `<line x1="${L}" x2="${W - R}" y1="${Y(defMs)}" y2="${Y(defMs)}" stroke="${css("--ink")}" stroke-dasharray="5 4"/>`;
+  const argmin = pairsText(call.best);
+  ps.forEach((p, k) => {
+    const g = p.region || "default";
+    const chosen = !p.rejected && pairsText(p.settings) === argmin;
+    if (p.rejected) svg += `<text data-k="${k}" x="${X(k)}" y="${T + 4}" text-anchor="middle" style="fill:var(--bad);font-weight:700">×</text>`;
+    else if (p.stopped) svg += `<circle data-k="${k}" cx="${X(k)}" cy="${Y(p.ms)}" r="4" fill="${css("--panel")}" stroke="${color[g]}" stroke-width="1.5"/>`;
+    else svg += `<circle data-k="${k}" cx="${X(k)}" cy="${Y(p.ms)}" r="${chosen ? 6 : 4}" fill="${color[g]}" ${chosen ? `stroke="${css("--good")}" stroke-width="2.5"` : `fill-opacity="0.85"`}/>`;
+  });
+  svg += `<text x="${L + 4}" y="${Y(defMs) - 5}" style="fill:var(--ink);paint-order:stroke;stroke:var(--panel);stroke-width:3px">default ${fmtMs(defMs)}</text>
+    <text x="${L}" y="${H - 6}">first measured</text><text x="${W - R}" y="${H - 6}" text-anchor="end">last (${ps.length} points${log ? ", log scale" : ""})</text></svg>`;
   el.innerHTML = svg;
-  el.querySelectorAll("rect").forEach((r) => {
-    const c = cs[Number(r.dataset.i)];
-    r.addEventListener("mousemove", (m) => showTip(m, `<b>${esc(candLabel(c.settings))}</b>${Number(r.dataset.i) === 0 ? " (chosen)" : ""}<br>
-      ${fmtMs(c.ms)} per call · ${(call.default_ms / c.ms).toFixed(2)}× the default<br><span class="mono">${esc(pairsText(c.settings))}</span>`));
-    r.addEventListener("mouseleave", hideTip);
+  el.querySelectorAll("[data-k]").forEach((m) => {
+    const p = ps[Number(m.dataset.k)];
+    m.addEventListener("mousemove", (e) => showTip(e, `<b>#${Number(m.dataset.k) + 1} ${esc(candLabel(p.settings))}</b><br>${esc(p.region || "default")} · ${esc(stepText(p))}<br>
+      ${p.rejected ? "rejected: result differed from the default's" : `${fmtMs(p.ms)} per call · ${(defMs / p.ms).toFixed(2)}× the default${p.stopped ? " · stopped early (already slower than 1.3× the best)" : ""}`}`));
+    m.addEventListener("mouseleave", hideTip);
   });
   $("a-legend-" + index).innerHTML = groups.map((g) => `<span><i style="background:${color[g]}"></i>${esc(g)}</span>`).join("") +
-    `<span><i style="background:${css("--ink")}"></i>default (dashed)</span><span>outlined: chosen</span>`;
+    `<span><i style="background:${css("--good")}"></i>best so far</span><span><i style="background:${css("--ink")}"></i>default (dashed)</span><span>ringed: the argmin</span><span>hollow: stopped early</span>`;
+}
+
+function logTicksMs(lo, hi) {
+  const out = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+    for (const m of [1, 2, 5]) { const v = m * 10 ** e; if (v >= lo && v <= hi) out.push(v); }
+  return out.length >= 2 ? out : linTicks(lo, hi);
+}
+
+// One argument's slice through the argmin: the measured points that equal the argmin in every other setting.
+function sliceChart(el, call, name) {
+  const best = asObj(call.best);
+  const region = regionOf(call, call.best);
+  const arg = region.arguments.find((a) => a.name === name);
+  const pts = arg.values.map((v) => {
+    const p = call.candidates.find((c) => !c.rejected && asObj(c.settings)[name] === v &&
+      Object.entries(best).every(([k, bv]) => k === name || asObj(c.settings)[k] === bv));
+    return { v, ms: p ? p.ms : null };
+  });
+  const got = pts.filter((p) => p.ms != null);
+  const W = Math.max(el.clientWidth, 200), H = 120, L = 50, R = 22, T = 8, B = 20;
+  if (!got.length) { el.innerHTML = '<p class="note">nothing measured on this line</p>'; return; }
+  const lo = Math.min(...got.map((p) => p.ms)) * 0.95, hi = Math.max(...got.map((p) => p.ms)) * 1.05;
+  const Y = (v) => T + (H - T - B) * (1 - (v - lo) / Math.max(hi - lo, 1e-12));
+  const X = (k) => L + (W - L - R) * (pts.length === 1 ? 0.5 : k / (pts.length - 1));
+  let svg = `<svg width="${W}" height="${H}">`;
+  for (const v of [lo, hi]) svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L - 4}" y="${Y(v) + 4}" text-anchor="end">${fmtMs(v)}</text>`;
+  let line = "";
+  pts.forEach((p, k) => {
+    svg += `<text x="${X(k)}" y="${H - 5}" text-anchor="middle" style="${p.v === best[name] ? "font-weight:700;fill:var(--good)" : ""}">${p.v === 0 && name === "rows" ? "band" : p.v}</text>`;
+    if (p.ms != null) line += `${line ? "L" : "M"}${X(k)},${Y(p.ms)}`;
+  });
+  svg += `<path d="${line}" fill="none" stroke="${css("--muted")}" stroke-width="1.5"/>`;
+  pts.forEach((p, k) => {
+    if (p.ms == null) return;
+    const at = p.v === best[name];
+    svg += `<circle cx="${X(k)}" cy="${Y(p.ms)}" r="${at ? 5.5 : 4}" fill="${at ? css("--good") : css("--accent")}"><title>${name}=${p.v}: ${fmtMs(p.ms)}</title></circle>`;
+  });
+  el.innerHTML = svg + "</svg>";
 }
 
 function renderStored() {

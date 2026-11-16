@@ -1,18 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="mensurflow architecture: a call such as dot(a, b, Execution::GPU) goes from user code through the public headers into src/ops, which validates and calls the Dispatcher. The Dispatcher picks the execution device, asks the Registry for that backend, looks up the kernel by op, device and dtype, and runs it on the CPU, CUDA or Metal backend. Backends register themselves and their kernels once, when the Registry is first used.">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1090" viewBox="0 0 1600 1090" role="img" aria-label="mensurflow architecture: user code and the dashboard call the public headers; src/ops validates each call and hands it to dispatch() in src/core, which picks the execution device (or the tuner's stored choice), asks the Registry for that backend, looks the kernel up by op, device and dtype, applies tuned settings to tunable kernels, and runs it on the CPU, CUDA or Metal backend, copying data when the device differs from where the data lives.">
   <style>
-/* SVG classes */
+.bg { fill: #ffffff; }
 .band { fill: #f0f3f6; }
 .box { fill: #ffffff; stroke: #c6ced7; stroke-width: 1.2; }
 .box-hot { fill: #ffffff; stroke: #0a7a72; stroke-width: 1.8; }
+.box-tune { fill: #fbf7ef; stroke: #b9842c; stroke-width: 1.8; }
 .box-plan { fill: none; stroke: #c6ced7; stroke-width: 1.4; stroke-dasharray: 6 5; }
-.sep { stroke: #c6ced7; stroke-width: 1; }
-.pill { fill: #f0f3f6; stroke: #c6ced7; stroke-width: 1; }
 .step-badge { fill: #0a7a72; }
+.tune-badge { fill: #b9842c; }
 .a-hot { stroke: #0a7a72; stroke-width: 2.6; fill: none; }
 .a-thin { stroke: #5d6875; stroke-width: 1.4; fill: none; }
-.a-start { stroke: #5d6875; stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; }
+.a-tune { stroke: #b9842c; stroke-width: 2; fill: none; }
+.a-start { stroke: #5d6875; stroke-width: 1.4; fill: none; stroke-dasharray: 6 5; }
 .m-hot { fill: #0a7a72; }
 .m-thin { fill: #5d6875; }
+.m-tune { fill: #b9842c; }
 text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif; white-space: pre; }
 .title { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
 .sub { font-size: 15px; fill: #5d6875; }
@@ -22,264 +24,251 @@ text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica,
 .h-sm { font-size: 14px; font-weight: 600; }
 .b { font-size: 13px; }
 .s { font-size: 12px; fill: #5d6875; }
-.xs { font-size: 11px; fill: #5d6875; }
 .m { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; }
 .m13 { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 13px; }
 .mm { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
 .hot-t { fill: #0a7a72; font-weight: 600; }
+.tune-t { fill: #9a6a1c; font-weight: 600; }
 .bad-t { fill: #b4372b; }
 .badge-t { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; font-weight: 600; fill: #ffffff; }
 .lbl { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
 .lbl-hot { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11.5px; fill: #0a7a72; font-weight: 500; }
-.dim { fill: #5d6875; }
-
-</style>
-<rect width="1600" height="900" fill="#fbfcfd"/>
-<defs>
-    <marker id="ah-hot" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path class="m-hot" d="M0 0 L10 5 L0 10 z"/>
-    </marker>
-    <marker id="ah-thin" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path class="m-thin" d="M0 0 L10 5 L0 10 z"/>
-    </marker>
+.lbl-tune { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11.5px; fill: #9a6a1c; font-weight: 500; }
+.c { fill: #6a3fa0; }
+  </style>
+  <defs>
+    <marker id="ah-hot" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-hot" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="ah-thin" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-thin" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="ah-tune" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-tune" d="M0 0 L10 5 L0 10 z"/></marker>
   </defs>
+  <rect class="bg" x="0" y="0" width="1600" height="1090"/>
 
-  <!-- Title -->
-  <text class="title" x="40" y="54">mensurflow, one call from top to bottom</text>
-  <text class="sub" x="40" y="80">What happens inside <tspan class="m13">dot(a, b, Execution::GPU)</tspan>, and how the library finds the devices it can run on.</text>
+  <text class="title" x="24" y="46">mensurflow, one call from top to bottom</text>
+  <text class="sub" x="24" y="72">A C++ tensor library: one public API, kernels on CPU (OpenMP), CUDA and Metal, chosen per call by op, device and dtype, with kernel settings and devices tuned offline.</text>
 
-  <!-- Legend -->
-  <line class="a-hot" x1="1118" y1="44" x2="1158" y2="44" marker-end="url(#ah-hot)"/>
-  <text class="s" x="1168" y="48">path of one call</text>
-  <line class="a-thin" x1="1300" y1="44" x2="1340" y2="44" marker-end="url(#ah-thin)"/>
-  <text class="s" x="1350" y="48">lookup / helper call</text>
-  <line class="a-start" x1="1118" y1="72" x2="1158" y2="72" marker-end="url(#ah-thin)"/>
-  <text class="s" x="1168" y="76">once, when the Registry is first used</text>
+  <!-- ============================================================ USER CODE -->
+  <rect class="band" x="16" y="92" width="1568" height="120" rx="6"/>
+  <text class="layer" x="30" y="120">USER CODE</text>
+  <text class="path" x="30" y="138">your program</text>
 
-  <!-- ========== Bands ========== -->
-  <rect class="band" x="30" y="100" width="1540" height="68" rx="6"/>
-  <rect class="band" x="30" y="184" width="1540" height="84" rx="6"/>
-  <rect class="band" x="30" y="284" width="1540" height="88" rx="6"/>
-  <rect class="band" x="30" y="388" width="1540" height="252" rx="6"/>
-  <rect class="band" x="30" y="656" width="1540" height="210" rx="6"/>
+  <rect class="box-hot" x="170" y="102" width="760" height="100" rx="6"/>
+  <text class="m" x="186" y="126">Algorithm net([](const std::vector&lt;Tensor&gt;&amp; in) {</text>
+  <text class="m" x="186" y="143">    return std::vector&lt;Tensor&gt;{relu(matmul(in[0], in[1], Execution::Auto))}; });</text>
+  <text class="m" x="186" y="166">Tuner tuner("tuning.txt");  tuner.tune(net, inputs);  <tspan class="s">// offline, once per machine</tspan></text>
+  <text class="m" x="186" y="186">net.run(inputs, tuner);                              <tspan class="s">// applies the stored results</tspan></text>
 
-  <!-- Layer labels -->
-  <text class="layer" x="46" y="129">USER CODE</text>
-  <text class="xs" x="46" y="147">your program</text>
+  <rect class="box" x="950" y="102" width="360" height="100" rx="6"/>
+  <text class="h-sm" x="966" y="124">Observability dashboard</text>
+  <text class="path" x="1150" y="124">observability/</text>
+  <text class="b" x="966" y="146">index.html ↔ serve.py (HTTP :8765) → observe</text>
+  <text class="s" x="966" y="165">op timings, traces, autotune view, CPU-or-GPU map</text>
+  <text class="s" x="966" y="183">public API and the trace hook only, JSON out</text>
 
-  <text class="layer" x="46" y="213">PUBLIC API</text>
-  <text class="path" x="46" y="231">include/mensurflow/</text>
+  <rect class="box" x="1330" y="102" width="246" height="100" rx="6"/>
+  <text class="h-sm" x="1346" y="124">tests · examples · benchmarks</text>
+  <text class="s" x="1346" y="146">40 ctest programs</text>
+  <text class="s" x="1346" y="165">mlp_xor, tune_mlp</text>
+  <text class="s" x="1346" y="183">vs OpenBLAS, BLIS, PyTorch</text>
 
-  <text class="layer" x="46" y="313">OPS</text>
-  <text class="path" x="46" y="331">src/ops/</text>
-  <text class="xs" x="46" y="349">checks live here;</text>
-  <text class="xs" x="46" y="363">kernels trust inputs</text>
+  <!-- ============================================================ PUBLIC API -->
+  <rect class="band" x="16" y="222" width="1568" height="116" rx="6"/>
+  <text class="layer" x="30" y="250">PUBLIC API</text>
+  <text class="path" x="30" y="268">include/mensurflow/</text>
 
-  <text class="layer" x="46" y="417">CORE</text>
-  <text class="path" x="46" y="435">src/core/</text>
+  <rect class="box" x="170" y="232" width="345" height="46" rx="5"/>
+  <text class="h-sm" x="184" y="251">tensor.hpp</text>
+  <text class="s" x="184" y="269">Tensor · from_vector · to(device) · item() · views</text>
+  <rect class="box" x="525" y="232" width="345" height="46" rx="5"/>
+  <text class="h-sm" x="539" y="251">device.hpp · dtype.hpp · shape.hpp</text>
+  <text class="s" x="539" y="269">Device{CPU, CUDA, Metal, Vulkan} · list_devices()</text>
+  <rect class="box" x="880" y="232" width="345" height="46" rx="5"/>
+  <text class="h-sm" x="894" y="251">execution.hpp</text>
+  <text class="s" x="894" y="269">enum Execution { Auto, CPU, GPU }: where an op runs</text>
+  <rect class="box" x="1235" y="232" width="341" height="46" rx="5"/>
+  <text class="h-sm" x="1249" y="251">trace.hpp</text>
+  <text class="s" x="1249" y="269">trace hook: spans of ops, kernels, copies</text>
 
-  <text class="layer" x="46" y="685">BACKENDS</text>
-  <text class="path" x="46" y="703">src/backends/</text>
-  <text class="mm" x="46" y="734" style="fill: #15202b">class Backend</text>
-  <text class="mm" x="54" y="752">type()</text>
-  <text class="mm" x="54" y="768">device_count()</text>
-  <text class="mm" x="54" y="784">allocate() → Buffer</text>
-  <text class="mm" x="54" y="800">stream() → Stream</text>
-  <text class="mm" x="54" y="816">register_kernels()</text>
+  <rect class="box" x="170" y="284" width="700" height="46" rx="5"/>
+  <text class="h-sm" x="184" y="303">ops/*.hpp: 106 ops</text>
+  <text class="s" x="184" y="321">blas · elementwise · reduction · movement · indexing · random · softmax · loss · attention · conv · normalization · optimizers</text>
+  <rect class="box-tune" x="880" y="284" width="696" height="46" rx="5"/>
+  <text class="h-sm" x="894" y="303">tuning.hpp</text>
+  <text class="s" x="894" y="321">Algorithm (a function of tensors) · Tuner(file) · tune(algorithm, inputs, TuneOptions) → TuneReport</text>
 
-  <!-- ========== L1 USER CODE ========== -->
-  <rect class="box" x="190" y="110" width="810" height="48" rx="5"/>
-  <text class="m13" x="206" y="130">Tensor c = mensurflow::dot(a, b, Execution::GPU);</text>
-  <text class="m13" x="206" y="149">float v = c.item();   <tspan class="dim">// copies back; waits for the GPU</tspan></text>
+  <!-- ============================================================ OPS -->
+  <rect class="band" x="16" y="348" width="1568" height="96" rx="6"/>
+  <text class="layer" x="30" y="376">OPS</text>
+  <text class="path" x="30" y="394">src/ops/</text>
+  <text class="s" x="30" y="414">checks live here;</text>
+  <text class="s" x="30" y="430">kernels trust inputs</text>
 
-  <rect class="box" x="1040" y="110" width="520" height="48" rx="5"/>
-  <text class="m13" x="1056" y="130">list_devices()   <tspan class="dim">→ [cpu:0, metal:0]</tspan></text>
-  <text class="m13" x="1056" y="149">default_device() <tspan class="dim">env, else CUDA → Metal → CPU</tspan></text>
+  <rect class="box" x="170" y="360" width="262" height="72" rx="6"/>
+  <circle class="step-badge" cx="188" cy="380" r="10"/><text class="badge-t" x="184.5" y="384">1</text>
+  <text class="h-sm" x="206" y="385">validate</text>
+  <text class="s" x="186" y="410">shapes, dtypes, one device</text>
+  <rect class="box" x="456" y="360" width="262" height="72" rx="6"/>
+  <circle class="step-badge" cx="474" cy="380" r="10"/><text class="badge-t" x="470.5" y="384">2</text>
+  <text class="h-sm" x="492" y="385">make contiguous</text>
+  <text class="s" x="472" y="410">where the kernel needs stride 1</text>
+  <rect class="box" x="742" y="360" width="262" height="72" rx="6"/>
+  <circle class="step-badge" cx="760" cy="380" r="10"/><text class="badge-t" x="756.5" y="384">3</text>
+  <text class="h-sm" x="778" y="385">allocate output</text>
+  <text class="s" x="758" y="410">Tensor::empty on the data's device</text>
+  <rect class="box-hot" x="1028" y="360" width="262" height="72" rx="6"/>
+  <circle class="step-badge" cx="1046" cy="380" r="10"/><text class="badge-t" x="1042.5" y="384">4</text>
+  <text class="h-sm" x="1064" y="385">dispatch</text>
+  <text class="mm" x="1044" y="410">dispatch(OpId::Matmul, args, exec)</text>
+  <rect class="box" x="1314" y="360" width="262" height="72" rx="6"/>
+  <circle class="step-badge" cx="1332" cy="380" r="10"/><text class="badge-t" x="1328.5" y="384">5</text>
+  <text class="h-sm" x="1350" y="385">record autograd</text>
+  <text class="s" x="1330" y="410">node: parents + backward</text>
+  <path class="a-thin" d="M432 396 L452 396" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M718 396 L738 396" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M1004 396 L1024 396" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M1290 396 L1310 396" marker-end="url(#ah-thin)"/>
 
-  <!-- ========== L2 PUBLIC API ========== -->
-  <rect class="box-hot" x="190" y="194" width="410" height="64" rx="5"/>
-  <text class="path" x="206" y="214">ops/blas.hpp · elementwise.hpp · reduction.hpp</text>
-  <text class="b" x="206" y="240">dot, matmul, add, relu, sum … each ends in <tspan class="m">Execution</tspan></text>
+  <!-- arrows between the top layers -->
+  <path class="a-hot" d="M400 202 L400 228" marker-end="url(#ah-hot)"/>
+  <text class="lbl-hot" x="412" y="219">calls</text>
+  <path class="a-thin" d="M1130 202 L1130 228" marker-end="url(#ah-thin)"/>
+  <path class="a-hot" d="M520 330 L520 356" marker-end="url(#ah-hot)"/>
+  <text class="lbl-hot" x="532" y="347">each op function</text>
 
-  <rect class="box" x="620" y="194" width="280" height="64" rx="5"/>
-  <text class="path" x="636" y="214">tensor.hpp</text>
-  <text class="b" x="636" y="240">Tensor · from_host · to(device) · item()</text>
+  <!-- ============================================================ CORE -->
+  <rect class="band" x="16" y="454" width="1568" height="336" rx="6"/>
+  <text class="layer" x="30" y="482">CORE</text>
+  <text class="path" x="30" y="500">src/core/</text>
 
-  <rect class="box" x="920" y="194" width="280" height="64" rx="5"/>
-  <text class="path" x="936" y="214">execution.hpp</text>
-  <text class="m" x="936" y="240">enum Execution { Auto, CPU, GPU }</text>
+  <!-- tables + registry, left -->
+  <rect class="box" x="170" y="466" width="350" height="170" rx="6"/>
+  <text class="h-sm" x="186" y="488">Dispatcher tables</text>
+  <text class="path" x="186" y="505">dispatcher.hpp</text>
+  <text class="m" x="186" y="528">map&lt;(op, device, dtype), KernelFn&gt;</text>
+  <text class="s" x="186" y="546">a missing key → NotImplemented, never a</text>
+  <text class="s" x="186" y="562">silent fallback to another device</text>
+  <text class="m" x="186" y="588">map&lt;(op, device, dtype), TunableKernel&gt;</text>
+  <text class="s" x="186" y="606">matmul · cpu, matmul · metal: version, key(),</text>
+  <text class="s" x="186" y="622">params, defaults(), space(), allowed()</text>
 
-  <rect class="box" x="1220" y="194" width="340" height="64" rx="5"/>
-  <text class="path" x="1236" y="214">device.hpp</text>
-  <text class="b" x="1236" y="240">Device · list_devices() · default_device()</text>
+  <rect class="box" x="170" y="646" width="350" height="134" rx="6"/>
+  <text class="h-sm" x="186" y="668">Registry</text>
+  <text class="path" x="260" y="668">registry.cpp · built on first use</text>
+  <text class="m" x="186" y="692">register_cpu_backend()   <tspan class="s">required</tspan></text>
+  <text class="m" x="186" y="711">register_cuda_backend()  <tspan class="s">if built</tspan></text>
+  <text class="m" x="186" y="730">register_metal_backend() <tspan class="s">if built</tspan></text>
+  <text class="s" x="186" y="752">a backend that fails to start is skipped</text>
+  <text class="m" x="186" y="771">get(device) · find(type) · devices()</text>
 
-  <!-- L1 → L2 arrows -->
-  <line class="a-hot" x1="282" y1="158" x2="282" y2="192" marker-end="url(#ah-hot)"/>
-  <text class="lbl-hot" x="292" y="180">calls</text>
-  <line class="a-thin" x1="760" y1="158" x2="760" y2="192" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="768" y="180">item()</text>
-  <line class="a-thin" x1="1390" y1="158" x2="1390" y2="192" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="1398" y="180">calls</text>
-
-  <!-- ========== L3 OPS pipeline ========== -->
+  <!-- dispatcher, centre -->
+  <rect class="box-hot" x="544" y="466" width="660" height="314" rx="6"/>
+  <text class="h" x="562" y="490">dispatch(op, args, execution)</text>
+  <text class="path" x="790" y="490">dispatcher.cpp</text>
   <g>
-    <rect class="box-hot" x="190" y="296" width="184" height="64" rx="5"/>
-    <circle class="step-badge" cx="210" cy="316" r="9"/><text class="badge-t" x="210" y="320" text-anchor="middle">1</text>
-    <text class="h-sm" x="226" y="321">validate</text>
-    <text class="s" x="206" y="345">shape, dtype, same device</text>
-
-    <rect class="box-hot" x="396" y="296" width="184" height="64" rx="5"/>
-    <circle class="step-badge" cx="416" cy="316" r="9"/><text class="badge-t" x="416" y="320" text-anchor="middle">2</text>
-    <text class="h-sm" x="432" y="321">make contiguous</text>
-    <text class="s" x="412" y="345">stride 1 for every backend</text>
-
-    <rect class="box-hot" x="602" y="296" width="184" height="64" rx="5"/>
-    <circle class="step-badge" cx="622" cy="316" r="9"/><text class="badge-t" x="622" y="320" text-anchor="middle">3</text>
-    <text class="h-sm" x="638" y="321">allocate output</text>
-    <text class="s" x="618" y="345">Tensor::empty on a's device</text>
-
-    <rect class="box-hot" x="808" y="296" width="184" height="64" rx="5"/>
-    <circle class="step-badge" cx="828" cy="316" r="9"/><text class="badge-t" x="828" y="320" text-anchor="middle">4</text>
-    <text class="h-sm" x="844" y="321">dispatch</text>
-    <text class="mm" x="824" y="345">dispatch(OpId::Dot, …)</text>
-
-    <rect class="box" x="1014" y="296" width="184" height="64" rx="5"/>
-    <circle class="step-badge" cx="1034" cy="316" r="9" style="fill: #5d6875"/><text class="badge-t" x="1034" y="320" text-anchor="middle">5</text>
-    <text class="h-sm" x="1050" y="321">record autograd</text>
-    <text class="s" x="1030" y="345">node: parents + backward</text>
-
-    <line class="a-hot" x1="374" y1="328" x2="394" y2="328" marker-end="url(#ah-hot)"/>
-    <line class="a-hot" x1="580" y1="328" x2="600" y2="328" marker-end="url(#ah-hot)"/>
-    <line class="a-hot" x1="786" y1="328" x2="806" y2="328" marker-end="url(#ah-hot)"/>
-    <line class="a-thin" x1="992" y1="328" x2="1012" y2="328" marker-end="url(#ah-thin)"/>
+    <text class="m hot-t" x="562" y="520">a</text><text class="b" x="584" y="520">all tensors on one device: the <tspan font-weight="600">data device</tspan></text>
+    <text class="m tune-t" x="562" y="550">b</text><text class="b" x="584" y="550">Auto inside a tuned run → the tuner's stored device choice (a <tspan class="m">place</tspan> line), if any</text>
+    <text class="m hot-t" x="562" y="580">c</text><text class="b" x="584" y="580">execution_device(): Auto → cpu:0 · CPU → cpu:0 · GPU → the data's GPU, else CUDA, else Metal</text>
+    <text class="m hot-t" x="562" y="610">d</text><text class="b" x="584" y="610">Registry::get(target) → Backend&amp;, its Stream</text>
+    <text class="m hot-t" x="562" y="640">e</text><text class="b" x="584" y="640">lookup({op, target type, dtype}) → KernelFn</text>
+    <text class="m tune-t" x="562" y="670">f</text><text class="b" x="584" y="670">tunable kernel and a tuner active → apply_tuning(): stored settings → <tspan class="m">OpArgs::tuning</tspan></text>
+    <text class="m hot-t" x="562" y="700">g</text><text class="b" x="584" y="700">target == data device ? kernel(args, stream)</text>
+    <text class="b" x="584" y="720">: copy the inputs over, run into fresh outputs there, copy the results back</text>
+    <text class="s" x="562" y="752">MENSURFLOW_TRACE spans: the op, the kernel, every copy (seen by the trace hook and the dashboard)</text>
   </g>
 
-  <!-- Memory model -->
-  <rect class="box" x="1230" y="296" width="250" height="64" rx="5"/>
-  <text class="h-sm" x="1246" y="321">Tensor → Storage → Buffer</text>
-  <text class="s" x="1246" y="345">view → owns → device memory</text>
+  <!-- tuning + memory, right -->
+  <rect class="box-tune" x="1228" y="466" width="348" height="196" rx="6"/>
+  <text class="h-sm" x="1244" y="488">Auto-tuning</text>
+  <text class="path" x="1340" y="488">tuning.cpp · docs/autotuning.svg</text>
+  <text class="b" x="1244" y="512">Tuner::tune: record the calls, search each</text>
+  <text class="b" x="1244" y="530">kernel's space, time, confirm, choose devices</text>
+  <text class="b" x="1244" y="556">TuningCache: the results file, one line per</text>
+  <text class="b" x="1244" y="574">call, keyed on machine, op, device, version,</text>
+  <text class="b" x="1244" y="592">m n k (+ threads)</text>
+  <text class="b" x="1244" y="618">TuningScope (thread_local): record calls, or</text>
+  <text class="b" x="1244" y="636">apply stored results while it is open</text>
 
-  <!-- L2 → L3 -->
-  <line class="a-hot" x1="282" y1="258" x2="282" y2="294" marker-end="url(#ah-hot)"/>
+  <rect class="box" x="1228" y="672" width="348" height="108" rx="6"/>
+  <text class="h-sm" x="1244" y="694">Memory and autograd</text>
+  <text class="m" x="1244" y="718">Tensor → Storage → Buffer</text>
+  <text class="s" x="1244" y="736">view (shape, strides, offset) → owns → device memory</text>
+  <text class="m" x="1244" y="760">autograd.cpp</text>
+  <text class="s" x="1340" y="760">graph of nodes, backward()</text>
 
-  <!-- ========== L4 CORE ========== -->
-  <!-- Kernel table -->
-  <rect class="box" x="190" y="410" width="310" height="218" rx="5"/>
-  <text class="h" x="206" y="438">Kernel table</text>
-  <text class="mm" x="206" y="457">map&lt;(op, device, dtype), KernelFn&gt;</text>
-  <line class="sep" x1="206" y1="470" x2="484" y2="470"/>
-  <text class="m" x="206" y="490">Dot · CPU · F32</text>   <text class="m dim" x="484" y="490" text-anchor="end">dot_f32</text>
-  <line class="sep" x1="206" y1="500" x2="484" y2="500"/>
-  <text class="m hot-t" x="206" y="520">Dot · Metal · F32</text><text class="m hot-t" x="484" y="520" text-anchor="end">MPSGraph</text>
-  <line class="sep" x1="206" y1="530" x2="484" y2="530"/>
-  <text class="m" x="206" y="550">Dot · CUDA · F32</text>  <text class="m dim" x="484" y="550" text-anchor="end">cuBLAS</text>
-  <line class="sep" x1="206" y1="560" x2="484" y2="560"/>
-  <text class="m" x="206" y="580">Div · CUDA · F32</text>  <text class="m bad-t" x="484" y="580" text-anchor="end">missing</text>
-  <text class="xs" x="206" y="604">missing key → NotImplemented,</text>
-  <text class="xs" x="206" y="619">never a silent fallback</text>
+  <!-- core arrows -->
+  <path class="a-hot" d="M1100 432 L1100 462" marker-end="url(#ah-hot)"/>
+  <text class="lbl-hot" x="1112" y="452">OpArgs + Execution</text>
+  <path class="a-thin" d="M556 640 L548 640 L548 590 L524 590" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M556 610 L552 610 L552 700 L524 700" marker-end="url(#ah-thin)"/>
+  <path class="a-tune" d="M1204 550 L1224 550" marker-end="url(#ah-tune)"/>
+  <path class="a-tune" d="M1204 670 L1214 670 L1214 610 L1224 610" marker-end="url(#ah-tune)"/>
 
-  <!-- Dispatcher -->
-  <rect class="box-hot" x="560" y="410" width="500" height="218" rx="5" style="fill: #e1f2ef"/>
-  <text class="h" x="580" y="438">Dispatcher</text>
-  <text class="mm" x="672" y="438">detail::dispatch(op, args, execution)</text>
+  <!-- ============================================================ BACKENDS -->
+  <rect class="band" x="16" y="800" width="1568" height="234" rx="6"/>
+  <text class="layer" x="30" y="828">BACKENDS</text>
+  <text class="path" x="30" y="846">src/backends/</text>
 
-  <text class="m hot-t" x="580" y="466">a</text>
-  <text class="m" x="598" y="466">execution_device(exec, data device)</text>
-  <text class="s" x="598" y="484">Auto → cpu:0 · CPU → cpu:0 · GPU → data's GPU, else CUDA, else Metal</text>
+  <rect class="box" x="170" y="812" width="250" height="210" rx="6"/>
+  <text class="h-sm" x="186" y="834">class Backend</text>
+  <text class="path" x="290" y="834">backend.hpp</text>
+  <text class="m" x="186" y="862">type()</text>
+  <text class="m" x="186" y="884">device_count()</text>
+  <text class="m" x="186" y="906">allocate() → Buffer</text>
+  <text class="m" x="186" y="928">stream() → Stream</text>
+  <text class="m" x="186" y="950">register_kernels()</text>
+  <text class="s" x="186" y="980">a new backend implements these</text>
+  <text class="s" x="186" y="996">and touches nothing above</text>
 
-  <text class="m hot-t" x="580" y="512">b</text>
-  <text class="m" x="598" y="512">registry.get(target) → Backend&amp;</text>
+  <rect class="box-hot" x="440" y="812" width="460" height="210" rx="6"/>
+  <text class="h" x="456" y="836">CPU</text>
+  <text class="s" x="494" y="836">always built · all 106 ops</text>
+  <text class="path" x="760" y="836">cpu/</text>
+  <text class="b" x="456" y="862">OpenMP (MENSURFLOW_PARALLEL_FOR), thread pool, affinity</text>
+  <text class="s" x="456" y="884">ops/: blas · gemm (packed AVX2, batched) · elementwise · conv · pooling</text>
+  <text class="s" x="456" y="902">reduction · movement · indexing · random · softmax · loss · norm · optimizers</text>
+  <rect class="box-tune" x="456" y="918" width="428" height="92" rx="5"/>
+  <text class="h-sm tune-t" x="470" y="940">tunable: matmul</text>
+  <text class="m" x="470" y="962">rows · depth · cols</text>
+  <text class="s" x="470" y="982">tile sizes of the portable kernel (bit-identical for all)</text>
+  <text class="s" x="470" y="999">the AVX2 packed kernel is not tunable yet</text>
 
-  <text class="m hot-t" x="580" y="540">c</text>
-  <text class="m" x="598" y="540">lookup({op, target.type, dtype})</text>
+  <rect class="box" x="920" y="812" width="200" height="210" rx="6"/>
+  <text class="h" x="936" y="836">CUDA</text>
+  <text class="path" x="936" y="856">MENSURFLOW_CUDA</text>
+  <text class="b" x="936" y="884">dot, add, sub, mul</text>
+  <text class="s" x="936" y="906">own kernels, 4 ops</text>
+  <text class="s" x="936" y="928">copy back waits for</text>
+  <text class="s" x="936" y="944">the stream</text>
 
-  <text class="m hot-t" x="580" y="568">d</text>
-  <text class="m" x="598" y="568">target == data device ?</text>
-  <text class="s" x="598" y="588"><tspan style="fill: #15202b">yes</tspan>  run kernel(args, stream) in place</text>
-  <text class="s" x="598" y="607"><tspan style="fill: #15202b">no</tspan>   copy inputs over, run, copy outputs back</text>
+  <rect class="box-hot" x="1140" y="812" width="276" height="210" rx="6"/>
+  <text class="h" x="1156" y="836">Metal</text>
+  <text class="path" x="1210" y="836">MENSURFLOW_METAL · macOS</text>
+  <text class="b" x="1156" y="862">MPSGraph: dot, add, sub, mul, div</text>
+  <text class="b" x="1156" y="882">matmul: own shaders (gemm.mm)</text>
+  <text class="s" x="1156" y="900">unified memory: copies are memcpy</text>
+  <rect class="box-tune" x="1156" y="912" width="244" height="98" rx="5"/>
+  <text class="h-sm tune-t" x="1170" y="934">tunable: matmul</text>
+  <text class="s" x="1170" y="954">kernel: tiled · simdgroup · MPS</text>
+  <text class="m" x="1170" y="974">bm bn bk tm tn sg_m sg_n</text>
+  <text class="s" x="1170" y="994">a pipeline compiled per tile size</text>
 
-  <!-- Registry -->
-  <rect class="box" x="1120" y="410" width="440" height="218" rx="5"/>
-  <text class="h" x="1140" y="438">Registry</text>
-  <text class="s" x="1215" y="438">singleton, built on first use</text>
-  <text class="m" x="1140" y="466">register_cpu_backend()</text>   <text class="xs" x="1544" y="466" text-anchor="end">required</text>
-  <text class="m" x="1140" y="490">register_cuda_backend()</text>  <text class="xs" x="1544" y="490" text-anchor="end">if built · skipped on error</text>
-  <text class="m" x="1140" y="514">register_metal_backend()</text> <text class="xs" x="1544" y="514" text-anchor="end">if built · skipped on error</text>
-  <line class="sep" x1="1140" y1="528" x2="1544" y2="528"/>
-  <text class="b" x="1140" y="550">add(backend) keeps it only if <tspan class="m">device_count() &gt; 0</tspan>,</text>
-  <text class="b" x="1140" y="569">then calls its <tspan class="m">register_kernels()</tspan></text>
-  <line class="sep" x1="1140" y1="584" x2="1544" y2="584"/>
-  <text class="m" x="1140" y="608">get(device) · find(type) · devices()</text>
+  <rect class="box-plan" x="1436" y="812" width="140" height="210" rx="6"/>
+  <text class="h dim" x="1452" y="836" style="fill:#5d6875">Vulkan</text>
+  <text class="s" x="1452" y="858">planned</text>
+  <text class="s" x="1452" y="884">DeviceType::Vulkan</text>
+  <text class="s" x="1452" y="900">is reserved; no</text>
+  <text class="s" x="1452" y="916">backend, so get()</text>
+  <text class="s" x="1452" y="932">throws</text>
 
-  <!-- L3 → L4 -->
-  <line class="a-hot" x1="900" y1="360" x2="900" y2="408" marker-end="url(#ah-hot)"/>
-  <text class="lbl-hot" x="910" y="384">OpArgs + Execution</text>
-  <line class="a-thin" x1="1350" y1="360" x2="1350" y2="408" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="1342" y="384" text-anchor="end">get(device).allocate()</text>
-  <line class="a-thin" x1="1530" y1="258" x2="1530" y2="408" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="1522" y="384" text-anchor="end">devices()</text>
+  <!-- core to backends -->
+  <path class="a-hot" d="M870 780 L870 808" marker-end="url(#ah-hot)"/>
+  <text class="lbl-hot" x="882" y="797">kernel(args, stream) on the target device</text>
+  <path class="a-start" d="M300 780 L300 808" marker-end="url(#ah-thin)"/>
+  <text class="lbl" x="308" y="797">add(backend), then backend.register_kernels(dispatcher)</text>
 
-  <!-- Dispatcher ↔ neighbours -->
-  <line class="a-thin" x1="1060" y1="508" x2="1118" y2="508" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="1089" y="500" text-anchor="middle">get</text>
-  <line class="a-thin" x1="560" y1="536" x2="502" y2="536" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="531" y="528" text-anchor="middle">lookup</text>
-
-  <!-- ========== L5 BACKENDS ========== -->
-  <!-- CPU -->
-  <rect class="box" x="190" y="690" width="327" height="162" rx="5"/>
-  <text class="h" x="206" y="716">CPU</text>
-  <rect class="pill" x="403" y="702" width="98" height="20" rx="10"/><text class="mm" x="452" y="716" text-anchor="middle">always built</text>
-  <text class="b" x="206" y="746"><tspan class="m">CpuBuffer</tspan>  64-byte aligned memory</text>
-  <text class="b" x="206" y="768"><tspan class="m">CpuStream</tspan>  memcpy, done on return</text>
-  <text class="b" x="206" y="790"><tspan class="m">ops/</tspan> blas · elementwise · reduction</text>
-  <text class="b" x="206" y="812">OpenMP via <tspan class="m">PARALLEL_FOR</tspan></text>
-  <text class="s" x="206" y="836">registers all 42 ops</text>
-
-  <!-- CUDA -->
-  <rect class="box" x="537" y="690" width="327" height="162" rx="5"/>
-  <text class="h" x="553" y="716">CUDA</text>
-  <rect class="pill" x="722" y="702" width="126" height="20" rx="10"/><text class="mm" x="785" y="716" text-anchor="middle">MENSURFLOW_CUDA</text>
-  <text class="b" x="553" y="746"><tspan class="m">CudaBuffer</tspan>  cudaMalloc</text>
-  <text class="b" x="553" y="768"><tspan class="m">CudaStream</tspan>  async + cuBLAS handle</text>
-  <text class="b" x="553" y="790">kernels: dot, add, sub, mul</text>
-  <text class="b" x="553" y="812">copy back waits for the stream</text>
-  <text class="s" x="553" y="836">registers 4 ops</text>
-
-  <!-- Metal -->
-  <rect class="box-hot" x="884" y="690" width="327" height="162" rx="5"/>
-  <text class="h" x="900" y="716">Metal</text>
-  <rect class="pill" x="1061" y="702" width="134" height="20" rx="10"/><text class="mm" x="1128" y="716" text-anchor="middle">MENSURFLOW_METAL</text>
-  <text class="b" x="900" y="746"><tspan class="m">MetalBuffer</tspan>  shared MTLBuffer</text>
-  <text class="b" x="900" y="768"><tspan class="m">MetalStream</tspan>  command queue</text>
-  <text class="b" x="900" y="790">MPSGraph: dot, add, sub, mul, div</text>
-  <text class="b" x="900" y="812">unified memory, copies are memcpy</text>
-  <text class="s" x="900" y="836">registers 5 ops · macOS only</text>
-
-  <!-- Vulkan -->
-  <rect class="box-plan" x="1231" y="690" width="327" height="162" rx="5"/>
-  <text class="h dim" x="1247" y="716">Vulkan</text>
-  <rect class="pill" x="1468" y="702" width="74" height="20" rx="10"/><text class="mm" x="1505" y="716" text-anchor="middle">planned</text>
-  <text class="b dim" x="1247" y="746">DeviceType::Vulkan is reserved</text>
-  <text class="b dim" x="1247" y="768">no backend yet, so get() throws</text>
-  <text class="b dim" x="1247" y="790">a new backend implements the</text>
-  <text class="b dim" x="1247" y="812">six methods on the left and</text>
-  <text class="s" x="1247" y="836">touches nothing above this layer</text>
-
-  <!-- Hot bus: Dispatcher → chosen backend -->
-  <path class="a-hot" d="M810 628 V664"/>
-  <path class="a-hot" d="M353 664 H1047"/>
-  <line class="a-hot" x1="353" y1="664" x2="353" y2="688" marker-end="url(#ah-hot)"/>
-  <line class="a-hot" x1="700" y1="664" x2="700" y2="688" marker-end="url(#ah-hot)"/>
-  <line class="a-hot" x1="1047" y1="664" x2="1047" y2="688" marker-end="url(#ah-hot)"/>
-  <text class="lbl-hot" x="822" y="656">kernel(args, stream) on the execution device</text>
-
-  <!-- Startup: backends fill the table; Registry creates backends -->
-  <line class="a-start" x1="260" y1="690" x2="260" y2="630" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="252" y="664" text-anchor="end">each backend: register_kernels()</text>
-  <line class="a-start" x1="1160" y1="628" x2="1160" y2="688" marker-end="url(#ah-thin)"/>
-  <text class="lbl" x="1170" y="664">register_*_backend() → add()</text>
-
-  <!-- Footer -->
-  <text class="s" x="40" y="888">Data stays on the device its Tensor was created on; <tspan class="m" style="fill: #15202b">Execution</tspan> picks where the kernel runs. When they differ, dispatch copies the inputs over and the result back.</text>
+  <!-- legend -->
+  <path class="a-hot" d="M24 1060 L64 1060" marker-end="url(#ah-hot)"/><text class="s" x="72" y="1064">path of one call</text>
+  <path class="a-thin" d="M200 1060 L240 1060" marker-end="url(#ah-thin)"/><text class="s" x="248" y="1064">lookup / helper call</text>
+  <path class="a-start" d="M400 1060 L440 1060" marker-end="url(#ah-thin)"/><text class="s" x="448" y="1064">once, when the Registry is first used</text>
+  <path class="a-tune" d="M680 1060 L720 1060" marker-end="url(#ah-tune)"/><text class="s" x="728" y="1064">auto-tuning: stored device choices and kernel settings</text>
+  <rect class="box-plan" x="1100" y="1052" width="36" height="16" rx="3"/><text class="s" x="1144" y="1064">planned, not built</text>
 </svg>

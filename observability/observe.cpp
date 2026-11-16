@@ -17,7 +17,8 @@
 //   observe program --device cpu:0 [--execution ...] [--iterations 3]
 //       runs a small MLP step (forward and backward) and returns its full trace.
 //   observe tune --op NAME --device cpu:0 [--execution ...] [--size N] [--file tuning.txt]
-//                [--retune 0|1] [--min-time 0.05]
+//                [--retune 0|1] [--min-time 0.05] [--search binary|exhaustive]
+//                [--give-up 1.3]
 //       auto-tunes the op at one size with mf::Tuner (offline, tested): every call it makes to a
 //       tunable kernel, with each candidate's time, the chosen and default settings, and the op's
 //       time with and without them. With --execution auto it also chooses the device of each call
@@ -845,6 +846,8 @@ int cmd_tune(const std::vector<OpSpec>& ops, const std::map<std::string, std::st
     TuneOptions options;
     options.retune = get(flags, "retune", "0") == "1";
     options.min_time_s = std::stod(get(flags, "min-time", "0.05"));
+    options.search = parse_search_method(get(flags, "search", "binary"));
+    options.give_up = std::stod(get(flags, "give-up", "1.3"));
     Tuner tuner(file);
     const auto begin = Clock::now();
     const TuneReport report = tuner.tune(algorithm, c.inputs, options);
@@ -854,8 +857,10 @@ int cmd_tune(const std::vector<OpSpec>& ops, const std::map<std::string, std::st
               << op.unit << "\",\"size\":" << size << ",\"inputs\":" << shapes << ",\"device\":\""
               << to_string(device) << "\",\"execution\":\"" << execution_label(execution)
               << "\",\"file\":\"" << json_escape(file)
-              << "\",\"retune\":" << (options.retune ? "true" : "false")
-              << ",\"seconds\":" << num(seconds) << ",\"default_ms\":" << num(report.default_ms)
+              << "\",\"retune\":" << (options.retune ? "true" : "false") << ",\"search\":\""
+              << search_method_name(options.search) << "\""
+              << ",\"give_up\":" << num(options.give_up) << ",\"seconds\":" << num(seconds)
+              << ",\"default_ms\":" << num(report.default_ms)
               << ",\"tuned_ms\":" << num(report.tuned_ms)
               << ",\"kept\":" << (report.kept ? "true" : "false") << ",\"calls\":[";
     for (std::size_t i = 0; i < report.calls.size(); ++i) {
@@ -868,12 +873,31 @@ int cmd_tune(const std::vector<OpSpec>& ops, const std::map<std::string, std::st
                   << ",\"best_ms\":" << num(call.best_ms)
                   << ",\"default_ms\":" << num(call.default_ms) << ",\"tried\":" << call.tried
                   << ",\"rejected\":" << call.rejected
-                  << ",\"reused\":" << (call.reused ? "true" : "false") << ",\"candidates\":[";
+                  << ",\"reused\":" << (call.reused ? "true" : "false") << ",\"method\":\""
+                  << call.method << "\",\"space_size\":" << call.space_size
+                  << ",\"confirmed\":" << call.confirmed << ",\"stopped\":" << call.stopped
+                  << ",\"search_s\":" << num(call.search_s) << ",\"regions\":[";
+        for (std::size_t r = 0; r < call.regions.size(); ++r) {
+            const TuningRegion& region = call.regions[r];
+            std::cout << (r ? "," : "") << "{\"name\":\"" << json_escape(region.name)
+                      << "\",\"start\":" << values_json(region.start)
+                      << ",\"points\":" << region.points << ",\"arguments\":[";
+            for (std::size_t a = 0; a < region.arguments.size(); ++a) {
+                std::cout << (a ? "," : "") << "{\"name\":\"" << region.arguments[a].name
+                          << "\",\"values\":" << shape_json(region.arguments[a].values) << "}";
+            }
+            std::cout << "]}";
+        }
+        std::cout << "],\"candidates\":[";
         for (std::size_t k = 0; k < call.candidates.size(); ++k) {
             const TunedCandidate& candidate = call.candidates[k];
             std::cout << (k ? "," : "") << "{\"settings\":" << values_json(candidate.settings)
                       << ",\"ms\":" << (candidate.rejected ? "null" : num(candidate.ms))
-                      << ",\"rejected\":" << (candidate.rejected ? "true" : "false") << "}";
+                      << ",\"rejected\":" << (candidate.rejected ? "true" : "false")
+                      << ",\"region\":\"" << json_escape(candidate.region) << "\",\"step\":\""
+                      << candidate.step << "\",\"sweep\":" << candidate.sweep
+                      << ",\"level\":" << candidate.level
+                      << ",\"stopped\":" << (candidate.stopped ? "true" : "false") << "}";
         }
         std::cout << "]}";
     }

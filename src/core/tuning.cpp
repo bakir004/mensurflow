@@ -7,13 +7,17 @@
 #include "mensurflow/tuning.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -458,6 +462,176 @@ NamedValues from_config(const TunableKernel& tunable, const TuningConfig& config
     return values;
 }
 
+// ---------------------------------------------------------------------------- the search space
+
+TuningConfig with_values(const TuningConfig& base, const TuningPoint& values) {
+    TuningConfig config = base;
+    config.values = values;
+    return config;
+}
+
+// Every allowed point of a region, in order (the last axis changes fastest).
+std::vector<TuningPoint> region_points(const TunableKernel& tunable, const SearchRegion& region,
+                                       const OpArgs& args) {
+    std::vector<TuningPoint> points;
+    TuningPoint point = region.start.values;
+    std::function<void(std::size_t)> walk = [&](std::size_t axis) {
+        if (axis == region.axes.size()) {
+            if (tunable.allowed(args, with_values(region.start, point))) {
+                points.push_back(point);
+            }
+            return;
+        }
+        const SearchAxis& a = region.axes[axis];
+        for (const std::int64_t value : a.values) {
+            point[static_cast<std::size_t>(a.param)] = value;
+            walk(axis + 1);
+        }
+    };
+    walk(0);
+    return points;
+}
+
+// Where binary sampling starts: the region's start, each value moved to the nearest one on its
+// axis; if that point is not allowed, the allowed point fewest axis steps away from it.
+namespace {
+
+bool start_point(const TunableKernel& tunable, const SearchRegion& region, const OpArgs& args,
+                 const std::vector<TuningPoint>& allowed, TuningPoint& start) {
+    if (allowed.empty()) {
+        return false;
+    }
+    start = region.start.values;
+    std::vector<std::size_t> index(region.axes.size(), 0);
+    for (std::size_t a = 0; a < region.axes.size(); ++a) {
+        const auto& values = region.axes[a].values;
+        std::int64_t& value = start[static_cast<std::size_t>(region.axes[a].param)];
+        std::size_t nearest = 0;
+        for (std::size_t i = 1; i < values.size(); ++i) {
+            if (std::llabs(values[i] - value) < std::llabs(values[nearest] - value)) {
+                nearest = i;
+            }
+        }
+        index[a] = nearest;
+        value = values[nearest];
+    }
+    if (tunable.allowed(args, with_values(region.start, start))) {
+        return true;
+    }
+    auto position = [&](const TuningPoint& p, std::size_t a) {
+        const auto& values = region.axes[a].values;
+        return static_cast<std::size_t>(
+            std::find(values.begin(), values.end(),
+                      p[static_cast<std::size_t>(region.axes[a].param)]) -
+            values.begin());
+    };
+    std::size_t best_distance = std::numeric_limits<std::size_t>::max();
+    for (const TuningPoint& p : allowed) {
+        std::size_t distance = 0;
+        for (std::size_t a = 0; a < region.axes.size(); ++a) {
+            const std::size_t at = position(p, a);
+            distance += at > index[a] ? at - index[a] : index[a] - at;
+        }
+        if (distance < best_distance) {
+            best_distance = distance;
+            start = p;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+void search(const TunableKernel& tunable, const OpArgs& args,
+            const std::vector<SearchRegion>& space, SearchMethod method, int max_sweeps, int levels,
+            const Measure& measure) {
+    for (const SearchRegion& region : space) {
+        const std::vector<TuningPoint> allowed = region_points(tunable, region, args);
+        if (method == SearchMethod::Exhaustive) {
+            std::vector<Probe> grid;
+            for (const TuningPoint& p : allowed) {
+                grid.push_back({with_values(region.start, p), region.name, "grid", 0, 0});
+            }
+            if (!grid.empty()) {
+                measure(grid);
+            }
+            continue;
+        }
+        TuningPoint x;
+        if (!start_point(tunable, region, args, allowed, x)) {
+            continue; // no allowed point in this region for this call
+        }
+        double fx = measure({{with_values(region.start, x), region.name, "start", 0, 0}})[0];
+        for (int sweep = 1; sweep <= max_sweeps; ++sweep) {
+            bool moved = false;
+            for (const SearchAxis& axis : region.axes) {
+                const auto param = static_cast<std::size_t>(axis.param);
+                const std::string& name = tunable.params[param];
+                // The line through x along this axis: the values the other arguments allow.
+                std::vector<TuningPoint> line;
+                for (const std::int64_t value : axis.values) {
+                    TuningPoint p = x;
+                    p[param] = value;
+                    if (tunable.allowed(args, with_values(region.start, p))) {
+                        line.push_back(p);
+                    }
+                }
+                if (line.size() < 2) {
+                    continue;
+                }
+                // Binary sampling: level 0 is the two ends of the line, level 1 its middle, level 2
+                // the quarter points, and so on (positions rounded to the nearest value). Every
+                // sample is measured and the best is kept; nothing is ruled out by a comparison,
+                // so the samples do not depend on each other and are measured as one batch.
+                std::vector<bool> sampled(line.size(), false);
+                std::vector<std::size_t> picked;
+                std::vector<Probe> probes;
+                const double last = static_cast<double>(line.size() - 1);
+                for (int level = 0; level <= levels; ++level) {
+                    std::vector<std::size_t> picks;
+                    if (level == 0) {
+                        picks = {0, line.size() - 1};
+                    } else {
+                        const long parts = 1L << level;
+                        for (long j = 1; j < parts; j += 2) {
+                            picks.push_back(static_cast<std::size_t>(std::lround(
+                                last * static_cast<double>(j) / static_cast<double>(parts))));
+                        }
+                    }
+                    for (const std::size_t i : picks) {
+                        if (!sampled[i]) {
+                            sampled[i] = true;
+                            picked.push_back(i);
+                            probes.push_back({with_values(region.start, line[i]), region.name, name,
+                                              sweep, level});
+                        }
+                    }
+                    if (std::all_of(sampled.begin(), sampled.end(), [](bool v) { return v; })) {
+                        break;
+                    }
+                }
+                const std::vector<double> times = measure(probes);
+                std::size_t best_at = line.size();
+                double best_here = fx;
+                for (std::size_t j = 0; j < picked.size(); ++j) {
+                    if (times[j] < best_here) {
+                        best_here = times[j];
+                        best_at = picked[j];
+                    }
+                }
+                if (best_at < line.size() && line[best_at] != x) {
+                    x = line[best_at];
+                    fx = best_here;
+                    moved = true;
+                }
+            }
+            if (!moved) {
+                break;
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------- dispatch side
 
 TuningScope::TuningScope(TuningContext context) : previous_(g_context), context_(context) {
@@ -555,13 +729,17 @@ void finish(const std::vector<Tensor>& tensors) {
 
 // Median milliseconds per call of `run`, which must wait for its own work to finish. Each sample
 // repeats the call until it lasts about a millisecond, so short calls are not lost in clock noise.
-double median_ms(const std::function<void()>& run, const TuneOptions& options) {
+// With `give_up_ms` > 0, timing stops once there are min_samples samples and even the fastest is
+// above it: the point is already clearly slower, and the median so far is returned (`*stopped` set).
+double median_ms(const std::function<void()>& run, const TuneOptions& options,
+                 const std::function<double()>& give_up_ms = nullptr, bool* stopped = nullptr) {
     run(); // warm-up: caches, compiled pipelines
     auto first = Clock::now();
     run();
     const double one = std::max(seconds_since(first), 1e-7);
     const int repeats = std::max(1, static_cast<int>(1e-3 / one));
     std::vector<double> samples;
+    double fastest = std::numeric_limits<double>::infinity();
     const auto start = Clock::now();
     while (static_cast<int>(samples.size()) < options.min_samples ||
            seconds_since(start) < options.min_time_s) {
@@ -570,7 +748,15 @@ double median_ms(const std::function<void()>& run, const TuneOptions& options) {
             run();
         }
         samples.push_back(seconds_since(t0) / repeats);
+        fastest = std::min(fastest, samples.back());
         if (samples.size() >= 1000) {
+            break;
+        }
+        if (give_up_ms && static_cast<int>(samples.size()) >= options.min_samples &&
+            fastest * 1e3 > give_up_ms()) {
+            if (stopped != nullptr) {
+                *stopped = true;
+            }
             break;
         }
     }
@@ -621,6 +807,20 @@ bool agrees(const std::vector<std::vector<float>>& expected,
 }
 
 } // namespace
+
+const char* search_method_name(SearchMethod method) {
+    return method == SearchMethod::Exhaustive ? "exhaustive" : "binary";
+}
+
+SearchMethod parse_search_method(const std::string& name) {
+    if (name == "binary") {
+        return SearchMethod::BinarySampling;
+    }
+    if (name == "exhaustive") {
+        return SearchMethod::Exhaustive;
+    }
+    throw std::invalid_argument("unknown search method '" + name + "' (binary or exhaustive)");
+}
 
 std::vector<TunableKernelInfo> tunable_kernels() {
     Registry& registry = Registry::instance();
@@ -748,9 +948,22 @@ TuneReport Tuner::tune(const Algorithm& algorithm, const std::vector<Tensor>& in
                 report.calls.push_back(result);
                 continue;
             }
-            const std::vector<TuningConfig> candidates = tunable->candidates(call.args);
-            if (candidates.empty()) {
+            const std::vector<detail::SearchRegion> space = tunable->space(call.args);
+            if (space.empty()) {
                 continue; // nothing to tune for this call
+            }
+            result.method = search_method_name(options.search);
+            for (const detail::SearchRegion& region : space) {
+                TuningRegion info;
+                info.name = region.name;
+                info.start = detail::from_config(*tunable, region.start);
+                for (const detail::SearchAxis& axis : region.axes) {
+                    info.arguments.push_back(
+                        {tunable->params[static_cast<std::size_t>(axis.param)], axis.values});
+                }
+                info.points = detail::region_points(*tunable, region, call.args).size();
+                result.space_size += info.points;
+                result.regions.push_back(info);
             }
 
             const detail::KernelFn kernel = registry.dispatcher().lookup(call.kernel);
@@ -765,27 +978,110 @@ TuneReport Tuner::tune(const Algorithm& algorithm, const std::vector<Tensor>& in
 
             run_with(TuningConfig{});
             const auto expected = read_outputs(args);
-            result.default_ms = median_ms([&] { run_with(TuningConfig{}); }, options);
-            TuningConfig best = tunable->defaults();
-            result.best_ms = result.default_ms;
-            for (const TuningConfig& candidate : candidates) {
-                run_with(candidate);
-                TunedCandidate measured;
-                measured.settings = detail::from_config(*tunable, candidate);
-                if (!agrees(expected, read_outputs(args))) {
-                    ++result.rejected;
-                    measured.rejected = true;
-                    result.candidates.push_back(measured);
-                    continue;
+            const TuningConfig defaults = tunable->defaults();
+
+            // Early stop: a point already slower than give_up x the best median so far.
+            std::function<double()> give_up_ms;
+            if (options.give_up > 0) {
+                give_up_ms = [&] { return result.best_ms * options.give_up; };
+            }
+
+            // The objective: each point is checked against the default's result (infinite when
+            // it disagrees), then timed. It is measured once; the search may ask again, for free.
+            std::map<detail::TuningPoint, double> measured;
+            TuningConfig best = defaults;
+            result.best_ms = std::numeric_limits<double>::infinity();
+            const auto search_start = Clock::now();
+            auto measure = [&](const std::vector<detail::Probe>& probes) {
+                std::vector<double> times;
+                for (const detail::Probe& probe : probes) {
+                    if (const auto it = measured.find(probe.config.values); it != measured.end()) {
+                        times.push_back(it->second);
+                        continue;
+                    }
+                    TunedCandidate c;
+                    c.settings = detail::from_config(*tunable, probe.config);
+                    c.region = probe.region;
+                    c.step = probe.step;
+                    c.sweep = probe.sweep;
+                    c.level = probe.level;
+                    double ms = std::numeric_limits<double>::infinity();
+                    run_with(probe.config);
+                    if (!agrees(expected, read_outputs(args))) {
+                        ++result.rejected;
+                        c.rejected = true;
+                    } else {
+                        ++result.tried;
+                        ms = median_ms([&] { run_with(probe.config); }, options, give_up_ms,
+                                       &c.stopped);
+                        c.ms = ms;
+                        result.stopped += c.stopped ? 1 : 0;
+                        if (ms < result.best_ms) {
+                            result.best_ms = ms;
+                            best = probe.config;
+                        }
+                    }
+                    measured[probe.config.values] = ms;
+                    result.candidates.push_back(c);
+                    times.push_back(ms);
                 }
-                ++result.tried;
-                const double ms = median_ms([&] { run_with(candidate); }, options);
-                measured.ms = ms;
-                result.candidates.push_back(measured);
-                if (ms < result.best_ms) {
-                    result.best_ms = ms;
-                    best = candidate;
+                return times;
+            };
+            result.default_ms = measure({{defaults, "", "default", 0, 0}})[0];
+
+            detail::search(*tunable, call.args, space, options.search, options.max_sweeps,
+                           options.levels, measure);
+            result.search_s = seconds_since(search_start);
+            if (!std::isfinite(result.best_ms)) { // even the default disagreed with itself
+                result.best_ms = result.default_ms;
+                best = defaults;
+            }
+
+            // Confirmation: the points were measured seconds apart, and the clock (a GPU's above
+            // all) or the load can change in between. The default and the fastest few are timed
+            // again, taking turns, and the fastest of those times is kept.
+            if (options.confirm > 0) {
+                std::vector<std::pair<double, std::size_t>> ranked;
+                for (std::size_t i = 0; i < result.candidates.size(); ++i) {
+                    const TunedCandidate& c = result.candidates[i];
+                    if (!c.rejected && c.step != "default") {
+                        ranked.emplace_back(c.ms, i);
+                    }
                 }
+                std::sort(ranked.begin(), ranked.end());
+                std::vector<TuningConfig> finalists = {defaults};
+                for (std::size_t i = 0;
+                     i < ranked.size() &&
+                     finalists.size() <= static_cast<std::size_t>(options.confirm);
+                     ++i) {
+                    const TuningConfig config =
+                        detail::to_config(*tunable, result.candidates[ranked[i].second].settings);
+                    if (config.values != defaults.values) {
+                        finalists.push_back(config);
+                    }
+                }
+                std::vector<std::vector<double>> times(finalists.size());
+                for (int round = 0; round < 3; ++round) {
+                    for (std::size_t i = 0; i < finalists.size(); ++i) {
+                        // Rotate the order, so no point is always timed first.
+                        const std::size_t at =
+                            (i + static_cast<std::size_t>(round)) % finalists.size();
+                        times[at].push_back(median_ms([&] { run_with(finalists[at]); }, options));
+                    }
+                }
+                std::size_t winner = 0;
+                std::vector<double> confirmed;
+                for (std::size_t i = 0; i < finalists.size(); ++i) {
+                    std::sort(times[i].begin(), times[i].end());
+                    confirmed.push_back(times[i][times[i].size() / 2]);
+                    if (confirmed[i] < confirmed[winner]) {
+                        winner = i;
+                    }
+                }
+                result.default_ms = confirmed[0];
+                result.best_ms = confirmed[winner];
+                best = finalists[winner];
+                result.confirmed = finalists.size();
             }
 
             TuningEntry entry;
@@ -809,7 +1105,12 @@ TuneReport Tuner::tune(const Algorithm& algorithm, const std::vector<Tensor>& in
             if (options.verbose) {
                 std::cout << "  " << result.op << " on " << result.device << " " << result.key
                           << ": " << result.best << " " << result.best_ms << " ms (default "
-                          << result.default_ms << " ms, " << result.tried << " tried)\n";
+                          << result.default_ms << " ms; " << result.candidates.size() << " of "
+                          << result.space_size << " points measured";
+                if (result.stopped > 0) {
+                    std::cout << ", " << result.stopped << " stopped early";
+                }
+                std::cout << ", " << result.method << " search, " << result.search_s << " s)\n";
             }
             report.calls.push_back(result);
         }
