@@ -20,8 +20,11 @@
 #pragma once
 
 #include "core/dispatcher.hpp"
+#include "mensurflow/tuning.hpp"
 
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <ostream>
 #include <string>
 #include <utility>
@@ -105,6 +108,42 @@ NamedValues call_key(const TunableKernel& tunable, const OpArgs& args, Device de
 // kernel's default for any parameter the entry lacks. Unknown names are ignored.
 TuningConfig to_config(const TunableKernel& tunable, const NamedValues& config);
 NamedValues from_config(const TunableKernel& tunable, const TuningConfig& config);
+
+// ---------------------------------------------------------------------------- the search
+
+// A point of a kernel's settings: TuningConfig's values.
+using TuningPoint = std::array<std::int64_t, TuningConfig::capacity>;
+
+TuningConfig with_values(const TuningConfig& base, const TuningPoint& values);
+
+// Every point of a region (the product of its axes) that tunable.allowed accepts for the call, the
+// last axis changing fastest.
+std::vector<TuningPoint> region_points(const TunableKernel& tunable, const SearchRegion& region,
+                                       const OpArgs& args);
+
+// One point the search asks to be measured. `region` and `step` say why (the region's name;
+// "start", an argument's name, or "grid"), `sweep` which pass over the axes and `level` which level
+// of binary sampling (both 0 outside one).
+struct Probe {
+    TuningConfig config;
+    std::string region;
+    std::string step;
+    int sweep = 0;
+    int level = 0;
+};
+
+// The objective, for a batch of points the search could measure in any order (all the samples of
+// one line, or a region's grid): the time of the call at each, in ms (infinity when the point is
+// unusable, for example its result is wrong), in the order asked. It may be asked again about a
+// point it already measured, so it should remember results.
+using Measure = std::function<std::vector<double>(const std::vector<Probe>& probes)>;
+
+// Searches every region of `space` for the point with the lowest `measure`, as `method` says
+// (mensurflow::SearchMethod). Binary sampling samples each line down to `levels`.
+// The caller keeps the best point measure() saw.
+void search(const TunableKernel& tunable, const OpArgs& args,
+            const std::vector<SearchRegion>& space, SearchMethod method, int max_sweeps, int levels,
+            const Measure& measure);
 
 // A tunable call seen while an algorithm ran: the kernel, where it ran, and its arguments (the
 // tensors are shared, so they stay alive with the record).

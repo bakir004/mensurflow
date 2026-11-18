@@ -241,7 +241,8 @@ KernelFn Dispatcher::find(KernelKey key) const {
 }
 
 void Dispatcher::register_tunable(KernelKey key, TunableKernel tunable) {
-    if (tunable.key == nullptr || tunable.defaults == nullptr || tunable.candidates == nullptr) {
+    if (tunable.key == nullptr || tunable.defaults == nullptr || tunable.space == nullptr ||
+        tunable.allowed == nullptr) {
         throw std::invalid_argument("register_tunable: " + tunable.name + " is missing a function");
     }
     if (tunable.params.size() > static_cast<std::size_t>(TuningConfig::capacity)) {

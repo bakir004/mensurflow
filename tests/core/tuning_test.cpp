@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -114,7 +116,7 @@ bool has_tunable_matmul(Device device) {
     const Tensor probe = Tensor::from_vector(values(64 * 64, 1), {64, 64}, device);
     detail::OpArgs args;
     args.inputs = {probe, probe};
-    return !t->candidates(args).empty();
+    return !t->space(args).empty();
 }
 
 // Two layers: [48, 96] x [96, 80], plus a [48, 80] tensor (add runs on every device; relu has no
@@ -164,6 +166,7 @@ void test_tune(Device device) {
         test::require(reloaded.size() == 2, "results survive a reload");
         test::require(reloaded.describe() == tuner.describe(), "same text after a reload");
     }
+
     std::remove(path);
 }
 
@@ -287,10 +290,120 @@ void test_tune_placement() {
 
 } // namespace
 
+namespace {
+
+// A batch objective from a per-point one, for detail::search.
+template <typename F> detail::Measure each_point(F f) {
+    return [f](const std::vector<detail::Probe>& probes) mutable {
+        std::vector<double> times;
+        for (const detail::Probe& p : probes) {
+            times.push_back(f(p.config, p.region, p.step));
+        }
+        return times;
+    };
+}
+
+// The search on a synthetic function of two arguments a, b in 1..16, lowest at a = 11, b = 5,
+// with points where a + b > 24 not allowed.
+void test_search() {
+    detail::TunableKernel t;
+    t.name = "synthetic";
+    t.params = {"a", "b", "variant"};
+    t.allowed = [](const detail::OpArgs&, const detail::TuningConfig& c) {
+        return c.values[0] + c.values[1] <= 24;
+    };
+    std::vector<std::int64_t> axis;
+    for (std::int64_t v = 1; v <= 16; ++v) {
+        axis.push_back(v);
+    }
+    detail::TuningConfig start;
+    start.values = {16, 16, 0}; // not allowed: the search starts at the nearest allowed point
+    start.size = 3;
+    const std::vector<detail::SearchRegion> space = {{"bowl", start, {{0, axis}, {1, axis}}}};
+    const detail::OpArgs args;
+    test::require(detail::region_points(t, space[0], args).size() == 256 - 36,
+                  "allowed points of the region");
+
+    for (const SearchMethod method : {SearchMethod::BinarySampling, SearchMethod::Exhaustive}) {
+        std::map<detail::TuningPoint, double> seen;
+        std::set<std::string> steps;
+        detail::TuningPoint best{};
+        double best_value = 1e300;
+        bool all_allowed = true;
+        detail::search(t, args, space, method, 4, 4, // 4 levels: every value of 16
+                       each_point([&](const detail::TuningConfig& c, const std::string& region,
+                                      const std::string& step) {
+                           all_allowed = all_allowed && t.allowed(args, c) && region == "bowl";
+                           steps.insert(step);
+                           const double a = static_cast<double>(c.values[0]) - 11;
+                           const double b = static_cast<double>(c.values[1]) - 5;
+                           const double value = a * a + 2 * b * b + 0.5 * a * b + 1;
+                           seen[c.values] = value;
+                           if (value < best_value) {
+                               best_value = value;
+                               best = c.values;
+                           }
+                           return value;
+                       }));
+        const std::string name = search_method_name(method);
+        test::require(all_allowed, name + ": every measured point is allowed");
+        test::require(best[0] == 11 && best[1] == 5,
+                      name + ": found the minimum, got a=" + std::to_string(best[0]) +
+                          " b=" + std::to_string(best[1]));
+        if (method == SearchMethod::BinarySampling) {
+            // Whole lines through the current point, a few passes: a fraction of the grid.
+            test::require(seen.size() < 80, "binary sampling: measured " +
+                                                std::to_string(seen.size()) + " of 220 points");
+            test::require(steps.count("start") && steps.count("a") && steps.count("b"),
+                          "binary sampling: steps are the start and the arguments");
+        } else {
+            test::require(seen.size() == 220 && steps == std::set<std::string>{"grid"},
+                          "exhaustive: every allowed point once");
+        }
+    }
+    // A plateau with noise on it, measured on an M3 Pro (CPU matmul 512^3, depth 32 .. 512): a
+    // binary search compared 128 with 256, within noise, and went right; sampling keeps the best.
+    {
+        detail::TunableKernel line_kernel;
+        line_kernel.params = {"depth"};
+        line_kernel.allowed = [](const detail::OpArgs&, const detail::TuningConfig&) {
+            return true;
+        };
+        detail::TuningConfig from;
+        from.values = {128};
+        from.size = 1;
+        const std::vector<detail::SearchRegion> line = {
+            {"tiles", from, {{0, {32, 64, 128, 256, 512}}}}};
+        const std::map<std::int64_t, double> ms = {
+            {32, 1.424}, {64, 1.527}, {128, 1.679}, {256, 1.665}, {512, 1.682}};
+        std::int64_t found = 0;
+        double lowest = 1e300;
+        detail::search(
+            line_kernel, args, line, SearchMethod::BinarySampling, 4, 2,
+            each_point([&](const detail::TuningConfig& c, const std::string&, const std::string&) {
+                const double value = ms.at(c.values[0]);
+                if (value < lowest) {
+                    lowest = value;
+                    found = c.values[0];
+                }
+                return value;
+            }));
+        test::require(found == 32, "plateau: found depth " + std::to_string(found));
+    }
+    test::require(parse_search_method("binary") == SearchMethod::BinarySampling &&
+                      parse_search_method("exhaustive") == SearchMethod::Exhaustive,
+                  "method names");
+    test::require_throws<std::invalid_argument>([] { parse_search_method("random"); },
+                                                "unknown method name");
+}
+
+} // namespace
+
 int main() {
     return test::run("tuning_test", [] {
         test_file_format();
         test_placement_format();
+        test_search();
         for (Device device : list_devices()) {
             if (!has_tunable_matmul(device)) {
                 std::cout << "  " << to_string(device) << ": no tunable matmul, skipped\n";

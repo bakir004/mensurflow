@@ -230,9 +230,13 @@ TuningConfig to_tuning(const metal::MetalGemmConfig& c) {
 }
 
 // The kernel, tile sizes and simdgroup layout of the Metal matmul (gemm.hpp) are tunable. The
-// candidates: MPS; simdgroup tiles with 1 to 8 accumulator blocks per simdgroup (16 ran at a third
-// of the speed on an M3 Pro) and 64 to 512 threads; three tiled-kernel shapes. Tiles more than twice
-// the matrix are left out, since most of their threads would have nothing to do.
+// kernel variant is a category, so the space has one region per variant:
+//   tiled:     bm, bn, bk, tm, tn
+//   simdgroup: bm, bn, bk, sg_m, sg_n
+//   MPS:       nothing (one point)
+// Allowed points are valid configurations (metal::validate) whose tile is at most about twice the
+// matrix (more leaves most threads idle), and for simdgroup at most 8 accumulator blocks per
+// simdgroup (16 ran at a third of the speed on an M3 Pro) and 64 to 512 threads.
 TunableKernel matmul_tunable() {
     TunableKernel t;
     t.name = "matmul";
@@ -244,42 +248,43 @@ TunableKernel matmul_tunable() {
     };
     t.params = {"kernel", "bm", "bn", "bk", "tm", "tn", "sg_m", "sg_n"};
     t.defaults = [] { return to_tuning(metal::metal_gemm_config()); };
-    t.candidates = [](const OpArgs& args) {
-        const std::int64_t m = args.inputs[0].size(0), n = args.inputs[1].size(1);
-        std::vector<TuningConfig> list;
-        auto add = [&](const metal::MetalGemmConfig& c) {
-            if (c.kernel != 2 && (c.bm > 2 * m || c.bn > 2 * n) && !(c.bm <= 16 && c.bn <= 32)) {
-                return;
-            }
-            try {
-                metal::validate(c);
-            } catch (const std::invalid_argument&) {
-                return;
-            }
-            list.push_back(to_tuning(c));
-        };
-        add({2, 0, 0, 0, 0, 0, 0, 0});
-        for (std::int64_t bm : {16, 32, 64}) {
-            for (std::int64_t bn : {32, 64, 128}) {
-                for (std::int64_t bk : {16, 32}) {
-                    for (std::int64_t sg_m : {1, 2, 4}) {
-                        for (std::int64_t sg_n : {1, 2, 4}) {
-                            const std::int64_t blocks = (bm / sg_m / 8) * (bn / sg_n / 8);
-                            const std::int64_t threads = sg_m * sg_n * 32;
-                            if (bm % (8 * sg_m) != 0 || bn % (8 * sg_n) != 0 || blocks < 1 ||
-                                blocks > 8 || threads < 64 || threads > 512) {
-                                continue;
-                            }
-                            add({1, bm, bn, bk, 0, 0, sg_m, sg_n});
-                        }
-                    }
-                }
-            }
+    t.space = [](const OpArgs&) {
+        const metal::MetalGemmConfig d = metal::metal_gemm_config();
+        const std::vector<std::int64_t> tiles = {8, 16, 32, 64, 128};
+        const std::vector<std::int64_t> depths = {8, 16, 32};
+        SearchRegion tiled{
+            "tiled",
+            to_tuning(d.kernel == 0 ? d : metal::MetalGemmConfig{0, 64, 64, 16, 4, 4, 0, 0}),
+            {{1, tiles}, {2, tiles}, {3, depths}, {4, {1, 2, 4, 8}}, {5, {1, 2, 4, 8}}}};
+        SearchRegion simdgroup{
+            "simdgroup",
+            to_tuning(d.kernel == 1 ? d : metal::MetalGemmConfig{1, 32, 64, 16, 0, 0, 2, 2}),
+            {{1, tiles}, {2, tiles}, {3, depths}, {6, {1, 2, 4}}, {7, {1, 2, 4}}}};
+        SearchRegion mps{"MPS", to_tuning(metal::MetalGemmConfig{2, 0, 0, 0, 0, 0, 0, 0}), {}};
+        return std::vector<SearchRegion>{simdgroup, tiled, mps};
+    };
+    t.allowed = [](const OpArgs& args, const TuningConfig& config) {
+        const auto& v = config.values;
+        const metal::MetalGemmConfig c{v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]};
+        try {
+            metal::validate(c);
+        } catch (const std::invalid_argument&) {
+            return false;
         }
-        add({0, 64, 64, 16, 4, 4, 0, 0});
-        add({0, 128, 64, 8, 8, 4, 0, 0});
-        add({0, 32, 32, 16, 2, 2, 0, 0});
-        return list;
+        if (c.kernel == 2) {
+            return true;
+        }
+        const std::int64_t m = args.inputs[0].size(0), n = args.inputs[1].size(1);
+        if (c.bm > std::max<std::int64_t>(2 * m, 16) || c.bn > std::max<std::int64_t>(2 * n, 16)) {
+            return false;
+        }
+        if (c.kernel == 1) {
+            const std::int64_t blocks = (c.bm / c.sg_m / 8) * (c.bn / c.sg_n / 8);
+            const std::int64_t threads = c.sg_m * c.sg_n * 32;
+            return blocks >= 1 && blocks <= 8 && threads >= 64 && threads <= 512;
+        }
+        const std::int64_t threads = (c.bm / c.tm) * (c.bn / c.tn);
+        return threads >= 32;
     };
     return t;
 }

@@ -370,7 +370,9 @@ def make_handler(runner, store, placemap):
                 args = ["tune", "--op", request["op"], "--device", request["device"],
                         "--execution", request.get("execution") or "default",
                         "--file", str(TUNING_FILE), "--retune", "1" if request.get("retune") else "0",
-                        "--min-time", str(request.get("min_time", 0.05))]
+                        "--min-time", str(request.get("min_time", 0.05)),
+                        "--search", "exhaustive" if request.get("search") == "exhaustive" else "binary",
+                        "--give-up", str(float(request.get("give_up", 1.3)))]
                 if request.get("size"):
                     args += ["--size", str(int(request["size"]))]
                 result = runner.call(args, threads)

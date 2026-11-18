@@ -187,8 +187,31 @@ struct OpArgs {
 
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);
 
+// One argument of the function the auto-tuner minimizes: a parameter of the kernel and the values
+// it may take, in order along the axis (the binary search assumes the time falls and then rises
+// along it, so neighbours must be neighbours in effect, not just in number).
+struct SearchAxis {
+    int param = 0; // index into TunableKernel::params
+    std::vector<std::int64_t> values;
+};
+
+// A region of a kernel's settings where the time is a function of a few ordered arguments. The
+// parameters not on an axis keep their value from `start`. A kernel with several variants has one
+// region per variant (the Metal matmul: tiled, simdgroup, MPS), since a variant is a category, not a
+// point on an axis.
+struct SearchRegion {
+    std::string name; // e.g. "simdgroup"
+    TuningConfig
+        start; // where a local search starts; also the value of every parameter not on an axis
+    std::vector<SearchAxis> axes;
+};
+
 // What a backend registers for a kernel whose parameters (tile sizes and the like) the auto-tuner
 // may choose. A kernel without a TunableKernel always runs with its own settings.
+//
+// For one call, tuning is the minimization of a function of discrete arguments:
+//   time(arguments; key)   with the key (m, n, k, ...) fixed by the call,
+// over the points of `space(args)` that `allowed` accepts.
 struct TunableKernel {
     std::string name; // the name in the results file, e.g. "matmul"
     int version = 1;  // raise it when the kernel changes, so results measured before are ignored
@@ -196,9 +219,12 @@ struct TunableKernel {
     std::vector<std::int64_t> (*key)(const OpArgs& args) = nullptr; // values of key_names
     std::vector<std::string> params;      // the names of TuningConfig's values, in order
     TuningConfig (*defaults)() = nullptr; // what the kernel uses when no tuning is given
-    // The configurations worth trying for this call, all valid for it; empty when there is
-    // nothing to tune for it (for example a kernel variant the call will not use).
-    std::vector<TuningConfig> (*candidates)(const OpArgs& args) = nullptr;
+    // The search space for this call; empty when there is nothing to tune for it (for example a
+    // kernel variant the call will not use).
+    std::vector<SearchRegion> (*space)(const OpArgs& args) = nullptr;
+    // Whether a point of the space is worth running for this call: valid for the kernel, and not
+    // known to be useless (for example a tile far larger than the matrix).
+    bool (*allowed)(const OpArgs& args, const TuningConfig& config) = nullptr;
 };
 
 // Thrown when no backend registered a kernel for the requested op, device, and dtype.
