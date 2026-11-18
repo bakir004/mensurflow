@@ -9,7 +9,9 @@
 #include "test_util.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -330,11 +332,62 @@ void test_parallel() {
     cpu::set_max_threads(original);
 }
 
+// The 8-column vector path of the parallel kernel (stride 1 and 2 loads, a gather for larger
+// strides, the scalar columns at both ends of a row, the overlapping last block): the same bits and
+// indices as the sequential kernel on values full of NaN, infinities, signed zeros and ties.
+void test_vector_paths() {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    const float specials[] = {nan, inf, -inf, 0.0f, -0.0f, 1.0f, 1.0f, -1.0f};
+    const int original = cpu::max_threads();
+    std::int64_t checked = 0;
+    for (std::int64_t stride = 1; stride <= 4; ++stride) {
+        for (std::int64_t k : {1, 2, 3, 5}) {
+            for (std::int64_t pad = 0; pad <= k / 2; ++pad) {
+                for (std::int64_t w : {8, 9, 15, 16, 17, 23, 31, 40, 57}) {
+                    if (w + 2 * pad < k) {
+                        continue;
+                    }
+                    const Pool2dSizes p{1, 2, 6, w, 3, k, 2, stride, 1, pad};
+                    const cpu::Pool2dShape s = kernel_shape(p);
+                    auto x = test::random_values(p.x_size(), 81 + static_cast<std::uint32_t>(w));
+                    for (std::size_t i = 0; i < x.size(); ++i) {
+                        // About one cell in 6 special, the rest on a coarse grid (ties).
+                        x[i] = (i * 7 + static_cast<std::size_t>(w)) % 6 == 0
+                                   ? specials[(i / 6) % 8]
+                                   : std::round(x[i] * 2.0f);
+                    }
+                    const auto outputs = static_cast<std::size_t>(p.y_size());
+                    std::vector<float> y_seq(outputs), y(outputs);
+                    std::vector<std::int64_t> i_seq(outputs), idx(outputs);
+                    cpu::max_pool2d_f32_sequential(x.data(), y_seq.data(), i_seq.data(), s);
+                    for (int threads : {1, original}) {
+                        cpu::set_max_threads(threads);
+                        cpu::max_pool2d_f32_parallel(x.data(), y.data(), idx.data(), s);
+                        const std::string label =
+                            "vector path w=" + std::to_string(w) + " k=" + std::to_string(k) +
+                            " stride=" + std::to_string(stride) + " pad=" + std::to_string(pad) +
+                            ", " + std::to_string(threads) + " threads";
+                        test::require(std::memcmp(y.data(), y_seq.data(),
+                                                  outputs * sizeof(float)) == 0,
+                                      label + ": value bits");
+                        require_indices(idx, i_seq, label + ": indices");
+                        ++checked;
+                    }
+                }
+            }
+        }
+    }
+    cpu::set_max_threads(original);
+    test::require(checked > 200, "vector path cases ran");
+}
+
 } // namespace
 
 int main() {
     return test::run("max_pool2d_test", [] {
         test_parallel();
+        test_vector_paths();
         for (const Case& c : cases) {
             test_against_reference(c);
         }

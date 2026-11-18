@@ -3,11 +3,25 @@
 // at the end.
 #include "backends/cpu/ops/conv/pooling.hpp"
 
+#include "backends/cpu/ops/gemm/gemm_packed.hpp"
 #include "backends/cpu/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <vector>
+
+#if defined(__x86_64__) || defined(_M_X64)
+#define MENSURFLOW_POOL_AVX2 1
+#include <immintrin.h>
+#endif
+
+#if defined(_MSC_VER)
+#define MENSURFLOW_POOL_TARGET
+#else
+#define MENSURFLOW_POOL_TARGET __attribute__((target("avx2")))
+#endif
 
 namespace mensurflow::cpu {
 
@@ -156,10 +170,12 @@ std::vector<Span> covering_columns(const Pool2dShape& s) {
     return spans;
 }
 
-// Output row oh of one plane, with the scan order and rules of the sequential kernel.
+// Output columns [ow_begin, ow_end) of output row oh of one plane, with the scan order and rules
+// of the sequential kernel.
 void max_pool_row(const float* in, float* out, std::int64_t* out_index, const Span rows,
-                  const Span* columns, std::int64_t w, std::int64_t w_out) {
-    for (std::int64_t ow = 0; ow < w_out; ++ow) {
+                  const Span* columns, std::int64_t w, std::int64_t ow_begin,
+                  std::int64_t ow_end) {
+    for (std::int64_t ow = ow_begin; ow < ow_end; ++ow) {
         const Span cols = columns[ow];
         std::int64_t best = rows.begin * w + cols.begin;
         float best_value = in[best];
@@ -183,6 +199,124 @@ void max_pool_row(const float* in, float* out, std::int64_t* out_index, const Sp
     }
 }
 
+// ---- AVX2 max pooling: 8 output columns of one row at a time --------------------------------
+//
+// Each lane scans its window in the sequential order and keeps (best value, best index). A cell
+// replaces the best if it is strictly greater (an ordered compare: false when either is NaN, so
+// ties keep the earlier cell and nothing replaces a NaN) or if it is a NaN while the best is not
+// (the first NaN wins). This is the scalar rule lane by lane, so values (bits) and indices are
+// identical to the sequential kernel. The windows of the 8 columns must lie inside the input
+// columns (no padding) and every load must stay inside the row; MaxPoolVector picks those columns.
+
+// Which output columns of a row run 8 at a time: blocks starting at first, first + 8, ... and one
+// last block starting at last (overlapping the previous one), all inside [first, last + 8).
+struct MaxPoolVector {
+    bool enabled = false;
+    std::int64_t first = 0, last = 0;
+};
+
+MaxPoolVector max_pool_vector_plan(const Pool2dShape& s) {
+    MaxPoolVector plan;
+#ifdef MENSURFLOW_POOL_AVX2
+    if (!packed_gemm_supported() || s.w_out < 8 ||
+        s.h * s.w > std::numeric_limits<std::int32_t>::max()) {
+        return plan;
+    }
+    // The furthest column a block reads, counted from its first window's first column: the last
+    // window cell of lane 7 (load_columns reads nothing beyond it).
+    const std::int64_t reach = (s.kw - 1) + 7 * s.stride_w;
+    plan.first = (s.pad_w + s.stride_w - 1) / s.stride_w; // first window that starts at column >= 0
+    const std::int64_t room = s.w - 1 - reach + s.pad_w;  // ow0 * stride <= room
+    if (room < 0) {
+        return plan;
+    }
+    plan.last = std::min(room / s.stride_w, s.w_out - 8);
+    plan.enabled = plan.last >= plan.first;
+#else
+    (void)s;
+#endif
+    return plan;
+}
+
+#ifdef MENSURFLOW_POOL_AVX2
+
+// 8 floats at p[0], p[stride], ..., p[7 * stride].
+template <int Stride>
+MENSURFLOW_POOL_TARGET inline __m256 load_columns(const float* p, __m256i gather_offsets) {
+    if constexpr (Stride == 1) {
+        (void)gather_offsets;
+        return _mm256_loadu_ps(p);
+    } else if constexpr (Stride == 2) {
+        (void)gather_offsets;
+        // a = p[0..7], b = p[7..14] (so nothing past p[14] is read). a0 a2 b1 b3 | a4 a6 b5 b7 =
+        // p0 p2 p8 p10 | p4 p6 p12 p14, then the 64-bit pairs reordered to p0 p2 ... p14.
+        const __m256 even = _mm256_shuffle_ps(_mm256_loadu_ps(p), _mm256_loadu_ps(p + 7),
+                                              _MM_SHUFFLE(3, 1, 2, 0));
+        return _mm256_castpd_ps(
+            _mm256_permute4x64_pd(_mm256_castps_pd(even), _MM_SHUFFLE(3, 1, 2, 0)));
+    } else {
+        return _mm256_i32gather_ps(p, gather_offsets, 4);
+    }
+}
+
+// Output columns [ow0, ow0 + 8) of one output row; their windows start at input column c0 =
+// ow0 * stride - pad >= 0 (lane l at c0 + l * stride) and span kw columns and the rows `rows`.
+template <int Stride>
+MENSURFLOW_POOL_TARGET void max_pool_block8(const float* in, float* out, std::int64_t* out_index,
+                                            const Span rows, std::int64_t w, std::int64_t c0,
+                                            std::int64_t stride, std::int64_t kw) {
+    const __m256i offsets = _mm256_mullo_epi32(_mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7),
+                                               _mm256_set1_epi32(static_cast<int>(stride)));
+    const std::int64_t start = rows.begin * w + c0;
+    __m256 best = load_columns<Stride>(in + start, offsets);
+    __m256i best_index = _mm256_add_epi32(_mm256_set1_epi32(static_cast<int>(start)), offsets);
+    __m256 best_is_nan = _mm256_cmp_ps(best, best, _CMP_UNORD_Q);
+    std::int64_t j0 = 1; // the first cell is already the best
+    for (std::int64_t ih = rows.begin; ih < rows.end; ++ih) {
+        const std::int64_t line = ih * w + c0;
+        for (std::int64_t j = j0; j < kw; ++j) {
+            const __m256 value = load_columns<Stride>(in + line + j, offsets);
+            const __m256 is_nan = _mm256_cmp_ps(value, value, _CMP_UNORD_Q);
+            const __m256 take = _mm256_or_ps(_mm256_cmp_ps(value, best, _CMP_GT_OQ),
+                                             _mm256_andnot_ps(best_is_nan, is_nan));
+            const __m256i index =
+                _mm256_add_epi32(_mm256_set1_epi32(static_cast<int>(line + j)), offsets);
+            best = _mm256_blendv_ps(best, value, take);
+            best_index = _mm256_castps_si256(_mm256_blendv_ps(
+                _mm256_castsi256_ps(best_index), _mm256_castsi256_ps(index), take));
+            best_is_nan = _mm256_or_ps(best_is_nan, is_nan);
+        }
+        j0 = 0;
+    }
+    _mm256_storeu_ps(out, best);
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out_index),
+                        _mm256_cvtepi32_epi64(_mm256_castsi256_si128(best_index)));
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(out_index + 4),
+                        _mm256_cvtepi32_epi64(_mm256_extracti128_si256(best_index, 1)));
+}
+
+template <int Stride>
+MENSURFLOW_POOL_TARGET void max_pool_row_avx2(const float* in, float* out,
+                                              std::int64_t* out_index, const Span rows,
+                                              const Span* columns, const MaxPoolVector& plan,
+                                              std::int64_t w, std::int64_t w_out,
+                                              std::int64_t stride, std::int64_t pad,
+                                              std::int64_t kw) {
+    max_pool_row(in, out, out_index, rows, columns, w, 0, plan.first);
+    std::int64_t ow0 = plan.first;
+    for (; ow0 <= plan.last; ow0 += 8) {
+        max_pool_block8<Stride>(in, out + ow0, out_index + ow0, rows, w, ow0 * stride - pad,
+                                stride, kw);
+    }
+    if (ow0 - 8 < plan.last) { // the last block did not reach plan.last + 8: one overlapping block
+        max_pool_block8<Stride>(in, out + plan.last, out_index + plan.last, rows, w,
+                                plan.last * stride - pad, stride, kw);
+    }
+    max_pool_row(in, out, out_index, rows, columns, w, plan.last + 8, w_out);
+}
+
+#endif // MENSURFLOW_POOL_AVX2
+
 void avg_pool_row(const float* in, float* out, const Span rows, const Span* columns,
                   std::int64_t w, std::int64_t w_out, double divisor) {
     for (std::int64_t ow = 0; ow < w_out; ++ow) {
@@ -203,17 +337,41 @@ void avg_pool_row(const float* in, float* out, const Span rows, const Span* colu
 void max_pool2d_f32_parallel(const float* x, float* y, std::int64_t* indices,
                              const Pool2dShape& s) {
     const std::vector<Span> columns = column_windows(s);
+    const MaxPoolVector plan = max_pool_vector_plan(s);
     parallel_for(s.n * s.c * s.h_out, grain_for(pool2d_parallel_cutoff, s.w_out * s.kh * s.kw),
                  [&](std::int64_t r0, std::int64_t r1) {
                      const Pool2dShape shape = s;
+                     const MaxPoolVector vec = plan;
                      const Span* cols = columns.data();
                      for (std::int64_t r = r0; r < r1; ++r) {
                          const std::int64_t plane = r / shape.h_out;
                          const std::int64_t oh = r % shape.h_out;
                          const std::int64_t out = r * shape.w_out;
-                         max_pool_row(x + plane * shape.h * shape.w, y + out, indices + out,
-                                      window(oh, shape.stride_h, shape.pad_h, shape.kh, shape.h),
-                                      cols, shape.w, shape.w_out);
+                         const float* in = x + plane * shape.h * shape.w;
+                         const Span rows =
+                             window(oh, shape.stride_h, shape.pad_h, shape.kh, shape.h);
+#ifdef MENSURFLOW_POOL_AVX2
+                         if (vec.enabled) {
+                             if (shape.stride_w == 1) {
+                                 max_pool_row_avx2<1>(in, y + out, indices + out, rows, cols, vec,
+                                                      shape.w, shape.w_out, 1, shape.pad_w,
+                                                      shape.kw);
+                             } else if (shape.stride_w == 2) {
+                                 max_pool_row_avx2<2>(in, y + out, indices + out, rows, cols, vec,
+                                                      shape.w, shape.w_out, 2, shape.pad_w,
+                                                      shape.kw);
+                             } else {
+                                 max_pool_row_avx2<0>(in, y + out, indices + out, rows, cols, vec,
+                                                      shape.w, shape.w_out, shape.stride_w,
+                                                      shape.pad_w, shape.kw);
+                             }
+                             continue;
+                         }
+#else
+                         (void)vec;
+#endif
+                         max_pool_row(in, y + out, indices + out, rows, cols, shape.w, 0,
+                                      shape.w_out);
                      }
                  });
 }

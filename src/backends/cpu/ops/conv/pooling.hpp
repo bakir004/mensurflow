@@ -50,7 +50,9 @@ void avg_pool2d_backward_f32_sequential(const float* grad_y, float* grad_x, cons
 // thread.
 constexpr std::int64_t pool2d_parallel_cutoff = std::int64_t{1} << 15;
 
-// One task per (plane, output row), so a few large planes still use every thread.
+// One task per (plane, output row), so a few large planes still use every thread. With AVX2 (chosen
+// at run time) 8 output columns of a row are computed together, lane by lane with the sequential
+// rules; columns whose window touches the padding or the end of the row stay scalar.
 void max_pool2d_f32_parallel(const float* x, float* y, std::int64_t* indices,
                              const Pool2dShape& s);
 
