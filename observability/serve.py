@@ -71,16 +71,15 @@ class Runner:
 
 
 def tuning_file():
-    """The tuning results file as {"path", "machines": {name: [kernel entry, ...]},
-    "placements": {name: [device choice, ...]}}; entries are dicts."""
-    result = {"path": str(TUNING_FILE.relative_to(ROOT)), "machines": {}, "placements": {}}
+    """The tuning results file as {"path", "machines": {name: [entry, ...]}}. An entry is a dict with
+    op, device ("auto" for a device choice), version, key (text), settings ([name, value] pairs),
+    best_ms, default_ms and mode."""
+    result = {"path": str(TUNING_FILE.relative_to(ROOT)), "machines": {}}
     if not TUNING_FILE.exists():
         return result
     machine = None
     line_re = re.compile(r"^(\S+) (\S+) v(\d+) (.*?) -> (.*?) \| ([\d.]+) ms \(default ([\d.]+) ms\) (\S+)$")
     pairs = lambda text: [[k, int(v)] for k, v in (item.split("=", 1) for item in text.split())]
-    place_re = re.compile(r"^place (\S+) (\S+) (\S+) (.*?) -> (\S+) \| ([\d.]+) ms \((.*)\) (\S+)$")
-    result["placements"] = {}
     for line in TUNING_FILE.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -88,22 +87,13 @@ def tuning_file():
         if line.startswith("machine "):
             machine = line[8:].strip()
             result["machines"].setdefault(machine, [])
-            result["placements"].setdefault(machine, [])
-            continue
-        place = place_re.match(line)
-        if machine is not None and place:
-            op, dtype, data_device, shapes, chosen, best, times, mode = place.groups()
-            result["placements"][machine].append({
-                "op": op, "dtype": dtype, "data_device": data_device, "shapes": shapes.split(),
-                "chosen": chosen, "best_ms": float(best), "mode": mode,
-                "times": [[t.split()[0], float(t.split()[1])] for t in times.split(", ")]})
             continue
         match = line_re.match(line)
         if machine is None or not match:
             continue  # the library reports malformed lines when it reads the file
         op, device, version, key, settings, best, default, mode = match.groups()
         result["machines"][machine].append({
-            "op": op, "device": device, "version": int(version), "key": pairs(key),
+            "op": op, "device": device, "version": int(version), "key": key,
             "settings": pairs(settings), "best_ms": float(best), "default_ms": float(default), "mode": mode})
     return result
 
@@ -162,87 +152,12 @@ def op_docs():
     return docs
 
 
-class PlaceMap:
-    """The matmul CPU-or-GPU map: `observe placemap` runs in the background and prints one point per
-    line; the page polls for the points it has not seen yet. The finished (or stopped) map is stored
-    as kind "placemap", and the last one is shown again after a restart."""
-
-    def __init__(self, runner, store):
-        self.runner, self.store = runner, store
-        self.process = None
-        self.lock = threading.Lock()
-        last = store.latest("placemap")
-        self.plan = last.get("plan") if last else None
-        self.points = last.get("points", []) if last else []
-        self.done = bool(last and last.get("done"))
-        self.stopped = bool(last and last.get("stopped"))
-        self.error = last.get("error") if last else None
-        self.started = last.get("started") if last else None
-        self.finished = last.get("finished") if last else None
-
-    def running(self):
-        return self.process is not None and self.process.poll() is None
-
-    def start(self, device, levels, threads):
-        if self.running():
-            return {"fatal": "a map is already being measured; stop it first"}
-        env = dict(os.environ)
-        if threads:
-            env["OMP_NUM_THREADS"] = str(threads)
-        with self.lock:
-            self.plan, self.points, self.done, self.stopped, self.error = None, [], False, False, None
-            self.started, self.finished = time.time(), None
-        self.process = subprocess.Popen(
-            [str(self.runner.binary), "placemap", "--device", device, "--levels", str(int(levels))],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-        threading.Thread(target=self.read, args=(self.process,), daemon=True).start()
-        return {"ok": True}
-
-    def read(self, process):
-        for line in process.stdout:
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            with self.lock:
-                if "plan" in item:
-                    self.plan = item["plan"]
-                elif item.get("done"):
-                    self.done = True
-                elif "fatal" in item:
-                    self.error = item["fatal"]
-                else:
-                    self.points.append(item)
-        process.wait()
-        with self.lock:
-            if not self.done and not self.stopped and process.returncode not in (0, None):
-                self.error = self.error or (process.stderr.read().strip()[:500] or f"exited with {process.returncode}")
-            self.finished = time.time()
-            snapshot = self.state(0)
-        snapshot.pop("running", None)
-        self.store.add("placemap", {**snapshot, "op": "matmul", "device": (self.plan or {}).get("data_device")})
-
-    def stop(self):
-        if self.running():
-            with self.lock:
-                self.stopped = True
-            self.process.terminate()
-        return {"ok": True}
-
-    def state(self, since):
-        return {"running": self.running(), "plan": self.plan, "points": self.points[since:],
-                "count": len(self.points), "done": self.done, "stopped": self.stopped, "error": self.error,
-                "started": self.started, "finished": self.finished}
-
-
 class Store:
-    """Results in one SQLite file. kind is "run" (kernels and sweeps), "call", "program", "tune" or
-    "placemap"."""
+    """Results in one SQLite file. kind is "run" (kernels and sweeps), "call", "program" or "tune"."""
 
     def __init__(self, path):
         path.parent.mkdir(exist_ok=True)
-        # The placement map's reader thread stores its result too, so the connection is shared
-        # between threads, with a lock around each use.
+        # The connection is shared between the server's threads, with a lock around each use.
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.lock = threading.Lock()
         self.db.execute("CREATE TABLE IF NOT EXISTS results (id INTEGER PRIMARY KEY, time REAL, kind TEXT,"
@@ -286,7 +201,7 @@ class Store:
             self.db.execute("VACUUM")
 
 
-def make_handler(runner, store, placemap):
+def make_handler(runner, store):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             sys.stderr.write("  " + fmt % args + "\n")
@@ -318,10 +233,6 @@ def make_handler(runner, store, placemap):
                 for op in runner.listing.get("ops", []):
                     op["doc"] = docs.get(op["name"])
                 self.send(200, runner.listing)
-            elif self.path.startswith("/api/placemap"):
-                since = int(re.search(r"since=(\d+)", self.path).group(1)) if "since=" in self.path else 0
-                with placemap.lock:
-                    self.send(200, placemap.state(since))
             elif self.path == "/api/tuning":
                 self.send(200, {"file": tuning_file(), "tunes": store.all("tune")})
             elif self.path == "/api/history":
@@ -361,10 +272,6 @@ def make_handler(runner, store, placemap):
                 if "fatal" not in result:
                     store.add("call", result)
                 self.send(200, result)
-            elif self.path == "/api/placemap/start":
-                self.send(200, placemap.start(request.get("device", "cpu:0"), request.get("levels", 2), threads))
-            elif self.path == "/api/placemap/stop":
-                self.send(200, placemap.stop())
             elif self.path == "/api/tune":
                 TUNING_FILE.parent.mkdir(exist_ok=True)
                 args = ["tune", "--op", request["op"], "--device", request["device"],
@@ -406,16 +313,13 @@ def main():
     options = parser.parse_args()
     runner = Runner(find_binary(options.bin))
     store = Store(DATABASE)
-    placemap = PlaceMap(runner, store)
-    server = HTTPServer(("127.0.0.1", options.port), make_handler(runner, store, placemap))
+    server = HTTPServer(("127.0.0.1", options.port), make_handler(runner, store))
     print(f"observe binary: {runner.binary}")
     print(f"dashboard: http://localhost:{options.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
-    finally:
-        placemap.stop()
 
 
 if __name__ == "__main__":

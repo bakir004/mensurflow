@@ -23,12 +23,6 @@
 //       tunable kernel, with each candidate's time, the chosen and default settings, and the op's
 //       time with and without them. With --execution auto it also chooses the device of each call
 //       (every device timed with its copies). Results are stored in the file and reused next time.
-//   observe placemap [--device cpu:0] [--min-exp 1] [--max-exp 12] [--levels 2]
-//       where matmul is faster, CPU or GPU, across shapes m x n x k from 2^min-exp to 2^max-exp:
-//       the data lives on --device, and the other device's time includes the copies there and back.
-//       Level 0 samples the powers of two, each next level adds the log midpoints between them
-//       (2^6.5, ...), and only the points the earlier levels did not have. Prints one JSON line
-//       per point as it is measured (a plan line first, a done line last), cheapest first per level.
 //
 // The thread count comes from OMP_NUM_THREADS, which serve.py sets per request.
 #include "mensurflow/mensurflow.hpp"
@@ -866,163 +860,24 @@ int cmd_tune(const std::vector<OpSpec>& ops, const std::map<std::string, std::st
     for (std::size_t i = 0; i < report.calls.size(); ++i) {
         const TunedCall& call = report.calls[i];
         std::cout << (i ? ",\n" : "\n") << "{\"op\":\"" << json_escape(call.op)
-                  << "\",\"device\":\"" << call.device
-                  << "\",\"key\":" << values_json(call.key_values)
-                  << ",\"default\":" << values_json(call.default_settings)
+                  << "\",\"device\":\"" << call.device << "\",\"key\":\"" << json_escape(call.key)
+                  << "\",\"default\":" << values_json(call.default_settings)
                   << ",\"best\":" << values_json(call.best_settings)
                   << ",\"best_ms\":" << num(call.best_ms)
-                  << ",\"default_ms\":" << num(call.default_ms) << ",\"tried\":" << call.tried
-                  << ",\"rejected\":" << call.rejected
-                  << ",\"reused\":" << (call.reused ? "true" : "false") << ",\"method\":\""
-                  << call.method << "\",\"space_size\":" << call.space_size
-                  << ",\"confirmed\":" << call.confirmed << ",\"stopped\":" << call.stopped
-                  << ",\"search_s\":" << num(call.search_s) << ",\"regions\":[";
-        for (std::size_t r = 0; r < call.regions.size(); ++r) {
-            const TuningRegion& region = call.regions[r];
-            std::cout << (r ? "," : "") << "{\"name\":\"" << json_escape(region.name)
-                      << "\",\"start\":" << values_json(region.start)
-                      << ",\"points\":" << region.points << ",\"arguments\":[";
-            for (std::size_t a = 0; a < region.arguments.size(); ++a) {
-                std::cout << (a ? "," : "") << "{\"name\":\"" << region.arguments[a].name
-                          << "\",\"values\":" << shape_json(region.arguments[a].values) << "}";
-            }
-            std::cout << "]}";
-        }
-        std::cout << "],\"candidates\":[";
-        for (std::size_t k = 0; k < call.candidates.size(); ++k) {
-            const TunedCandidate& candidate = call.candidates[k];
-            std::cout << (k ? "," : "") << "{\"settings\":" << values_json(candidate.settings)
-                      << ",\"ms\":" << (candidate.rejected ? "null" : num(candidate.ms))
-                      << ",\"rejected\":" << (candidate.rejected ? "true" : "false")
-                      << ",\"region\":\"" << json_escape(candidate.region) << "\",\"step\":\""
-                      << candidate.step << "\",\"sweep\":" << candidate.sweep
-                      << ",\"level\":" << candidate.level
-                      << ",\"stopped\":" << (candidate.stopped ? "true" : "false") << "}";
+                  << ",\"default_ms\":" << num(call.default_ms)
+                  << ",\"reused\":" << (call.reused ? "true" : "false")
+                  << ",\"space_size\":" << call.space_size << ",\"search_s\":" << num(call.search_s)
+                  << ",\"points\":[";
+        for (std::size_t k = 0; k < call.points.size(); ++k) {
+            const TunedPoint& point = call.points[k];
+            std::cout << (k ? "," : "") << "{\"settings\":" << values_json(point.settings)
+                      << ",\"ms\":" << (point.rejected ? "null" : num(point.ms))
+                      << ",\"rejected\":" << (point.rejected ? "true" : "false")
+                      << ",\"stopped\":" << (point.stopped ? "true" : "false") << "}";
         }
         std::cout << "]}";
     }
-    std::cout << "],\"placements\":[";
-    for (std::size_t i = 0; i < report.placements.size(); ++i) {
-        const PlacedCall& p = report.placements[i];
-        std::cout << (i ? ",\n" : "\n") << "{\"op\":\"" << json_escape(p.op)
-                  << "\",\"data_device\":\"" << p.data_device << "\",\"key\":\""
-                  << json_escape(p.key) << "\",\"chosen\":\"" << p.chosen
-                  << "\",\"best_ms\":" << num(p.best_ms) << ",\"default_ms\":" << num(p.default_ms)
-                  << ",\"reused\":" << (p.reused ? "true" : "false") << ",\"times\":[";
-        for (std::size_t k = 0; k < p.times.size(); ++k) {
-            std::cout << (k ? "," : "") << "[\"" << p.times[k].first << "\","
-                      << num(p.times[k].second) << "]";
-        }
-        std::cout << "],\"rejected\":" << names_json(p.rejected) << "}";
-    }
     std::cout << "]}\n";
-    return 0;
-}
-
-// Sizes on one axis for each level: level L samples exponents min..max in steps of 2^-L, rounded to
-// integers; `first` is the level each size first appears at.
-struct Axis {
-    std::vector<std::int64_t> sizes; // all sizes up to the last level, ascending
-    std::map<std::int64_t, int> first;
-};
-
-Axis make_axis(int min_exp, int max_exp, int levels) {
-    Axis axis;
-    for (int level = 0; level <= levels; ++level) {
-        const int steps = 1 << level;
-        for (int i = min_exp * steps; i <= max_exp * steps; ++i) {
-            const double exponent = static_cast<double>(i) / steps;
-            const auto size = static_cast<std::int64_t>(std::llround(std::pow(2.0, exponent)));
-            axis.first.emplace(size, level); // keeps the earliest level
-        }
-    }
-    for (const auto& [size, level] : axis.first) {
-        axis.sizes.push_back(size);
-    }
-    return axis;
-}
-
-// Median-free quick timing: the minimum of a few runs (at least 3, or until 15 ms have passed).
-// When the two devices differ by more than 8x on the first run, one more run is enough to decide.
-double quick_ms(const std::function<void()>& run, int runs) {
-    double best = 1e300;
-    double spent = 0;
-    for (int i = 0; i < runs || (spent < 15.0 && i < 20); ++i) {
-        const auto t0 = Clock::now();
-        run();
-        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-        best = std::min(best, ms);
-        spent += ms;
-        if (runs <= 1 && i >= 1) {
-            break;
-        }
-    }
-    return best;
-}
-
-int cmd_placemap(const std::map<std::string, std::string>& flags) {
-    const Device data = parse_device(get(flags, "device", "cpu:0"));
-    const int min_exp = std::stoi(get(flags, "min-exp", "1"));
-    const int max_exp = std::stoi(get(flags, "max-exp", "12"));
-    const int levels = std::stoi(get(flags, "levels", "2"));
-    const Axis axis = make_axis(min_exp, max_exp, levels);
-    if (list_devices().size() < 2) {
-        throw std::runtime_error("placemap needs a GPU to compare the CPU with");
-    }
-
-    std::cout << "{\"plan\":{" << header_json() << ",\"data_device\":\"" << to_string(data)
-              << "\",\"min_exp\":" << min_exp << ",\"max_exp\":" << max_exp
-              << ",\"levels\":" << levels << ",\"sizes\":[";
-    for (std::size_t i = 0; i < axis.sizes.size(); ++i) {
-        std::cout << (i ? "," : "") << "[" << axis.sizes[i] << "," << axis.first.at(axis.sizes[i])
-                  << "]";
-    }
-    const std::size_t total = axis.sizes.size() * axis.sizes.size() * axis.sizes.size();
-    std::cout << "],\"total\":" << total << "}}" << std::endl;
-
-    // The GPU raises its clock only under load: keep it busy for a second first.
-    {
-        Tensor a = rnd({1024, 1024}, 1, data);
-        const auto start = Clock::now();
-        while (std::chrono::duration<double>(Clock::now() - start).count() < 1.0) {
-            wait_for(matmul(a, a, Execution::GPU));
-        }
-    }
-
-    for (int level = 0; level <= levels; ++level) {
-        struct Point {
-            std::int64_t m, n, k;
-        };
-
-        std::vector<Point> points;
-        for (const std::int64_t m : axis.sizes) {
-            for (const std::int64_t n : axis.sizes) {
-                for (const std::int64_t k : axis.sizes) {
-                    const int at = std::max({axis.first.at(m), axis.first.at(n), axis.first.at(k)});
-                    if (at == level) {
-                        points.push_back({m, n, k});
-                    }
-                }
-            }
-        }
-        // Cheapest first, so the plot fills quickly and the slow corner comes last.
-        std::sort(points.begin(), points.end(),
-                  [](const Point& x, const Point& y) { return x.m * x.n * x.k < y.m * y.n * y.k; });
-        for (const Point& p : points) {
-            const Tensor a = rnd({p.m, p.k}, 1, data);
-            const Tensor b = rnd({p.k, p.n}, 2, data);
-            auto on = [&](Execution e) { return [&, e] { wait_for(matmul(a, b, e)); }; };
-            const double cpu_first = quick_ms(on(Execution::CPU), 1);
-            const double gpu_first = quick_ms(on(Execution::GPU), 1);
-            const bool clear = std::max(cpu_first, gpu_first) > 8 * std::min(cpu_first, gpu_first);
-            const double cpu_ms = clear ? cpu_first : quick_ms(on(Execution::CPU), 3);
-            const double gpu_ms = clear ? gpu_first : quick_ms(on(Execution::GPU), 3);
-            std::cout << "{\"m\":" << p.m << ",\"n\":" << p.n << ",\"k\":" << p.k
-                      << ",\"level\":" << level << ",\"cpu_ms\":" << num(cpu_ms)
-                      << ",\"gpu_ms\":" << num(gpu_ms) << "}" << std::endl;
-        }
-    }
-    std::cout << "{\"done\":true}" << std::endl;
     return 0;
 }
 
@@ -1048,11 +903,8 @@ int main(int argc, char** argv) {
         if (command == "tune") {
             return cmd_tune(ops, flags);
         }
-        if (command == "placemap") {
-            return cmd_placemap(flags);
-        }
         throw std::invalid_argument("unknown command: " + command +
-                                    " (list, run, call, program, tune or placemap)");
+                                    " (list, run, call, program or tune)");
     } catch (const std::exception& error) {
         std::cout << "{\"fatal\":\"" << json_escape(error.what()) << "\"}\n";
         return 1;

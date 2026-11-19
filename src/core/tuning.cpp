@@ -1,4 +1,4 @@
-// The auto-tuner: the results file, applying stored results in dispatch(), and Tuner::tune (see
+// The auto-tuner: the results file, the search, the hook dispatch() calls, and Tuner::tune (see
 // include/mensurflow/tuning.hpp and core/tuning.hpp).
 #include "core/tuning.hpp"
 
@@ -92,17 +92,9 @@ std::string cpu_model() {
     return name.empty() ? "unknown CPU" : name;
 }
 
-std::string join(const NamedValues& values) {
-    std::string text;
-    for (const auto& [name, value] : values) {
-        text += (text.empty() ? "" : " ") + name + "=" + std::to_string(value);
-    }
-    return text;
-}
-
 // "name=value name=value ..." -> pairs. Throws invalid_argument on a malformed pair.
-NamedValues parse_values(const std::string& text) {
-    NamedValues values;
+TuningValues parse_values(const std::string& text) {
+    TuningValues values;
     std::istringstream in(text);
     for (std::string token; in >> token;) {
         const auto equals = token.find('=');
@@ -120,6 +112,16 @@ NamedValues parse_values(const std::string& text) {
     return values;
 }
 
+// The words of `text` separated by single spaces, so a hand-edited key still matches.
+std::string normalize(const std::string& text) {
+    std::istringstream in(text);
+    std::string out;
+    for (std::string word; in >> word;) {
+        out += (out.empty() ? "" : " ") + word;
+    }
+    return out;
+}
+
 std::string shape_text(const std::vector<std::int64_t>& shape) {
     if (shape.empty()) {
         return "scalar";
@@ -131,69 +133,19 @@ std::string shape_text(const std::vector<std::int64_t>& shape) {
     return text;
 }
 
-std::vector<std::int64_t> parse_shape(const std::string& text) {
-    std::vector<std::int64_t> shape;
-    if (text == "scalar") {
-        return shape;
-    }
-    std::stringstream in(text);
-    for (std::string dim; std::getline(in, dim, 'x');) {
-        std::size_t used = 0;
-        shape.push_back(static_cast<std::int64_t>(std::stoll(dim, &used)));
-        if (used != dim.size()) {
-            throw std::invalid_argument("not a shape: '" + text + "'");
-        }
-    }
-    return shape;
-}
-
-// "place <op> <dtype> <data device> <shape> ... -> <cpu|gpu> | <ms> ms (<exec> <ms> ms, ...) <mode>"
-PlacementEntry parse_placement(const std::string& line, const std::string& machine) {
-    const auto arrow = line.find(" -> ");
-    const auto bar = line.find(" | ", arrow == std::string::npos ? 0 : arrow);
-    if (arrow == std::string::npos || bar == std::string::npos) {
-        throw std::invalid_argument("expected 'place <op> <dtype> <device> <shapes> -> <cpu|gpu> | "
-                                    "<ms> ms (<cpu|gpu> <ms> ms, ...) <mode>'");
-    }
-    PlacementEntry entry;
-    entry.machine = machine;
-    std::istringstream head(line.substr(0, arrow));
-    std::string word;
-    head >> word >> entry.op >> entry.dtype >> entry.data_device;
-    if (entry.data_device.empty()) {
-        throw std::invalid_argument("expected 'place <op> <dtype> <device> <shapes>'");
-    }
-    for (std::string shape; head >> shape;) {
-        entry.shapes.push_back(parse_shape(shape));
-    }
-    entry.chosen = trim(line.substr(arrow + 4, bar - arrow - 4));
-    if (entry.chosen != "cpu" && entry.chosen != "gpu") {
-        throw std::invalid_argument("the chosen execution must be cpu or gpu, got '" +
-                                    entry.chosen + "'");
-    }
-    const std::string tail = line.substr(bar + 3);
-    const auto open = tail.find(" ms (");
-    const auto close = tail.find(") ", open == std::string::npos ? 0 : open);
-    if (open == std::string::npos || close == std::string::npos) {
-        throw std::invalid_argument("expected '<ms> ms (<cpu|gpu> <ms> ms, ...) <mode>' after '|'");
-    }
-    entry.best_ms = std::stod(tail.substr(0, open));
-    std::stringstream times(tail.substr(open + 5, close - open - 5));
-    for (std::string item; std::getline(times, item, ',');) {
-        std::istringstream one(item);
-        std::string execution, unit;
-        double ms = 0;
-        if (!(one >> execution >> ms >> unit) || unit != "ms") {
-            throw std::invalid_argument("expected '<cpu|gpu> <ms> ms', got '" + trim(item) + "'");
-        }
-        entry.times.emplace_back(execution, ms);
-    }
-    entry.mode = trim(tail.substr(close + 2));
-    return entry;
-}
-
 bool same_call(const TuningEntry& a, const TuningEntry& b) {
     return a.machine == b.machine && a.op == b.op && a.device == b.device && a.key == b.key;
+}
+
+// The value of `name` in `settings`, or `fallback`.
+std::int64_t value_of(const TuningValues& settings, const std::string& name,
+                      std::int64_t fallback) {
+    for (const auto& [n, v] : settings) {
+        if (n == name) {
+            return v;
+        }
+    }
+    return fallback;
 }
 
 } // namespace
@@ -206,7 +158,6 @@ void TuningCache::load(const std::string& path) {
         return; // nothing stored yet
     }
     std::vector<TuningEntry> loaded;
-    std::vector<PlacementEntry> placements;
     std::string machine;
     int number = 0;
     for (std::string line; std::getline(in, line);) {
@@ -226,14 +177,7 @@ void TuningCache::load(const std::string& path) {
             fail("a result before any 'machine' line");
         }
         if (line.rfind("place ", 0) == 0) {
-            try {
-                placements.push_back(parse_placement(line, machine));
-            } catch (const std::invalid_argument& e) {
-                fail(e.what());
-            } catch (const std::out_of_range& e) {
-                fail(std::string("number out of range: ") + e.what());
-            }
-            continue;
+            continue; // a device choice in the old format: dropped, and measured again when tuned
         }
         const auto arrow = line.find(" -> ");
         const auto bar = line.find(" | ", arrow == std::string::npos ? 0 : arrow);
@@ -253,7 +197,7 @@ void TuningCache::load(const std::string& path) {
             entry.version = std::stoi(version.substr(1));
             std::string rest;
             std::getline(head, rest);
-            entry.key = parse_values(rest);
+            entry.key = normalize(rest);
             entry.config = parse_values(line.substr(arrow + 4, bar - arrow - 4));
             char mode[64] = {0};
             if (std::sscanf(line.c_str() + bar + 3, "%lf ms (default %lf ms) %63s", &entry.best_ms,
@@ -269,7 +213,6 @@ void TuningCache::load(const std::string& path) {
         loaded.push_back(std::move(entry));
     }
     entries_ = std::move(loaded);
-    placements_ = std::move(placements);
 }
 
 void TuningCache::save(const std::string& path) const {
@@ -284,22 +227,15 @@ void TuningCache::save(const std::string& path) const {
 }
 
 void TuningCache::write(std::ostream& out) const {
-    out << "# mensurflow tuning results (format: src/core/tuning.hpp). Kernel settings:\n"
+    out << "# mensurflow tuning results (format: src/core/tuning.hpp)\n"
         << "# <op> <device> v<version> <key> -> <settings> | <best> ms (default <ms> ms) <mode>\n"
-        << "# Device choices for Execution::Auto (times include the copies there and back):\n"
-        << "# place <op> <dtype> <data device> <shapes> -> <cpu|gpu> | <best> ms (<exec> <ms> ms, "
-           "...) <mode>\n";
+        << "# device 'auto': the device for Execution::Auto, gpu=0 or gpu=1 (times include the "
+           "copies)\n";
     std::vector<std::string> machines;
-    auto add_machine = [&](const std::string& machine) {
-        if (std::find(machines.begin(), machines.end(), machine) == machines.end()) {
-            machines.push_back(machine);
-        }
-    };
     for (const TuningEntry& entry : entries_) {
-        add_machine(entry.machine);
-    }
-    for (const PlacementEntry& entry : placements_) {
-        add_machine(entry.machine);
+        if (std::find(machines.begin(), machines.end(), entry.machine) == machines.end()) {
+            machines.push_back(entry.machine);
+        }
     }
     char times[96];
     for (const std::string& machine : machines) {
@@ -310,33 +246,16 @@ void TuningCache::write(std::ostream& out) const {
             }
             std::snprintf(times, sizeof times, "%.4f ms (default %.4f ms) ", entry.best_ms,
                           entry.default_ms);
-            out << entry.op << ' ' << entry.device << " v" << entry.version << ' '
-                << join(entry.key) << " -> " << join(entry.config) << " | " << times << entry.mode
+            out << entry.op << ' ' << entry.device << " v" << entry.version << ' ' << entry.key
+                << " -> " << mensurflow::to_string(entry.config) << " | " << times << entry.mode
                 << '\n';
-        }
-        for (const PlacementEntry& entry : placements_) {
-            if (entry.machine != machine) {
-                continue;
-            }
-            out << "place " << entry.op << ' ' << entry.dtype << ' ' << entry.data_device;
-            for (const auto& shape : entry.shapes) {
-                out << ' ' << shape_text(shape);
-            }
-            std::snprintf(times, sizeof times, "%.4f ms (", entry.best_ms);
-            out << " -> " << entry.chosen << " | " << times;
-            for (std::size_t i = 0; i < entry.times.size(); ++i) {
-                std::snprintf(times, sizeof times, "%s%s %.4f ms", i ? ", " : "",
-                              entry.times[i].first.c_str(), entry.times[i].second);
-                out << times;
-            }
-            out << ") " << entry.mode << '\n';
         }
     }
 }
 
 const TuningEntry* TuningCache::find(const std::string& machine, const std::string& op,
                                      const std::string& device, int version,
-                                     const NamedValues& key) const {
+                                     const std::string& key) const {
     for (const TuningEntry& entry : entries_) {
         if (entry.machine == machine && entry.op == op && entry.device == device &&
             entry.version == version && entry.key == key) {
@@ -366,52 +285,6 @@ bool TuningCache::erase(const TuningEntry& entry) {
     return true;
 }
 
-bool same_placement(const PlacementEntry& a, const PlacementEntry& b) {
-    return a.machine == b.machine && a.op == b.op && a.dtype == b.dtype &&
-           a.data_device == b.data_device && a.shapes == b.shapes;
-}
-
-const PlacementEntry* TuningCache::find_placement(const PlacementEntry& key) const {
-    for (const PlacementEntry& entry : placements_) {
-        if (same_placement(entry, key)) {
-            return &entry;
-        }
-    }
-    return nullptr;
-}
-
-void TuningCache::store_placement(PlacementEntry entry) {
-    for (PlacementEntry& existing : placements_) {
-        if (same_placement(existing, entry)) {
-            existing = std::move(entry);
-            return;
-        }
-    }
-    placements_.push_back(std::move(entry));
-}
-
-bool TuningCache::erase_placement(const PlacementEntry& entry) {
-    const auto it = std::find_if(placements_.begin(), placements_.end(),
-                                 [&](const PlacementEntry& e) { return same_placement(e, entry); });
-    if (it == placements_.end()) {
-        return false;
-    }
-    placements_.erase(it);
-    return true;
-}
-
-PlacementEntry placement_key(OpId op, const OpArgs& args, Device data_device) {
-    PlacementEntry key;
-    key.machine = machine_name();
-    key.op = op_name(op);
-    key.dtype = args.inputs.empty() ? "" : dtype_name(args.inputs[0].dtype());
-    key.data_device = device_type_name(data_device.type);
-    for (const Tensor& input : args.inputs) {
-        key.shapes.push_back(input.shape());
-    }
-    return key;
-}
-
 // ---------------------------------------------------------------------------- keys and configs
 
 const std::string& machine_name() {
@@ -429,22 +302,31 @@ const std::string& machine_name() {
     return name;
 }
 
-NamedValues call_key(const TunableKernel& tunable, const OpArgs& args, Device device) {
+std::string call_key(const TunableKernel& tunable, const OpArgs& args, Device device) {
     const std::vector<std::int64_t> values = tunable.key(args);
-    NamedValues key;
+    TuningValues key;
     for (std::size_t i = 0; i < values.size() && i < tunable.key_names.size(); ++i) {
         key.emplace_back(tunable.key_names[i], values[i]);
     }
     if (device.type == DeviceType::CPU) {
         key.emplace_back("threads", cpu::max_threads());
     }
+    return mensurflow::to_string(key);
+}
+
+std::string placement_key(const OpArgs& args, Device data_device) {
+    std::string key = std::string("data=") + device_type_name(data_device.type) + ' ' +
+                      dtype_name(args.inputs.at(0).dtype());
+    for (const Tensor& input : args.inputs) {
+        key += ' ' + shape_text(input.shape());
+    }
     return key;
 }
 
-TuningConfig to_config(const TunableKernel& tunable, const NamedValues& config) {
+TuningConfig to_config(const TunableKernel& tunable, const TuningValues& settings) {
     TuningConfig result = tunable.defaults();
     result.size = static_cast<int>(tunable.params.size());
-    for (const auto& [name, value] : config) {
+    for (const auto& [name, value] : settings) {
         const auto it = std::find(tunable.params.begin(), tunable.params.end(), name);
         if (it != tunable.params.end()) {
             result.values[static_cast<std::size_t>(it - tunable.params.begin())] = value;
@@ -453,8 +335,8 @@ TuningConfig to_config(const TunableKernel& tunable, const NamedValues& config) 
     return result;
 }
 
-NamedValues from_config(const TunableKernel& tunable, const TuningConfig& config) {
-    NamedValues values;
+TuningValues from_config(const TunableKernel& tunable, const TuningConfig& config) {
+    TuningValues values;
     for (int i = 0; i < config.size && i < static_cast<int>(tunable.params.size()); ++i) {
         values.emplace_back(tunable.params[static_cast<std::size_t>(i)],
                             config.values[static_cast<std::size_t>(i)]);
@@ -462,29 +344,22 @@ NamedValues from_config(const TunableKernel& tunable, const TuningConfig& config
     return values;
 }
 
-// ---------------------------------------------------------------------------- the search space
+// ---------------------------------------------------------------------------- the search
 
-TuningConfig with_values(const TuningConfig& base, const TuningPoint& values) {
-    TuningConfig config = base;
-    config.values = values;
-    return config;
-}
-
-// Every allowed point of a region, in order (the last axis changes fastest).
-std::vector<TuningPoint> region_points(const TunableKernel& tunable, const SearchRegion& region,
-                                       const OpArgs& args) {
-    std::vector<TuningPoint> points;
-    TuningPoint point = region.start.values;
+std::vector<TuningConfig> region_points(const TunableKernel& tunable, const SearchRegion& region,
+                                        const OpArgs& args) {
+    std::vector<TuningConfig> points;
+    TuningConfig point = region.start;
     std::function<void(std::size_t)> walk = [&](std::size_t axis) {
         if (axis == region.axes.size()) {
-            if (tunable.allowed(args, with_values(region.start, point))) {
+            if (tunable.allowed(args, point)) {
                 points.push_back(point);
             }
             return;
         }
         const SearchAxis& a = region.axes[axis];
         for (const std::int64_t value : a.values) {
-            point[static_cast<std::size_t>(a.param)] = value;
+            point.values[static_cast<std::size_t>(a.param)] = value;
             walk(axis + 1);
         }
     };
@@ -492,20 +367,20 @@ std::vector<TuningPoint> region_points(const TunableKernel& tunable, const Searc
     return points;
 }
 
-// Where binary sampling starts: the region's start, each value moved to the nearest one on its
-// axis; if that point is not allowed, the allowed point fewest axis steps away from it.
 namespace {
 
+// Where binary sampling starts: the region's start, each value moved to the nearest one on its
+// axis; if that point is not allowed, the allowed point fewest axis steps away from it.
 bool start_point(const TunableKernel& tunable, const SearchRegion& region, const OpArgs& args,
-                 const std::vector<TuningPoint>& allowed, TuningPoint& start) {
+                 const std::vector<TuningConfig>& allowed, TuningConfig& start) {
     if (allowed.empty()) {
         return false;
     }
-    start = region.start.values;
+    start = region.start;
     std::vector<std::size_t> index(region.axes.size(), 0);
     for (std::size_t a = 0; a < region.axes.size(); ++a) {
         const auto& values = region.axes[a].values;
-        std::int64_t& value = start[static_cast<std::size_t>(region.axes[a].param)];
+        std::int64_t& value = start.values[static_cast<std::size_t>(region.axes[a].param)];
         std::size_t nearest = 0;
         for (std::size_t i = 1; i < values.size(); ++i) {
             if (std::llabs(values[i] - value) < std::llabs(values[nearest] - value)) {
@@ -515,18 +390,18 @@ bool start_point(const TunableKernel& tunable, const SearchRegion& region, const
         index[a] = nearest;
         value = values[nearest];
     }
-    if (tunable.allowed(args, with_values(region.start, start))) {
+    if (tunable.allowed(args, start)) {
         return true;
     }
-    auto position = [&](const TuningPoint& p, std::size_t a) {
+    auto position = [&](const TuningConfig& p, std::size_t a) {
         const auto& values = region.axes[a].values;
         return static_cast<std::size_t>(
             std::find(values.begin(), values.end(),
-                      p[static_cast<std::size_t>(region.axes[a].param)]) -
+                      p.values[static_cast<std::size_t>(region.axes[a].param)]) -
             values.begin());
     };
     std::size_t best_distance = std::numeric_limits<std::size_t>::max();
-    for (const TuningPoint& p : allowed) {
+    for (const TuningConfig& p : allowed) {
         std::size_t distance = 0;
         for (std::size_t a = 0; a < region.axes.size(); ++a) {
             const std::size_t at = position(p, a);
@@ -546,33 +421,28 @@ void search(const TunableKernel& tunable, const OpArgs& args,
             const std::vector<SearchRegion>& space, SearchMethod method, int max_sweeps, int levels,
             const Measure& measure) {
     for (const SearchRegion& region : space) {
-        const std::vector<TuningPoint> allowed = region_points(tunable, region, args);
+        const std::vector<TuningConfig> allowed = region_points(tunable, region, args);
         if (method == SearchMethod::Exhaustive) {
-            std::vector<Probe> grid;
-            for (const TuningPoint& p : allowed) {
-                grid.push_back({with_values(region.start, p), region.name, "grid", 0, 0});
-            }
-            if (!grid.empty()) {
-                measure(grid);
+            if (!allowed.empty()) {
+                measure(allowed);
             }
             continue;
         }
-        TuningPoint x;
+        TuningConfig x;
         if (!start_point(tunable, region, args, allowed, x)) {
             continue; // no allowed point in this region for this call
         }
-        double fx = measure({{with_values(region.start, x), region.name, "start", 0, 0}})[0];
+        double fx = measure({x})[0];
         for (int sweep = 1; sweep <= max_sweeps; ++sweep) {
             bool moved = false;
             for (const SearchAxis& axis : region.axes) {
                 const auto param = static_cast<std::size_t>(axis.param);
-                const std::string& name = tunable.params[param];
                 // The line through x along this axis: the values the other arguments allow.
-                std::vector<TuningPoint> line;
+                std::vector<TuningConfig> line;
                 for (const std::int64_t value : axis.values) {
-                    TuningPoint p = x;
-                    p[param] = value;
-                    if (tunable.allowed(args, with_values(region.start, p))) {
+                    TuningConfig p = x;
+                    p.values[param] = value;
+                    if (tunable.allowed(args, p)) {
                         line.push_back(p);
                     }
                 }
@@ -585,7 +455,7 @@ void search(const TunableKernel& tunable, const OpArgs& args,
                 // so the samples do not depend on each other and are measured as one batch.
                 std::vector<bool> sampled(line.size(), false);
                 std::vector<std::size_t> picked;
-                std::vector<Probe> probes;
+                std::vector<TuningConfig> samples;
                 const double last = static_cast<double>(line.size() - 1);
                 for (int level = 0; level <= levels; ++level) {
                     std::vector<std::size_t> picks;
@@ -602,15 +472,14 @@ void search(const TunableKernel& tunable, const OpArgs& args,
                         if (!sampled[i]) {
                             sampled[i] = true;
                             picked.push_back(i);
-                            probes.push_back({with_values(region.start, line[i]), region.name, name,
-                                              sweep, level});
+                            samples.push_back(line[i]);
                         }
                     }
                     if (std::all_of(sampled.begin(), sampled.end(), [](bool v) { return v; })) {
                         break;
                     }
                 }
-                const std::vector<double> times = measure(probes);
+                const std::vector<double> times = measure(samples);
                 std::size_t best_at = line.size();
                 double best_here = fx;
                 for (std::size_t j = 0; j < picked.size(); ++j) {
@@ -642,39 +511,33 @@ TuningScope::~TuningScope() { g_context = previous_; }
 
 bool tuning_active() { return g_context != nullptr; }
 
-Execution auto_execution(OpId op, const OpArgs& args, Device data_device) {
-    TuningContext* context = g_context;
-    if (context == nullptr || args.inputs.empty()) {
-        return Execution::Auto; // random factories have no inputs to key on
-    }
-    if (context->record_auto != nullptr) {
-        context->record_auto->push_back({op, data_device, args});
-    }
-    if (context->cache != nullptr) {
-        if (const PlacementEntry* entry =
-                context->cache->find_placement(placement_key(op, args, data_device))) {
-            return entry->chosen == "gpu" ? Execution::GPU : Execution::CPU;
+Device apply_tuning(OpId op, Execution execution, Device data_device, OpArgs& args) {
+    const TuningContext& context = *g_context;
+    const TuningCache* cache = context.cache;
+    Execution chosen = execution;
+    if (execution == Execution::Auto && cache != nullptr && !args.inputs.empty()) {
+        if (const TuningEntry* entry = cache->find(machine_name(), op_name(op), kAutoDevice, 1,
+                                                   placement_key(args, data_device))) {
+            chosen = value_of(entry->config, "gpu", 0) != 0 ? Execution::GPU : Execution::CPU;
         }
     }
-    return Execution::Auto;
-}
-
-void apply_tuning(KernelKey kernel, const TunableKernel& tunable, Device device, OpArgs& args) {
-    TuningContext* context = g_context;
-    if (context == nullptr) {
-        return;
+    const Device target = execution_device(chosen, data_device);
+    if (context.record != nullptr) {
+        context.record->push_back({op, execution, data_device, target, args});
     }
-    if (context->record != nullptr) {
-        context->record->push_back({kernel, device, args});
-    }
-    if (context->cache != nullptr) {
-        const TuningEntry* entry =
-            context->cache->find(machine_name(), tunable.name, device_type_name(device.type),
-                                 tunable.version, call_key(tunable, args, device));
-        if (entry != nullptr) {
-            args.tuning = to_config(tunable, entry->config);
+    if (cache != nullptr) {
+        const Tensor& source = args.inputs.empty() ? args.outputs[0] : args.inputs[0];
+        const TunableKernel* tunable =
+            Registry::instance().dispatcher().tunable({op, target.type, source.dtype()});
+        if (tunable != nullptr) {
+            if (const TuningEntry* entry =
+                    cache->find(machine_name(), tunable->name, device_type_name(target.type),
+                                tunable->version, call_key(*tunable, args, target))) {
+                args.tuning = to_config(*tunable, entry->config);
+            }
         }
     }
+    return target;
 }
 
 } // namespace mensurflow::detail
@@ -683,36 +546,25 @@ void apply_tuning(KernelKey kernel, const TunableKernel& tunable, Device device,
 
 namespace mensurflow {
 
-namespace {
-
-using detail::NamedValues;
-using detail::OpArgs;
-using detail::RecordedCall;
-using detail::Registry;
-using detail::TunableKernel;
-using detail::TuningConfig;
-using detail::TuningEntry;
-
-using Clock = std::chrono::steady_clock;
-
-std::string shape_text(const std::vector<std::int64_t>& shape) {
-    if (shape.empty()) {
-        return "scalar";
-    }
-    std::string text;
-    for (std::size_t i = 0; i < shape.size(); ++i) {
-        text += (i ? "x" : "") + std::to_string(shape[i]);
-    }
-    return text;
-}
-
-std::string text_of(const NamedValues& values) {
+std::string to_string(const TuningValues& values) {
     std::string text;
     for (const auto& [name, value] : values) {
         text += (text.empty() ? "" : " ") + name + "=" + std::to_string(value);
     }
     return text;
 }
+
+namespace {
+
+using detail::OpArgs;
+using detail::RecordedCall;
+using detail::Registry;
+using detail::SearchRegion;
+using detail::TunableKernel;
+using detail::TuningConfig;
+using detail::TuningEntry;
+
+using Clock = std::chrono::steady_clock;
 
 double seconds_since(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
@@ -764,11 +616,17 @@ double median_ms(const std::function<void()>& run, const TuneOptions& options,
     return samples[samples.size() / 2] * 1e3;
 }
 
-// Fresh outputs on the call's device, so measuring never overwrites the algorithm's tensors.
-OpArgs with_fresh_outputs(const OpArgs& args) {
+// The call's arguments on `device` (the inputs copied there if they live elsewhere) with fresh
+// outputs, so measuring never overwrites the algorithm's tensors.
+OpArgs on_device(const OpArgs& args, Device device) {
     OpArgs copy = args;
+    for (Tensor& input : copy.inputs) {
+        if (input.device() != device) {
+            input = input.to(device);
+        }
+    }
     for (Tensor& out : copy.outputs) {
-        out = Tensor::empty(out.shape(), out.dtype(), out.device());
+        out = Tensor::empty(out.shape(), out.dtype(), device);
     }
     return copy;
 }
@@ -867,14 +725,10 @@ Tuner::Tuner(std::string path)
 void Tuner::save() const { cache_->save(path_); }
 
 std::size_t Tuner::size() const {
-    const std::string& machine = detail::machine_name();
     const auto& entries = cache_->entries();
-    const auto& places = cache_->placements();
     return static_cast<std::size_t>(
         std::count_if(entries.begin(), entries.end(),
-                      [&](const TuningEntry& e) { return e.machine == machine; }) +
-        std::count_if(places.begin(), places.end(),
-                      [&](const detail::PlacementEntry& e) { return e.machine == machine; }));
+                      [](const TuningEntry& e) { return e.machine == detail::machine_name(); }));
 }
 
 std::string Tuner::describe() const {
@@ -882,11 +736,6 @@ std::string Tuner::describe() const {
     for (const TuningEntry& entry : cache_->entries()) {
         if (entry.machine == detail::machine_name()) {
             mine.store(entry);
-        }
-    }
-    for (const detail::PlacementEntry& entry : cache_->placements()) {
-        if (entry.machine == detail::machine_name()) {
-            mine.store_placement(entry);
         }
     }
     std::ostringstream text;
@@ -899,11 +748,55 @@ TuneReport Tuner::tune(const Algorithm& algorithm, const std::vector<Tensor>& in
     Registry& registry = Registry::instance();
     const std::string& machine = detail::machine_name();
     TuneReport report;
+
     // What was stored before and what tuning adds, to restore if the tuned algorithm is slower.
     std::vector<TuningEntry> replaced;
     std::vector<TuningEntry> added;
-    std::vector<detail::PlacementEntry> replaced_places;
-    std::vector<detail::PlacementEntry> added_places;
+    auto keep = [&](const TunedCall& result, const std::string& op, const std::string& device,
+                    int version) {
+        TuningEntry entry;
+        entry.machine = machine;
+        entry.op = op;
+        entry.device = device;
+        entry.version = version;
+        entry.key = result.key;
+        entry.config = result.best_settings;
+        entry.best_ms = result.best_ms;
+        entry.default_ms = result.default_ms;
+        entry.mode = "tested";
+        if (const TuningEntry* old = cache_->find(machine, op, device, version, entry.key)) {
+            replaced.push_back(*old);
+        }
+        added.push_back(entry);
+        cache_->store(entry);
+        if (options.verbose) {
+            const auto stopped = std::count_if(result.points.begin(), result.points.end(),
+                                               [](const TunedPoint& p) { return p.stopped; });
+            std::cout << "  " << result.op << " on " << result.device << " " << result.key << ": "
+                      << to_string(result.best_settings) << " " << result.best_ms << " ms (default "
+                      << result.default_ms << " ms; " << result.points.size() << " of "
+                      << result.space_size << " points measured";
+            if (stopped > 0) {
+                std::cout << ", " << stopped << " stopped early";
+            }
+            std::cout << ", " << result.search_s << " s)\n";
+        }
+        report.calls.push_back(result);
+    };
+    // A result already stored is reported as it is, unless options.retune.
+    auto reuse = [&](TunedCall& result, const std::string& op, const std::string& device,
+                     int version) {
+        const TuningEntry* entry = cache_->find(machine, op, device, version, result.key);
+        if (entry == nullptr || options.retune) {
+            return false;
+        }
+        result.reused = true;
+        result.best_settings = entry->config;
+        result.best_ms = entry->best_ms;
+        result.default_ms = entry->default_ms;
+        report.calls.push_back(result);
+        return true;
+    };
 
     // The GPU raises its clock only after some time under load; keep it busy for a second before
     // measuring on it, or the first configurations are measured at a lower clock.
@@ -918,245 +811,156 @@ TuneReport Tuner::tune(const Algorithm& algorithm, const std::vector<Tensor>& in
         }
     };
 
-    // Kernel settings: every candidate of each distinct tunable call, timed on that call.
-    std::set<std::tuple<std::string, std::string, NamedValues>> seen;
-    auto tune_kernels = [&](const std::vector<RecordedCall>& recorded) {
-        for (const RecordedCall& call : recorded) {
-            const TunableKernel* tunable = registry.dispatcher().tunable(call.kernel);
-            if (tunable == nullptr) {
-                continue;
-            }
-            const std::string device = device_type_name(call.device.type);
-            const NamedValues key = detail::call_key(*tunable, call.args, call.device);
-            if (!seen.insert({tunable->name, device, key}).second) {
-                continue; // the same call again
-            }
-            TunedCall result;
-            result.op = tunable->name;
-            result.device = to_string(call.device);
-            result.key = text_of(key);
-            result.key_values = key;
-            result.default_settings = detail::from_config(*tunable, tunable->defaults());
-            if (const TuningEntry* stored =
-                    cache_->find(machine, tunable->name, device, tunable->version, key);
-                stored != nullptr && !options.retune) {
-                result.reused = true;
-                result.best_ms = stored->best_ms;
-                result.default_ms = stored->default_ms;
-                result.best = text_of(stored->config);
-                result.best_settings = stored->config;
-                report.calls.push_back(result);
-                continue;
-            }
-            const std::vector<detail::SearchRegion> space = tunable->space(call.args);
-            if (space.empty()) {
-                continue; // nothing to tune for this call
-            }
-            result.method = search_method_name(options.search);
-            for (const detail::SearchRegion& region : space) {
-                TuningRegion info;
-                info.name = region.name;
-                info.start = detail::from_config(*tunable, region.start);
-                for (const detail::SearchAxis& axis : region.axes) {
-                    info.arguments.push_back(
-                        {tunable->params[static_cast<std::size_t>(axis.param)], axis.values});
-                }
-                info.points = detail::region_points(*tunable, region, call.args).size();
-                result.space_size += info.points;
-                result.regions.push_back(info);
-            }
+    std::set<std::tuple<std::string, std::string, std::string>> seen; // op, device, key
 
-            const detail::KernelFn kernel = registry.dispatcher().lookup(call.kernel);
-            detail::Stream& stream = registry.get(call.device).stream(call.device.index);
-            OpArgs args = with_fresh_outputs(call.args);
-            auto run_with = [&](const TuningConfig& config) {
-                args.tuning = config;
-                kernel(args, stream);
-                stream.synchronize();
-            };
-            warm(call.device, [&] { run_with(TuningConfig{}); });
-
-            run_with(TuningConfig{});
-            const auto expected = read_outputs(args);
-            const TuningConfig defaults = tunable->defaults();
-
-            // Early stop: a point already slower than give_up x the best median so far.
-            std::function<double()> give_up_ms;
-            if (options.give_up > 0) {
-                give_up_ms = [&] { return result.best_ms * options.give_up; };
-            }
-
-            // The objective: each point is checked against the default's result (infinite when
-            // it disagrees), then timed. It is measured once; the search may ask again, for free.
-            std::map<detail::TuningPoint, double> measured;
-            TuningConfig best = defaults;
-            result.best_ms = std::numeric_limits<double>::infinity();
-            const auto search_start = Clock::now();
-            auto measure = [&](const std::vector<detail::Probe>& probes) {
-                std::vector<double> times;
-                for (const detail::Probe& probe : probes) {
-                    if (const auto it = measured.find(probe.config.values); it != measured.end()) {
-                        times.push_back(it->second);
-                        continue;
-                    }
-                    TunedCandidate c;
-                    c.settings = detail::from_config(*tunable, probe.config);
-                    c.region = probe.region;
-                    c.step = probe.step;
-                    c.sweep = probe.sweep;
-                    c.level = probe.level;
-                    double ms = std::numeric_limits<double>::infinity();
-                    run_with(probe.config);
-                    if (!agrees(expected, read_outputs(args))) {
-                        ++result.rejected;
-                        c.rejected = true;
-                    } else {
-                        ++result.tried;
-                        ms = median_ms([&] { run_with(probe.config); }, options, give_up_ms,
-                                       &c.stopped);
-                        c.ms = ms;
-                        result.stopped += c.stopped ? 1 : 0;
-                        if (ms < result.best_ms) {
-                            result.best_ms = ms;
-                            best = probe.config;
-                        }
-                    }
-                    measured[probe.config.values] = ms;
-                    result.candidates.push_back(c);
-                    times.push_back(ms);
-                }
-                return times;
-            };
-            result.default_ms = measure({{defaults, "", "default", 0, 0}})[0];
-
-            detail::search(*tunable, call.args, space, options.search, options.max_sweeps,
-                           options.levels, measure);
-            result.search_s = seconds_since(search_start);
-            if (!std::isfinite(result.best_ms)) { // even the default disagreed with itself
-                result.best_ms = result.default_ms;
-                best = defaults;
-            }
-
-            // Confirmation: the points were measured seconds apart, and the clock (a GPU's above
-            // all) or the load can change in between. The default and the fastest few are timed
-            // again, taking turns, and the fastest of those times is kept.
-            if (options.confirm > 0) {
-                std::vector<std::pair<double, std::size_t>> ranked;
-                for (std::size_t i = 0; i < result.candidates.size(); ++i) {
-                    const TunedCandidate& c = result.candidates[i];
-                    if (!c.rejected && c.step != "default") {
-                        ranked.emplace_back(c.ms, i);
-                    }
-                }
-                std::sort(ranked.begin(), ranked.end());
-                std::vector<TuningConfig> finalists = {defaults};
-                for (std::size_t i = 0;
-                     i < ranked.size() &&
-                     finalists.size() <= static_cast<std::size_t>(options.confirm);
-                     ++i) {
-                    const TuningConfig config =
-                        detail::to_config(*tunable, result.candidates[ranked[i].second].settings);
-                    if (config.values != defaults.values) {
-                        finalists.push_back(config);
-                    }
-                }
-                std::vector<std::vector<double>> times(finalists.size());
-                for (int round = 0; round < 3; ++round) {
-                    for (std::size_t i = 0; i < finalists.size(); ++i) {
-                        // Rotate the order, so no point is always timed first.
-                        const std::size_t at =
-                            (i + static_cast<std::size_t>(round)) % finalists.size();
-                        times[at].push_back(median_ms([&] { run_with(finalists[at]); }, options));
-                    }
-                }
-                std::size_t winner = 0;
-                std::vector<double> confirmed;
-                for (std::size_t i = 0; i < finalists.size(); ++i) {
-                    std::sort(times[i].begin(), times[i].end());
-                    confirmed.push_back(times[i][times[i].size() / 2]);
-                    if (confirmed[i] < confirmed[winner]) {
-                        winner = i;
-                    }
-                }
-                result.default_ms = confirmed[0];
-                result.best_ms = confirmed[winner];
-                best = finalists[winner];
-                result.confirmed = finalists.size();
-            }
-
-            TuningEntry entry;
-            entry.machine = machine;
-            entry.op = tunable->name;
-            entry.device = device;
-            entry.version = tunable->version;
-            entry.key = key;
-            entry.config = detail::from_config(*tunable, best);
-            entry.best_ms = result.best_ms;
-            entry.default_ms = result.default_ms;
-            entry.mode = "tested";
-            result.best = text_of(entry.config);
-            result.best_settings = entry.config;
-            if (const TuningEntry* old =
-                    cache_->find(machine, entry.op, entry.device, entry.version, key)) {
-                replaced.push_back(*old);
-            }
-            added.push_back(entry);
-            cache_->store(entry);
-            if (options.verbose) {
-                std::cout << "  " << result.op << " on " << result.device << " " << result.key
-                          << ": " << result.best << " " << result.best_ms << " ms (default "
-                          << result.default_ms << " ms; " << result.candidates.size() << " of "
-                          << result.space_size << " points measured";
-                if (result.stopped > 0) {
-                    std::cout << ", " << result.stopped << " stopped early";
-                }
-                std::cout << ", " << result.method << " search, " << result.search_s << " s)\n";
-            }
-            report.calls.push_back(result);
+    // Kernel settings: the call's kernel on `device`, if it is tunable, searched over its space.
+    auto tune_kernel = [&](const RecordedCall& call, Device device) {
+        const Tensor& source =
+            call.args.inputs.empty() ? call.args.outputs[0] : call.args.inputs[0];
+        const detail::KernelKey kernel_key{call.op, device.type, source.dtype()};
+        const TunableKernel* tunable = registry.dispatcher().tunable(kernel_key);
+        if (tunable == nullptr) {
+            return;
         }
+        const std::string device_type = device_type_name(device.type);
+        TunedCall result;
+        result.op = tunable->name;
+        result.device = to_string(device);
+        result.key = detail::call_key(*tunable, call.args, device);
+        if (!seen.insert({result.op, device_type, result.key}).second) {
+            return; // the same call again
+        }
+        const TuningConfig defaults = tunable->defaults();
+        result.default_settings = detail::from_config(*tunable, defaults);
+        if (reuse(result, result.op, device_type, tunable->version)) {
+            return;
+        }
+        const std::vector<SearchRegion> space = tunable->space(call.args);
+        if (space.empty()) {
+            return; // nothing to tune for this call
+        }
+        for (const SearchRegion& region : space) {
+            result.space_size += detail::region_points(*tunable, region, call.args).size();
+        }
+
+        const detail::KernelFn kernel = registry.dispatcher().lookup(kernel_key);
+        detail::Stream& stream = registry.get(device).stream(device.index);
+        OpArgs args = on_device(call.args, device);
+        auto run_with = [&](const TuningConfig& config) {
+            args.tuning = config;
+            kernel(args, stream);
+            stream.synchronize();
+        };
+        warm(device, [&] { run_with(TuningConfig{}); });
+        run_with(TuningConfig{});
+        const auto expected = read_outputs(args);
+
+        // Early stop: a point already slower than give_up x the best median so far.
+        std::function<double()> give_up_ms;
+        if (options.give_up > 0) {
+            give_up_ms = [&] { return result.best_ms * options.give_up; };
+        }
+
+        // The objective: each point is checked against the default's result (infinite when it
+        // disagrees), then timed. It is measured once; the search may ask again, for free.
+        std::map<TuningConfig, double> measured;
+        std::vector<std::pair<double, TuningConfig>> timed; // the points that agreed
+        TuningConfig best = defaults;
+        result.best_ms = std::numeric_limits<double>::infinity();
+        const auto search_start = Clock::now();
+        auto measure = [&](const std::vector<TuningConfig>& points) {
+            std::vector<double> times;
+            for (const TuningConfig& config : points) {
+                if (const auto it = measured.find(config); it != measured.end()) {
+                    times.push_back(it->second);
+                    continue;
+                }
+                TunedPoint point;
+                point.settings = detail::from_config(*tunable, config);
+                double ms = std::numeric_limits<double>::infinity();
+                run_with(config);
+                if (!agrees(expected, read_outputs(args))) {
+                    point.rejected = true;
+                } else {
+                    ms = median_ms([&] { run_with(config); }, options, give_up_ms, &point.stopped);
+                    point.ms = ms;
+                    timed.emplace_back(ms, config);
+                    if (ms < result.best_ms) {
+                        result.best_ms = ms;
+                        best = config;
+                    }
+                }
+                measured[config] = ms;
+                result.points.push_back(point);
+                times.push_back(ms);
+            }
+            return times;
+        };
+        result.default_ms = measure({defaults})[0];
+        detail::search(*tunable, call.args, space, options.search, options.max_sweeps,
+                       options.levels, measure);
+        result.search_s = seconds_since(search_start);
+        if (!std::isfinite(result.best_ms)) { // even the default disagreed with itself
+            result.best_ms = result.default_ms;
+            best = defaults;
+        }
+
+        // Confirmation: the points were measured seconds apart, and the clock (a GPU's above all)
+        // or the load can change in between. The default and the fastest few are timed again,
+        // taking turns, and the fastest of those times is kept.
+        if (options.confirm > 0) {
+            std::sort(timed.begin(), timed.end());
+            std::vector<TuningConfig> finalists = {defaults};
+            for (std::size_t i = 0;
+                 i < timed.size() && finalists.size() <= static_cast<std::size_t>(options.confirm);
+                 ++i) {
+                if (timed[i].second != defaults) {
+                    finalists.push_back(timed[i].second);
+                }
+            }
+            std::vector<std::vector<double>> times(finalists.size());
+            for (int round = 0; round < 3; ++round) {
+                for (std::size_t i = 0; i < finalists.size(); ++i) {
+                    // Rotate the order, so no point is always timed first.
+                    const std::size_t at = (i + static_cast<std::size_t>(round)) % finalists.size();
+                    times[at].push_back(median_ms([&] { run_with(finalists[at]); }, options));
+                }
+            }
+            std::size_t winner = 0;
+            std::vector<double> confirmed;
+            for (std::size_t i = 0; i < finalists.size(); ++i) {
+                std::sort(times[i].begin(), times[i].end());
+                confirmed.push_back(times[i][times[i].size() / 2]);
+                if (confirmed[i] < confirmed[winner]) {
+                    winner = i;
+                }
+            }
+            result.default_ms = confirmed[0];
+            result.best_ms = confirmed[winner];
+            best = finalists[winner];
+        }
+        result.best_settings = detail::from_config(*tunable, best);
+        keep(result, tunable->name, device_type, tunable->version);
     };
 
-    // 1. Run once, recording every tunable kernel call and every op called with Execution::Auto.
-    std::vector<RecordedCall> recorded;
-    std::vector<detail::AutoCall> autos;
-    {
-        detail::TuningScope scope({nullptr, &recorded, &autos});
-        finish(algorithm.run(inputs));
-    }
-
-    // 2. Kernel settings of the calls as they ran.
-    tune_kernels(recorded);
-
-    // 3. Device choice for the Execution::Auto calls: each device that has a kernel for the op is
-    // timed through dispatch() with the copies there and back, after its own kernel settings were
-    // tuned, and must give the CPU's result.
-    std::set<std::string> seen_places;
-    for (const detail::AutoCall& call : autos) {
-        detail::PlacementEntry key = detail::placement_key(call.op, call.args, call.data_device);
-        std::string key_text = key.dtype;
-        for (const auto& shape : key.shapes) {
-            key_text += " " + shape_text(shape);
+    // Device choice for an Execution::Auto call: a setting with two values, gpu=0 (the CPU, what
+    // Auto does without a result) and gpu=1. Each device is timed through dispatch() with the
+    // copies there and back, after its own kernel settings were tuned, and must give the CPU's
+    // result.
+    auto choose_device = [&](const RecordedCall& call) {
+        if (call.args.inputs.empty()) {
+            return; // random factories have no inputs to key on
         }
-        if (!seen_places.insert(key.op + " " + key.data_device + " " + key_text).second) {
-            continue;
+        TunedCall result;
+        result.op = detail::op_name(call.op);
+        result.device = detail::kAutoDevice;
+        result.key = detail::placement_key(call.args, call.data_device);
+        if (!seen.insert({result.op, result.device, result.key}).second) {
+            return;
         }
-        PlacedCall result;
-        result.op = key.op;
-        result.data_device = to_string(call.data_device);
-        result.key = key_text;
-        if (const detail::PlacementEntry* stored = cache_->find_placement(key);
-            stored != nullptr && !options.retune) {
-            result.reused = true;
-            result.chosen = stored->chosen;
-            result.best_ms = stored->best_ms;
-            result.times = stored->times;
-            for (const auto& [execution, ms] : stored->times) {
-                if (execution == "cpu") {
-                    result.default_ms = ms;
-                }
-            }
-            report.placements.push_back(result);
-            continue;
+        result.default_settings = {{"gpu", 0}};
+        if (reuse(result, result.op, result.device, 1)) {
+            return;
         }
         const DType dtype = call.args.inputs[0].dtype();
         std::vector<std::pair<Execution, Device>> choices;
@@ -1171,66 +975,62 @@ TuneReport Tuner::tune(const Algorithm& algorithm, const std::vector<Tensor>& in
             }
         }
         if (choices.size() < 2 || choices[0].first != Execution::CPU) {
-            continue; // nothing to choose from
+            return; // nothing to choose from
         }
+        result.space_size = choices.size();
 
         std::vector<std::vector<float>> expected;
-        double best_ms = 0;
+        const auto search_start = Clock::now();
         for (const auto& [execution, target] : choices) {
-            const std::string name = execution_name(execution);
-            {
-                // This device's kernel settings first, so each device is timed at its best.
-                std::vector<RecordedCall> on_device;
-                OpArgs probe = with_fresh_outputs(call.args);
-                {
-                    detail::TuningScope scope({cache_.get(), &on_device, nullptr});
-                    detail::dispatch(call.op, probe, execution);
-                    finish(probe.outputs);
-                }
-                tune_kernels(on_device);
-            }
-            OpArgs args = with_fresh_outputs(call.args);
+            tune_kernel(call, target); // so each device is timed at its best
+            OpArgs args = on_device(call.args, call.data_device);
             auto run = [&, execution = execution] {
-                detail::TuningScope scope({cache_.get(), nullptr, nullptr});
+                detail::TuningScope scope({cache_.get(), nullptr});
                 detail::dispatch(call.op, args, execution);
                 finish(args.outputs);
             };
             warm(target, run);
             run();
+            TunedPoint point;
+            point.settings = {{"gpu", execution == Execution::GPU ? 1 : 0}};
             if (execution == Execution::CPU) {
                 expected = read_outputs(args);
             } else if (!agrees(expected, read_outputs(args))) {
-                result.rejected.push_back(name);
+                point.rejected = true;
+                result.points.push_back(point);
                 continue;
             }
-            const double ms = median_ms(run, options);
-            result.times.emplace_back(name, ms);
+            point.ms = median_ms(run, options);
+            result.points.push_back(point);
             if (execution == Execution::CPU) {
-                result.default_ms = ms;
+                result.default_ms = point.ms;
             }
-            if (result.chosen.empty() || ms < best_ms) {
-                best_ms = ms;
-                result.chosen = name;
+            if (result.best_settings.empty() || point.ms < result.best_ms) {
+                result.best_ms = point.ms;
+                result.best_settings = point.settings;
             }
         }
-        result.best_ms = best_ms;
+        result.search_s = seconds_since(search_start);
+        keep(result, result.op, result.device, 1);
+    };
 
-        detail::PlacementEntry entry = key;
-        entry.chosen = result.chosen;
-        entry.best_ms = result.best_ms;
-        entry.times = result.times;
-        entry.mode = "tested";
-        if (const detail::PlacementEntry* old = cache_->find_placement(entry)) {
-            replaced_places.push_back(*old);
+    // 1. Run once, recording every op call.
+    std::vector<RecordedCall> recorded;
+    {
+        detail::TuningScope scope({nullptr, &recorded});
+        finish(algorithm.run(inputs));
+    }
+
+    // 2. Kernel settings of each call, on the device it ran on.
+    for (const RecordedCall& call : recorded) {
+        tune_kernel(call, call.device);
+    }
+
+    // 3. The device of each Execution::Auto call.
+    for (const RecordedCall& call : recorded) {
+        if (call.execution == Execution::Auto) {
+            choose_device(call);
         }
-        added_places.push_back(entry);
-        cache_->store_placement(entry);
-        if (options.verbose) {
-            std::cout << "  " << result.op << " (data on " << result.data_device << ") " << key_text
-                      << ": " << result.chosen << " " << result.best_ms << " ms (cpu "
-                      << result.default_ms << " ms)\n";
-        }
-        report.placements.push_back(result);
     }
 
     // 4. Tested: the whole algorithm with the default and the tuned settings.
@@ -1238,19 +1038,13 @@ TuneReport Tuner::tune(const Algorithm& algorithm, const std::vector<Tensor>& in
     whole.min_time_s = std::max(options.min_time_s, 0.2);
     report.default_ms = median_ms([&] { finish(algorithm.run(inputs)); }, whole);
     report.tuned_ms = median_ms([&] { finish(algorithm.run(inputs, *this)); }, whole);
-    if ((!added.empty() || !added_places.empty()) && report.tuned_ms > report.default_ms * 1.02) {
+    if (!added.empty() && report.tuned_ms > report.default_ms * 1.02) {
         report.kept = false;
         for (const TuningEntry& entry : added) {
             cache_->erase(entry);
         }
         for (const TuningEntry& entry : replaced) {
             cache_->store(entry);
-        }
-        for (const detail::PlacementEntry& entry : added_places) {
-            cache_->erase_placement(entry);
-        }
-        for (const detail::PlacementEntry& entry : replaced_places) {
-            cache_->store_placement(entry);
         }
     }
     if (options.save) {

@@ -165,11 +165,11 @@ text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica,
   <text class="path" x="790" y="490">dispatcher.cpp</text>
   <g>
     <text class="m hot-t" x="562" y="520">a</text><text class="b" x="584" y="520">all tensors on one device: the <tspan font-weight="600">data device</tspan></text>
-    <text class="m tune-t" x="562" y="550">b</text><text class="b" x="584" y="550">Auto inside a tuned run → the tuner's stored device choice (a <tspan class="m">place</tspan> line), if any</text>
+    <text class="m tune-t" x="562" y="550">b</text><text class="b" x="584" y="550">tuner active → apply_tuning(): Auto → the stored device choice (gpu=0/1), if any</text>
     <text class="m hot-t" x="562" y="580">c</text><text class="b" x="584" y="580">execution_device(): Auto → cpu:0 · CPU → cpu:0 · GPU → the data's GPU, else CUDA, else Metal</text>
     <text class="m hot-t" x="562" y="610">d</text><text class="b" x="584" y="610">Registry::get(target) → Backend&amp;, its Stream</text>
     <text class="m hot-t" x="562" y="640">e</text><text class="b" x="584" y="640">lookup({op, target type, dtype}) → KernelFn</text>
-    <text class="m tune-t" x="562" y="670">f</text><text class="b" x="584" y="670">tunable kernel and a tuner active → apply_tuning(): stored settings → <tspan class="m">OpArgs::tuning</tspan></text>
+    <text class="m tune-t" x="562" y="670">f</text><text class="b" x="584" y="670">… and for a tunable kernel, its stored settings → <tspan class="m">OpArgs::tuning</tspan></text>
     <text class="m hot-t" x="562" y="700">g</text><text class="b" x="584" y="700">target == data device ? kernel(args, stream)</text>
     <text class="b" x="584" y="720">: copy the inputs over, run into fresh outputs there, copy the results back</text>
     <text class="s" x="562" y="752">MENSURFLOW_TRACE spans: the op, the kernel, every copy (seen by the trace hook and the dashboard)</text>

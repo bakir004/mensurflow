@@ -289,6 +289,42 @@ Device execution_device(Execution execution, Device data_device) {
     throw std::invalid_argument("invalid Execution value");
 }
 
+namespace {
+
+// Runs the kernel for `op` on `target`, copying the inputs there and the outputs back when the data
+// lives elsewhere.
+void run_on(OpId op, const OpArgs& args, Device target, Device data_device) {
+    const Tensor& source = args.inputs.empty() ? args.outputs[0] : args.inputs[0];
+    MENSURFLOW_TRACE(op_name(op), target, args.inputs, args.outputs);
+    Registry& registry = Registry::instance();
+    Backend& backend = registry.get(target);
+    const KernelFn kernel = registry.dispatcher().lookup({op, target.type, source.dtype()});
+    if (target == data_device) {
+        MENSURFLOW_TRACE("kernel", target, args.inputs, args.outputs);
+        kernel(args, backend.stream(target.index));
+        return;
+    }
+
+    // Run on another device: copy the inputs over, compute into fresh outputs there, copy back.
+    OpArgs moved = args;
+    for (Tensor& input : moved.inputs) {
+        input = input.to(target);
+    }
+    for (Tensor& output : moved.outputs) {
+        output = Tensor::empty(output.shape(), output.dtype(), target);
+    }
+    {
+        MENSURFLOW_TRACE("kernel", target, moved.inputs, moved.outputs);
+        kernel(moved, backend.stream(target.index));
+    }
+    for (std::size_t i = 0; i < args.outputs.size(); ++i) {
+        Tensor destination = args.outputs[i]; // shares storage with the caller's output
+        destination.copy_from(moved.outputs[i].to(data_device));
+    }
+}
+
+} // namespace
+
 void dispatch(OpId op, const OpArgs& args, Execution execution) {
     const bool factory = op == OpId::Uniform || op == OpId::Normal || op == OpId::Bernoulli;
     if (args.inputs.empty() && (!factory || args.outputs.empty())) {
@@ -305,55 +341,15 @@ void dispatch(OpId op, const OpArgs& args, Execution execution) {
             }
         }
     }
-
-    // Execution::Auto inside a tuned algorithm: the device the tuner measured as fastest for this
-    // call, if it stored one (see core/tuning.hpp).
-    Execution chosen = execution;
-    if (execution == Execution::Auto && tuning_active()) {
-        const Execution stored = auto_execution(op, args, data_device);
-        if (stored != Execution::Auto) {
-            chosen = stored;
-        }
-    }
-    const Device target = execution_device(chosen, data_device);
-    MENSURFLOW_TRACE(op_name(op), target, args.inputs, args.outputs);
-    Registry& registry = Registry::instance();
-    Backend& backend = registry.get(target);
-    const KernelKey key{op, target.type, source.dtype()};
-    const KernelFn kernel = registry.dispatcher().lookup(key);
-    // A tunable kernel gets the settings the active tuner chose (see core/tuning.hpp).
-    const TunableKernel* tunable = tuning_active() ? registry.dispatcher().tunable(key) : nullptr;
-    if (target == data_device) {
-        MENSURFLOW_TRACE("kernel", target, args.inputs, args.outputs);
-        if (tunable != nullptr) {
-            OpArgs tuned = args;
-            apply_tuning(key, *tunable, target, tuned);
-            kernel(tuned, backend.stream(target.index));
-            return;
-        }
-        kernel(args, backend.stream(target.index));
+    // Inside a tuned algorithm the tuner may choose the device (for Execution::Auto) and the
+    // kernel's settings (see core/tuning.hpp).
+    if (tuning_active()) {
+        OpArgs tuned = args;
+        const Device target = apply_tuning(op, execution, data_device, tuned);
+        run_on(op, tuned, target, data_device);
         return;
     }
-
-    // Run on another device: copy the inputs over, compute into fresh outputs there, copy back.
-    OpArgs moved = args;
-    for (Tensor& input : moved.inputs) {
-        input = input.to(target);
-    }
-    for (Tensor& output : moved.outputs) {
-        output = Tensor::empty(output.shape(), output.dtype(), target);
-    }
-    if (tunable != nullptr) {
-        apply_tuning(key, *tunable, target, moved);
-    }
-    {
-        MENSURFLOW_TRACE("kernel", target, moved.inputs, moved.outputs);
-        kernel(moved, backend.stream(target.index));
-    }
-    for (std::size_t i = 0; i < args.outputs.size(); ++i) {
-        Tensor destination = args.outputs[i]; // shares storage with the caller's output
-        destination.copy_from(moved.outputs[i].to(data_device));
-    }
+    run_on(op, args, execution_device(execution, data_device), data_device);
 }
 
 } // namespace mensurflow::detail

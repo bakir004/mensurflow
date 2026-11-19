@@ -58,8 +58,8 @@ text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica,
   <rect class="box" x="30" y="128" width="772" height="84" rx="6"/>
   <circle class="step-badge" cx="50" cy="148" r="10"/><text class="badge-t" x="46.5" y="152">1</text>
   <text class="h-sm" x="68" y="153">Record the calls</text>
-  <text class="b" x="68" y="176">algorithm.run(inputs) once, inside a <tspan class="m">TuningScope{record}</tspan>: dispatch() appends every call of a</text>
-  <text class="b" x="68" y="196">tunable kernel (key, device, arguments) and every op called with <tspan class="m">Execution::Auto</tspan>.</text>
+  <text class="b" x="68" y="176">algorithm.run(inputs) once, inside a <tspan class="m">TuningScope{record}</tspan>: dispatch() records every op call:</text>
+  <text class="b" x="68" y="196">the op, the execution asked for, where the data is, where it ran, its arguments (<tspan class="m">RecordedCall</tspan>).</text>
 
   <!-- S2 -->
   <rect class="box" x="30" y="230" width="772" height="66" rx="6"/>
@@ -108,7 +108,7 @@ text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica,
   <text class="h-sm" x="68" y="773">Device choice</text>
   <text class="b" x="180" y="773">for every op called with <tspan class="m">Execution::Auto</tspan></text>
   <text class="b" x="68" y="796">Each device with a kernel is timed through dispatch(), copies there and back included,</text>
-  <text class="b" x="68" y="815">after its own settings were tuned; it must agree with the CPU's result. Fastest → a <tspan class="m">place</tspan> line.</text>
+  <text class="b" x="68" y="815">after its own settings were tuned; it must agree with the CPU's result. Fastest → <tspan class="m">gpu=0</tspan> or <tspan class="m">gpu=1</tspan>.</text>
   <text class="s" x="68" y="831">512³ matmul with the data on the CPU: gpu 0.77 ms vs cpu 1.68 ms; a 65,536-element add stays on the CPU.</text>
 
   <!-- S8 -->
@@ -226,8 +226,8 @@ text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica,
   <text class="mm" x="854" y="870"># mensurflow tuning results</text>
   <text class="mf" x="854" y="887">machine Apple M3 Pro | Apple M3 Pro</text>
   <text class="mf" x="854" y="904">matmul cpu v1 m=512 n=512 k=512 threads=11 -&gt; rows=0 depth=32 cols=512 | 1.44 ms (default 2.02 ms) tested</text>
-  <text class="mf" x="854" y="921">place matmul f32 cpu 512x512 512x512 -&gt; gpu | 0.77 ms (cpu 1.68 ms, gpu 0.77 ms) tested</text>
-  <text class="s" x="854" y="937">kernel settings, then device choices; keyed exactly, so another size is not covered (size ranges: not done yet)</text>
+  <text class="mf" x="854" y="921">matmul auto v1 data=cpu f32 512x512 512x512 -&gt; gpu=1 | 0.77 ms (default 1.68 ms) tested</text>
+  <text class="s" x="854" y="937">one form for both: a device choice is device "auto", setting gpu; keyed exactly (size ranges: not done yet)</text>
 
   <!-- left to right arrows -->
   <path class="a-hot" d="M802 560 L818 560 L818 300 L832 300" marker-end="url(#ah-hot)"/>
@@ -251,8 +251,8 @@ text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica,
 
   <rect class="box-tune" x="340" y="998" width="300" height="96" rx="6"/>
   <text class="h-sm" x="356" y="1020">Execution::Auto ops</text>
-  <text class="s" x="356" y="1042">a stored place line for the op, dtype,</text>
-  <text class="s" x="356" y="1058">data device and shapes → cpu or gpu</text>
+  <text class="s" x="356" y="1042">a stored "auto" line for the op, data</text>
+  <text class="s" x="356" y="1058">device, dtype, shapes → gpu=0 or gpu=1</text>
   <text class="s" x="356" y="1080">none stored → the CPU, as without a tuner</text>
 
   <rect class="box-tune" x="670" y="998" width="300" height="96" rx="6"/>

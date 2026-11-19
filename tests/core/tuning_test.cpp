@@ -7,6 +7,7 @@
 #include "mensurflow/mensurflow.hpp"
 #include "test_util.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -46,7 +47,7 @@ void test_file_format() {
     a.op = "matmul";
     a.device = "metal";
     a.version = 1;
-    a.key = {{"m", 64}, {"n", 256}, {"k", 784}};
+    a.key = "m=64 n=256 k=784";
     a.config = {{"kernel", 1}, {"bm", 32}, {"bn", 64}};
     a.best_ms = 0.041;
     a.default_ms = 0.047;
@@ -54,7 +55,7 @@ void test_file_format() {
     detail::TuningEntry b = a;
     b.machine = "Machine B";
     b.device = "cpu";
-    b.key.push_back({"threads", 8});
+    b.key += " threads=8";
     b.config = {{"rows", 4}, {"depth", 64}, {"cols", 1024}};
     cache.store(a);
     cache.store(b);
@@ -76,16 +77,18 @@ void test_file_format() {
                   "another kernel version is not found");
     test::require(loaded.find(b.machine, "matmul", "cpu", 1, b.key) != nullptr, "second machine");
 
-    // Comments and blank lines are ignored; malformed lines name their line.
-    write_file("# comment\n\nmachine M\nmatmul cpu v1 m=1 n=2 k=3 -> rows=0 | 1.0 ms (default "
+    // Comments and blank lines are ignored, extra spaces in a key too; malformed lines name their
+    // line.
+    write_file("# comment\n\nmachine M\nmatmul cpu v1 m=1  n=2 k=3 -> rows=0 | 1.0 ms (default "
                "2.0 ms) tested\n");
     detail::TuningCache hand;
     hand.load(path);
-    test::require(hand.entries().size() == 1 && hand.entries()[0].key.size() == 3, "hand-written");
+    test::require(hand.entries().size() == 1 && hand.entries()[0].key == "m=1 n=2 k=3",
+                  "hand-written");
     const std::pair<const char*, const char*> bad[] = {
         {"matmul cpu v1 m=1 -> rows=0 | 1 ms (default 2 ms) tested\n", ":1:"},         // no machine
         {"machine M\nmatmul cpu v1 m=1 rows=0 | 1 ms (default 2 ms) tested\n", ":2:"}, // no ->
-        {"machine M\nmatmul cpu v1 m=x -> rows=0 | 1 ms (default 2 ms) tested\n", ":2:"},
+        {"machine M\nmatmul cpu v1 m=1 -> rows=x | 1 ms (default 2 ms) tested\n", ":2:"},
         {"machine M\nmatmul cpu 1 m=1 -> rows=0 | 1 ms (default 2 ms) tested\n", ":2:"},
         {"machine M\n\nmatmul cpu v1 m=1 -> rows=0 | fast\n", ":3:"},
     };
@@ -142,10 +145,13 @@ void test_tune(Device device) {
     test::require(first.calls.size() == 2,
                   "two distinct matmul calls, got " + std::to_string(first.calls.size()));
     for (const TunedCall& call : first.calls) {
-        test::require(!call.reused && call.tried > 0 && call.rejected == 0 && call.best_ms > 0 &&
-                          call.best_ms <= call.default_ms && !call.best.empty(),
-                      "measured " + call.key + ": tried " + std::to_string(call.tried) +
-                          ", rejected " + std::to_string(call.rejected));
+        const auto rejected = std::count_if(call.points.begin(), call.points.end(),
+                                            [](const TunedPoint& p) { return p.rejected; });
+        test::require(!call.reused && call.points.size() > 1 && rejected == 0 && call.best_ms > 0 &&
+                          call.best_ms <= call.default_ms && !call.best_settings.empty() &&
+                          call.device != "auto",
+                      "measured " + call.key + ": " + std::to_string(call.points.size()) +
+                          " points, " + std::to_string(rejected) + " rejected");
     }
     test::require(first.default_ms > 0 && first.tuned_ms > 0, "the whole algorithm was timed");
     if (first.kept) {
@@ -187,47 +193,22 @@ void test_applied(Device device) {
     std::remove(path);
 }
 
-// Device choice lines: round trip, and malformed ones name their line.
+// Device choice lines are ordinary lines with device "auto" and the setting gpu.
 void test_placement_format() {
     write_file("machine M\n"
-               "place matmul f32 cpu 256x1024 1024x4096 -> gpu | 0.8000 ms (cpu 8.4000 ms, gpu "
-               "0.8000 ms) tested\n"
-               "place sum f32 metal scalar -> cpu | 0.0100 ms (cpu 0.0100 ms) tested\n");
+               "matmul auto v1 data=cpu f32 256x1024 1024x4096 -> gpu=1 | 0.8000 ms (default "
+               "8.4000 ms) tested\n");
     detail::TuningCache cache;
     cache.load(path);
-    test::require(cache.placements().size() == 2, "two placements read");
-    const detail::PlacementEntry& first = cache.placements()[0];
-    test::require(
-        first.op == "matmul" && first.dtype == "f32" && first.data_device == "cpu" &&
-            first.shapes == std::vector<std::vector<std::int64_t>>{{256, 1024}, {1024, 4096}} &&
-            first.chosen == "gpu" && first.times.size() == 2 && first.times[0].first == "cpu" &&
-            std::abs(first.times[0].second - 8.4) < 1e-9 && first.mode == "tested",
-        "placement fields");
-    test::require(cache.placements()[1].shapes == std::vector<std::vector<std::int64_t>>{{}},
-                  "a 0-d input is written 'scalar'");
-    cache.save(path);
-    detail::TuningCache again;
-    again.load(path);
-    test::require(again.placements().size() == 2 && again.find_placement(first) != nullptr &&
-                      again.find_placement(first)->times == first.times,
-                  "placement round trip");
-    const char* const bad[] = {
-        "machine M\nplace matmul f32 cpu 8x8 -> npu | 1 ms (cpu 1 ms) tested\n",
-        "machine M\nplace matmul f32 cpu 8x8 8xq -> gpu | 1 ms (cpu 1 ms) tested\n",
-        "machine M\nplace matmul f32 cpu 8x8 -> gpu | 1 ms (cpu 1) tested\n",
-        "machine M\nplace matmul f32 cpu 8x8 -> gpu | fast\n",
-    };
-    for (const char* text : bad) {
-        write_file(text);
-        detail::TuningCache broken;
-        bool threw = false;
-        try {
-            broken.load(path);
-        } catch (const std::runtime_error& e) {
-            threw = std::string(e.what()).find(":2:") != std::string::npos;
-        }
-        test::require(threw, std::string("malformed placement names line 2: ") + text);
-    }
+    const detail::TuningEntry* found =
+        cache.find("M", "matmul", "auto", 1, "data=cpu f32 256x1024 1024x4096");
+    test::require(found != nullptr && found->config == TuningValues{{"gpu", 1}} &&
+                      std::abs(found->default_ms - 8.4) < 1e-9,
+                  "device choice read");
+    detail::OpArgs args;
+    args.inputs = {Tensor::zeros({256, 1024}), Tensor::zeros({1024, 4096})};
+    test::require(detail::placement_key(args, Device{DeviceType::CPU, 0}) == found->key,
+                  "placement_key matches the line");
     std::remove(path);
 }
 
@@ -242,9 +223,9 @@ void test_placement_applied() {
         "machine " + detail::machine_name() +
         "\nmatmul metal v1 m=8 n=8 k=8 -> kernel=7 | 1 ms (default 1 ms) tested\n";
     write_file(results);
-    one.run({a}, Tuner(path)); // no placement: Auto stays on the CPU
+    one.run({a}, Tuner(path)); // no device choice: Auto stays on the CPU
     write_file(results +
-               "place matmul f32 cpu 8x8 8x8 -> gpu | 1 ms (cpu 2 ms, gpu 1 ms) tested\n");
+               "matmul auto v1 data=cpu f32 8x8 8x8 -> gpu=1 | 1 ms (default 2 ms) tested\n");
     const Tuner tuner(path);
     test::require_throws<std::invalid_argument>([&] { one.run({a}, tuner); },
                                                 "the stored placement sent the call to Metal");
@@ -265,24 +246,35 @@ void test_tune_placement() {
     fast.min_samples = 2;
     Tuner tuner(path);
     const TuneReport report = tuner.tune(net, inputs, fast);
-    test::require(report.placements.size() == 2,
-                  "matmul and add placed, got " + std::to_string(report.placements.size()));
-    for (const PlacedCall& p : report.placements) {
-        test::require((p.chosen == "cpu" || p.chosen == "gpu") && p.times.size() == 2 &&
-                          p.rejected.empty() && p.best_ms > 0 && p.best_ms <= p.default_ms &&
-                          p.data_device == "cpu:0",
-                      "placement of " + p.op + ": chose " + p.chosen);
-        std::cout << "    " << p.op << " " << p.key << ": " << p.chosen << " (cpu " << p.default_ms
-                  << " ms, best " << p.best_ms << " ms)\n";
+    auto placements = [](const TuneReport& r) {
+        std::vector<TunedCall> out;
+        for (const TunedCall& c : r.calls) {
+            if (c.device == "auto") {
+                out.push_back(c);
+            }
+        }
+        return out;
+    };
+    const std::vector<TunedCall> placed = placements(report);
+    test::require(placed.size() == 2,
+                  "matmul and add placed, got " + std::to_string(placed.size()));
+    for (const TunedCall& p : placed) {
+        test::require(p.points.size() == 2 && !p.points[0].rejected && !p.points[1].rejected &&
+                          p.best_ms > 0 && p.best_ms <= p.default_ms &&
+                          p.key.rfind("data=cpu f32 ", 0) == 0 && p.best_settings.size() == 1 &&
+                          p.best_settings[0].first == "gpu",
+                      "device choice of " + p.op + ": " + to_string(p.best_settings));
+        std::cout << "    " << p.op << " " << p.key << ": " << to_string(p.best_settings)
+                  << " (cpu " << p.default_ms << " ms, best " << p.best_ms << " ms)\n";
     }
     const auto expected = net.run(inputs)[0].to_vector<float>();
     const auto tuned = net.run(inputs, tuner)[0].to_vector<float>();
     test::require(test::matches_f32(tuned, expected), "placed run gives the default's values");
     if (report.kept) {
         const TuneReport second = tuner.tune(net, inputs, fast);
-        test::require(second.placements.size() == 2 && second.placements[0].reused &&
-                          second.placements[1].reused,
-                      "second tune reuses the placements");
+        const std::vector<TunedCall> again = placements(second);
+        test::require(again.size() == 2 && again[0].reused && again[1].reused,
+                      "second tune reuses the device choices");
         test::require(Tuner(path).describe() == tuner.describe(), "placements survive a reload");
     }
     std::remove(path);
@@ -294,10 +286,10 @@ namespace {
 
 // A batch objective from a per-point one, for detail::search.
 template <typename F> detail::Measure each_point(F f) {
-    return [f](const std::vector<detail::Probe>& probes) mutable {
+    return [f](const std::vector<detail::TuningConfig>& points) mutable {
         std::vector<double> times;
-        for (const detail::Probe& p : probes) {
-            times.push_back(f(p.config, p.region, p.step));
+        for (const detail::TuningConfig& p : points) {
+            times.push_back(f(p));
         }
         return times;
     };
@@ -325,40 +317,34 @@ void test_search() {
                   "allowed points of the region");
 
     for (const SearchMethod method : {SearchMethod::BinarySampling, SearchMethod::Exhaustive}) {
-        std::map<detail::TuningPoint, double> seen;
-        std::set<std::string> steps;
-        detail::TuningPoint best{};
+        std::map<detail::TuningConfig, double> seen;
+        detail::TuningConfig best;
         double best_value = 1e300;
         bool all_allowed = true;
         detail::search(t, args, space, method, 4, 4, // 4 levels: every value of 16
-                       each_point([&](const detail::TuningConfig& c, const std::string& region,
-                                      const std::string& step) {
-                           all_allowed = all_allowed && t.allowed(args, c) && region == "bowl";
-                           steps.insert(step);
+                       each_point([&](const detail::TuningConfig& c) {
+                           all_allowed = all_allowed && t.allowed(args, c);
                            const double a = static_cast<double>(c.values[0]) - 11;
                            const double b = static_cast<double>(c.values[1]) - 5;
                            const double value = a * a + 2 * b * b + 0.5 * a * b + 1;
-                           seen[c.values] = value;
+                           seen[c] = value;
                            if (value < best_value) {
                                best_value = value;
-                               best = c.values;
+                               best = c;
                            }
                            return value;
                        }));
         const std::string name = search_method_name(method);
         test::require(all_allowed, name + ": every measured point is allowed");
-        test::require(best[0] == 11 && best[1] == 5,
-                      name + ": found the minimum, got a=" + std::to_string(best[0]) +
-                          " b=" + std::to_string(best[1]));
+        test::require(best.values[0] == 11 && best.values[1] == 5,
+                      name + ": found the minimum, got a=" + std::to_string(best.values[0]) +
+                          " b=" + std::to_string(best.values[1]));
         if (method == SearchMethod::BinarySampling) {
             // Whole lines through the current point, a few passes: a fraction of the grid.
             test::require(seen.size() < 80, "binary sampling: measured " +
                                                 std::to_string(seen.size()) + " of 220 points");
-            test::require(steps.count("start") && steps.count("a") && steps.count("b"),
-                          "binary sampling: steps are the start and the arguments");
         } else {
-            test::require(seen.size() == 220 && steps == std::set<std::string>{"grid"},
-                          "exhaustive: every allowed point once");
+            test::require(seen.size() == 220, "exhaustive: every allowed point");
         }
     }
     // A plateau with noise on it, measured on an M3 Pro (CPU matmul 512^3, depth 32 .. 512): a
@@ -378,16 +364,15 @@ void test_search() {
             {32, 1.424}, {64, 1.527}, {128, 1.679}, {256, 1.665}, {512, 1.682}};
         std::int64_t found = 0;
         double lowest = 1e300;
-        detail::search(
-            line_kernel, args, line, SearchMethod::BinarySampling, 4, 2,
-            each_point([&](const detail::TuningConfig& c, const std::string&, const std::string&) {
-                const double value = ms.at(c.values[0]);
-                if (value < lowest) {
-                    lowest = value;
-                    found = c.values[0];
-                }
-                return value;
-            }));
+        detail::search(line_kernel, args, line, SearchMethod::BinarySampling, 4, 2,
+                       each_point([&](const detail::TuningConfig& c) {
+                           const double value = ms.at(c.values[0]);
+                           if (value < lowest) {
+                               lowest = value;
+                               found = c.values[0];
+                           }
+                           return value;
+                       }));
         test::require(found == 32, "plateau: found depth " + std::to_string(found));
     }
     test::require(parse_search_method("binary") == SearchMethod::BinarySampling &&

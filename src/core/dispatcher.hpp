@@ -148,6 +148,17 @@ struct TuningConfig {
     int size = 0;
 };
 
+// Ordered, so a point of the search can be a map key (each point is measured once).
+inline bool operator<(const TuningConfig& a, const TuningConfig& b) {
+    return std::tie(a.size, a.values) < std::tie(b.size, b.values);
+}
+
+inline bool operator==(const TuningConfig& a, const TuningConfig& b) {
+    return a.size == b.size && a.values == b.values;
+}
+
+inline bool operator!=(const TuningConfig& a, const TuningConfig& b) { return !(a == b); }
+
 // Everything a kernel needs. Ops validate shapes and dtypes before building this, so kernels
 // may assume the inputs agree. All tensors are on the same device.
 struct OpArgs {
@@ -188,8 +199,8 @@ struct OpArgs {
 using KernelFn = void (*)(const OpArgs& args, Stream& stream);
 
 // One argument of the function the auto-tuner minimizes: a parameter of the kernel and the values
-// it may take, in order along the axis (the binary search assumes the time falls and then rises
-// along it, so neighbours must be neighbours in effect, not just in number).
+// it may take, in order along the axis. Binary sampling picks its samples by position on the axis
+// (the ends, the middle, the quarters), so neighbours should be neighbours in effect.
 struct SearchAxis {
     int param = 0; // index into TunableKernel::params
     std::vector<std::int64_t> values;
@@ -259,8 +270,8 @@ class Dispatcher {
 
 // The device an op runs on, given the caller's choice and the device its inputs live on:
 // CPU -> cpu:0; GPU -> data_device if it is a GPU, else the first available CUDA or Metal
-// device (runtime_error if there is none); Auto -> cpu:0 for now. This is the one place a future
-// auto-tuner would decide.
+// device (runtime_error if there is none); Auto -> cpu:0. Inside a tuned algorithm, dispatch()
+// first replaces Auto with the device the tuner stored for the call, if any (core/tuning.hpp).
 Device execution_device(Execution execution, Device data_device);
 
 // Runs `op` where `execution` says (see execution_device). The inputs must all be on one device;

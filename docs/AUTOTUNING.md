@@ -23,7 +23,13 @@ mf::TuneReport report = tuner.tune(network, {x, w1, w2});
 auto out = network.run({x, w1, w2}, tuner);    // runs with the stored settings
 ```
 
-`examples/tune_mlp.cpp` is a complete program (`build/tune_mlp [batch] [cpu]`). The observability
+`client/tune_simple.cpp` (`build/client_tune_simple`) is the least a user has to write: an
+`Algorithm`, `Tuner`, `tune()`, `run(inputs, tuner)`, everything at its defaults.
+`client/tune.cpp` (`build/client_tune [file]`) shows the whole workflow from a user's side, with
+only the public API: the tunable kernels, an `Algorithm` whose ops use `Execution::Auto`, the
+options, the report (settings and device per call), running with and without the tuner, and the
+saved file; run it twice to see the stored results reused. `examples/tune_mlp.cpp` is a larger
+network (`build/tune_mlp [batch] [cpu]`). The observability
 dashboard has an **Autotune** section on every op page that tunes the op for a device and size and
 shows the function being minimized, the fixed kernel parameters, the arguments at the minimum against
 the defaults, the search point by point, and slices of the time through the minimum
@@ -142,12 +148,16 @@ matmul metal v1 m=256 n=4096 k=1024 -> kernel=2 bm=0 bn=0 bk=0 tm=0 tn=0 sg_m=0 
 `<op> <device> v<version> <key> -> <settings> | <best> ms (default <ms> ms) <mode>`. Settings a
 kernel does not use are 0. A malformed line is reported with its line number when the file is read.
 
-Device choices have their own lines (times include the copies):
+A device choice for `Execution::Auto` is a line of the same form: the device is `auto`, the key is
+where the data lives, the dtype and the input shapes, and the one setting is `gpu` (0: CPU, the
+default; 1: GPU). Times include copying the inputs to the device and the result back:
 
 ```
-place matmul f32 cpu 512x512 512x512 -> gpu | 0.7584 ms (cpu 1.5547 ms, gpu 0.7584 ms) tested
-place add f32 cpu 65536 65536 -> cpu | 0.0307 ms (cpu 0.0307 ms, gpu 0.2800 ms) tested
+matmul auto v1 data=cpu f32 512x512 512x512 -> gpu=1 | 0.7584 ms (default 1.5547 ms) tested
+add auto v1 data=cpu f32 65536 65536 -> gpu=0 | 0.0307 ms (default 0.0307 ms) tested
 ```
+
+Lines in the older `place ...` format are skipped when the file is read, and measured again.
 
 ## Tunable kernels so far
 
@@ -176,3 +186,21 @@ In the backend's `register_kernels`, next to `register_kernel`, register a `Tuna
 
 dispatch() only looks for tunable kernels while a tuner is active (`Algorithm::run(inputs, tuner)`
 or `Tuner::tune`), so calls outside an algorithm cost nothing extra.
+
+## The structures
+
+| structure | where | purpose |
+|---|---|---|
+| `TunableKernel` | `src/core/dispatcher.hpp` | what a backend registers: name, version, key, parameters, defaults, `space`, `allowed` |
+| `SearchRegion`, `SearchAxis` | `src/core/dispatcher.hpp` | the space: one region per kernel variant, each axis a parameter and its ordered values |
+| `TuningConfig` | `OpArgs::tuning` | the settings of one call, in `params` order; also a point of the search |
+| `TuningEntry`, `TuningCache` | `src/core/tuning.hpp` | one line of the results file, and the file in memory (`find`, `store`, `erase`, `load`, `save`) |
+| `RecordedCall`, `TuningContext`, `TuningScope` | `src/core/tuning.hpp` | what `dispatch()` consults: a cache to apply, a list to record calls into |
+| `Measure`, `search()` | `src/core/tuning.hpp` | the objective (points → ms) and the search over a kernel's space |
+| `Algorithm`, `Tuner`, `TuneOptions` | `include/mensurflow/tuning.hpp` | the public API |
+| `TuneReport`, `TunedCall`, `TunedPoint` | `include/mensurflow/tuning.hpp` | what `tune()` found: per call the default and chosen settings, and every point measured |
+
+A device choice is not a separate mechanism: it is a call with device `auto` and one setting, `gpu`,
+stored, reported and applied like kernel settings. While a scope is active, `dispatch()` calls one
+hook, `apply_tuning()`, which picks the device (a stored choice for `Execution::Auto`), records the
+call, and fills `args.tuning`.

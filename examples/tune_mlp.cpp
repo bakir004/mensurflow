@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
     for (const mf::TunedCall& call : report.calls) {
         std::printf("%-8s %-10s %-26s %10.4f %10.4f %7.2fx  %s%s\n", call.op.c_str(),
                     call.device.c_str(), call.key.c_str(), call.default_ms, call.best_ms,
-                    call.default_ms / call.best_ms, call.best.c_str(),
+                    call.default_ms / call.best_ms, mf::to_string(call.best_settings).c_str(),
                     call.reused ? "  (stored earlier)" : "");
     }
     std::printf("\nwhole network: %.4f ms with the defaults, %.4f ms tuned (%.2fx)%s\n",

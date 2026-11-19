@@ -16,3 +16,6 @@ observability/results/
 
 # Auto-tuning results are per machine (docs/AUTOTUNING.md)
 mensurflow_tuning.txt
+
+# Symlink to build/compile_commands.json for editors (clangd).
+compile_commands.json

@@ -50,13 +50,12 @@ Programs page are empty. Turning it on adds about one atomic load per op call wh
 
 `serve.py` stores every result in `results/observe.db`, a SQLite file. Each row holds the time, the kind, the
 op, the device, and the full result as zlib-compressed JSON. The kinds are `run` (Kernels and Sweep cells,
-tagged with the tab and column), `call`, `program`, `tune` and `placemap`. When the page loads, it restores:
+tagged with the tab and column), `call`, `program` and `tune`. When the page loads, it restores:
 - the Kernels cells: the latest result per op, column and size
 - the sweeps: the latest per op, column and execution
 - the last call breakdown
 - the last demo trace
 - the last autotune per op and device (the tuned settings themselves live in `results/tuning.txt`)
-- the last matmul CPU-or-GPU map (or the one still being measured)
 
 *Clear history* empties the file. An older `results/history.jsonl` is imported once and renamed. To look at the
 data outside the dashboard:
@@ -119,22 +118,13 @@ address bar keeps the page (`#kernels`, `#programs`, `#history`, `#op/<name>`), 
   checks every candidate setting against the default's result, times each one, and keeps the fastest in
   `results/tuning.txt`; *Measure again* re-measures a call that is already stored. For each tuned call it shows:
   the input parameters with their values, the tuned parameters next to their defaults (changed ones in green),
-  the call's and the whole op's time before and after, and a chart of every candidate's time, fastest first,
-  coloured by kernel variant, against the default (hover for the full settings). Below that, every stored result
+  the call's and the whole op's time before and after, the search as a chart of every measured point in order
+  (coloured by kernel variant, hollow when timing stopped early) against the default, and slices of the time along
+  each argument through the best point. Below that, every stored result
   for the op (all devices and machines in the file). With execution **auto** (the default here) it also chooses
   the device for each `Execution::Auto` call and shows a *Device choice* panel: each device's time per call
   including the copies there and back, the chosen one, and the speedup over the CPU; stored choices are listed too.
   So far only `matmul` has tunable settings; every op can have its device chosen.
-- **CPU or GPU across shapes** (matmul page, in Autotune; `observe placemap`, `/api/placemap/*`): where matmul is
-  faster, the CPU or the GPU, over m × n × k from 2<sup>1</sup> to 2<sup>12</sup>, with the data on the chosen device
-  (the other device's time includes the copies there and back). Level 0 measures the 12 powers of two per axis;
-  each further level adds the points halfway between the existing ones on the log scale (2<sup>6.5</sup> ≈ 91), up to
-  43 sizes per axis at level 2 (79,507 shapes). Within a level the cheapest shapes go first. *Measure* runs in the
-  background and the page polls for new points, so the squares appear as they are measured, the finer levels as
-  smaller squares over the coarser ones; *Stop* keeps what was measured. The map shows m × n on log axes for the k
-  chosen with the slider; the strip under it shows, per k, the share of shapes where the GPU won (click to jump).
-  The last map is stored (kind `placemap`) and shown again after a reload. Each shape is the minimum of three runs
-  per device (one more run when one device is 8× faster); kernels run with their default settings.
 - **Programs**: a timeline of kernel calls, one lane per thread, with totals per op. *Trace demo program* runs an
   MLP training step (forward, backward, concat, pad, dropout) on the chosen device. *Open trace file* loads any
   file written by `TraceCollector::write()`. The same files also open in chrome://tracing and in

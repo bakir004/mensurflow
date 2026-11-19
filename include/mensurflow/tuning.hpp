@@ -9,7 +9,7 @@
 //   tuner.tune(mlp, {x, w1, w2});               // tunes the calls mlp makes on these inputs
 //   auto out = mlp.run({x, w1, w2}, tuner);     // runs with the stored settings
 //
-// Two things are tuned:
+// Two things are tuned, both as settings of a call (see TunedCall):
 //   - the settings of kernels that declare some (so far matmul on Metal, and on CPUs without AVX2);
 //   - the device of every op the algorithm calls with Execution::Auto (the default of every op):
 //     each available device is timed with the copies there and back, and the fastest is stored.
@@ -94,76 +94,40 @@ struct TuneOptions {
 
 using TuningValues = std::vector<std::pair<std::string, std::int64_t>>; // name = value, in order
 
+// "name=value name=value ...".
+std::string to_string(const TuningValues& values);
+
 // One point the search measured for a call.
-struct TunedCandidate {
+struct TunedPoint {
     TuningValues settings;
     double ms = 0;         // median per call; 0 when rejected
     bool rejected = false; // its result disagreed with the default's, so it was not timed
-    std::string region;    // the region it belongs to ("" for the default)
-    // What the search was doing when it measured the point: "default", "start" (of a region), the
-    // name of the argument being sampled, or "grid" (exhaustive).
-    std::string step;
-    int sweep = 0; // binary sampling: the pass over the axes, from 1
-    int level = 0; // binary sampling: 0 the ends of the line, 1 the middle, 2 the quarters, ...
-    bool stopped = false; // timing stopped early: already slower than give_up x the best
+    bool stopped = false;  // timing stopped early: already slower than give_up x the best
 };
 
-// One argument of the minimized function: a kernel parameter and the values it may take.
-struct TuningArgument {
-    std::string name;
-    std::vector<std::int64_t> values; // in order along the axis
-};
-
-// One region of a kernel's settings (a kernel variant): its arguments, and the fixed parameters.
-struct TuningRegion {
-    std::string name;
-    TuningValues start; // where binary sampling starts
-    std::vector<TuningArgument> arguments;
-    std::size_t points = 0; // allowed points (what an exhaustive search measures)
-};
-
-// One tunable call of the algorithm and what tuning found for it: the minimum of
+// One call the algorithm makes and what tuning found for it: the settings with the lowest time,
 //   time(settings; key)
-// over the kernel's search space, with the key (the call's input sizes) fixed.
+// with the key (the call's input sizes) fixed. Two kinds of call are tuned:
+//   - a tunable kernel: `device` is where it ran ("metal:0"), the settings are the kernel's;
+//   - the device of an op called with Execution::Auto: `device` is "auto", the key names where the
+//     data lives, the dtype and the input shapes, and the one setting is gpu (0: CPU, 1: GPU).
+//     Times include copying the inputs to the device and the result back.
 struct TunedCall {
-    std::string op;          // e.g. "matmul"
-    std::string device;      // e.g. "metal:0"
-    std::string key;         // e.g. "m=64 n=256 k=784"
-    std::string best;        // the chosen settings, e.g. "kernel=1 bm=32 ..."
-    TuningValues key_values; // the key as name = value (the input sizes the call is tuned for)
-    TuningValues default_settings; // what the kernel uses without tuning
+    std::string op;                // e.g. "matmul"
+    std::string device;            // e.g. "metal:0", or "auto"
+    std::string key;               // e.g. "m=64 n=256 k=784", or "data=cpu f32 64x784 784x256"
+    TuningValues default_settings; // what runs without tuning
     TuningValues best_settings;    // the chosen settings
-    double best_ms = 0;
     double default_ms = 0;
-    int tried = 0;       // configurations measured
-    int rejected = 0;    // configurations whose result disagreed with the default's (not used)
-    bool reused = false; // the result was already stored and was not measured again
-    std::string method;  // the search method, e.g. "binary"
-    std::vector<TuningRegion> regions;      // the search space
-    std::size_t space_size = 0;             // allowed points in all regions
-    std::size_t confirmed = 0;              // points timed again at the end, the default included
-    int stopped = 0;                        // points whose timing stopped early
-    double search_s = 0;                    // seconds the search took (confirmation excluded)
-    std::vector<TunedCandidate> candidates; // every point measured, in the order measured
-};
-
-// One op called with Execution::Auto and the device tuning chose for it. Times include copying the
-// inputs to that device and the result back to where the data lives.
-struct PlacedCall {
-    std::string op;          // e.g. "matmul"
-    std::string data_device; // where the inputs live, e.g. "cpu:0"
-    std::string key;         // dtype and input shapes, e.g. "f32 256x1024 1024x4096"
-    std::string chosen;      // "cpu" or "gpu"
     double best_ms = 0;
-    double default_ms = 0; // what Execution::Auto does without tuning (the CPU)
-    std::vector<std::pair<std::string, double>> times; // "cpu"/"gpu" -> ms; absent if rejected
-    std::vector<std::string> rejected; // executions whose result disagreed with the CPU's
-    bool reused = false;               // stored earlier and not measured again
+    bool reused = false;            // the result was already stored and was not measured again
+    std::size_t space_size = 0;     // points the search could have measured
+    double search_s = 0;            // seconds the search took
+    std::vector<TunedPoint> points; // every point measured, in order; the first is the default
 };
 
 struct TuneReport {
     std::vector<TunedCall> calls;
-    std::vector<PlacedCall> placements; // the ops called with Execution::Auto
     // The whole algorithm, median ms per run, with every kernel's own settings and with the
     // tuned ones. When the tuned run was slower, the new results were dropped (`kept` is false).
     double default_ms = 0;
