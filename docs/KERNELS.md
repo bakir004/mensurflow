@@ -33,9 +33,14 @@ bit-identical CPU/GPU reductions.
 What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
 dispatcher where to run. CPU kernels are in
-`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing}/`; each is one loop that OpenMP
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv,softmax,loss}/` (the optimizers and normalization are `optimizer.cpp` and `normalization.cpp` there); each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
-which have separate sequential and parallel versions.
+which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
+by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`, `argmin`, `var`, `std`) have a `*_sequential` kernel
+(the correctness baseline) and a `*_parallel` one built on `parallel_for` / `parallel_sum` in
+`src/backends/cpu/parallel.hpp` (no pragmas in the kernels; the pieces run on the GEMM's thread
+pool). Their splits depend only on the shape, so each gives the same bits at every thread count.
+Measured results: [docs/benchmarks/asja-ryzen9-5900x-2026-11-14.md](benchmarks/asja-ryzen9-5900x-2026-11-14.md).
 Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 
 |Operation|CPU|CUDA|Metal|
@@ -50,7 +55,9 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`matvec`|OpenMP, double accumulation per row|—|—|
 |`sum`, `mean`, `max`|OpenMP, float32; full and arbitrary-axis reductions|—|—|
 |`argmax`|OpenMP, last-axis float32 input with int64 output|—|—|
-|`matmul`|packed AVX2/FMA GEMM on our own thread pool (scalar fallback without AVX2); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|—|
+|`argmin`|`*_sequential` and `*_parallel` (rows across threads; rows longer than 16384 split into blocks merged in order), exactly the sequential result; last-axis float32 input with int64 output; argmax's rules (ties select the first index, the first NaN wins); forward only (not differentiable)|—|—|
+|`var`, `std`|`*_sequential` and `*_parallel` (the axis cut into fixed blocks of about 32K elements merged with Chan's formula; contiguous axes as 8 interleaved Welford lanes, strided axes 256 output positions at a time; same bits at every thread count), float32, any axis with `keepdim`; one-pass Welford in double; `correction` (default 1); NaN when `count - correction <= 0`; forward, backward and CPU autograd; see [CPU variance and standard deviation](#cpu-variance-and-standard-deviation)|—|—|
+|`matmul`|packed AVX2/FMA GEMM on our own thread pool (without AVX2: a cache-blocked loop whose tile sizes are set with `cpu::set_matmul_blocking`); at or above OpenBLAS 0.3.34 on the measured shapes (Ryzen 9 5900X, see [MATMUL_OPTIMIZATION.md](MATMUL_OPTIMIZATION.md)); CPU autograd backward|—|own shaders: simdgroup_matrix tiles (default, 0.76-0.89x MPS from 1024^3, faster below), a plain tiled kernel, or MPS; tile sizes set with `metal::set_metal_gemm_config` (see `matmul_tile_benchmark`)|
 |`gemm`|alpha, beta and transposes|—|—|
 |`gemm_strided_batched`|packed GEMM per matrix; batch broadcasting, transposes, alpha/beta; threads split the batch or each matrix|—|—|
 |`scal`, `asum`, `nrm2`, `copy`, `gemv`|OpenMP, float32|—|—|
@@ -67,10 +74,21 @@ Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
 |`dropout`|OpenMP, F32 forward/backward and CPU autograd; saved Bool mask, inverted scaling and explicit train/eval|—|—|
 |`one_hot`|OpenMP, I64 indices and output; arbitrary-rank indices, explicit class count; forward only|—|—|
 |`embedding`|OpenMP, F32 weights/output and I64 indices; forward/backward and CPU autograd; repeated-index gradients accumulate deterministically|—|—|
+|`conv2d`|`*_sequential` and `*_parallel`, float32 NCHW. Parallel, three strategies chosen by thread count and shape (`conv2d_forward_strategy`, `conv2d_backward_data_strategy`): folded (im2col of a batch chunk of at most 32 MB on all threads, one large packed GEMM), whole images per thread, and (forward only) tiles of output pixels (each thread runs im2col of a tile of at most 384 pixels into its own buffer, the single-threaded GEMM and the bias); tiles for batches below the core count, short depths (K <= 170) and layers with <= 64 output channels, whole images for 1x1/stride 1 layers and small images when the batch spreads evenly over the cores (busiest thread at most 1.25x the average), folded otherwise; whole images and tiles run on at most one thread per physical core, each pinned to its core (`parallel_for_pinned`); col2im one task per (image, channel) plane; weight gradient in fixed image groups or one folded GEMM, no atomics; same bits at every thread count. Sequential: im2col + single-threaded packed GEMM per image; stride and zero padding per dimension, optional bias; dilation 1 and groups 1 only; forward, backward (data via col2im, weight, bias) and CPU autograd; see [CPU convolution and pooling](#cpu-convolution-and-pooling)|—|—|
+|`max_pool2d`|`*_sequential` and `*_parallel` (one task per output row, with AVX2 chosen at run time 8 output columns at a time, lane by lane with the sequential tie and NaN rules; columns whose window touches the padding stay scalar; backward one task per plane, so the scatter through the indices never races), float32 NCHW; exactly the sequential results at every thread count; kernel, stride (default = kernel) and zero padding per dimension; I64 indices saved per output element; forward, backward (scatter-add through the indices) and CPU autograd|—|—|
+|`avg_pool2d`|`*_sequential` and `*_parallel` (one task per output row; backward gathers per input row, adding in the sequential scatter's order), float32 NCHW; same bits at every thread count; kernel, stride (default = kernel) and zero padding per dimension; padding counts in the divisor (`count_include_pad = true`), `ceil_mode = false`; forward, backward and CPU autograd|—|—|
+|`softmax`, `log_softmax`|OpenMP over lines (one line per thread, so the same bits at every thread count), any axis; stable (max subtracted, double sums); fully masked lines give 0 / -inf; forward/backward and CPU autograd|—|—|
+|`cross_entropy`|OpenMP, fused log-softmax + NLL per row with I64 labels, no softmax stored; none/sum/mean; forward/backward and CPU autograd|—|—|
+|`mse_loss`, `binary_cross_entropy_with_logits`|OpenMP, none/sum/mean; BCE uses max(x,0) - xt + log1p(exp(-\|x\|)) and a cancellation-free gradient; forward/backward and CPU autograd for input and target|—|—|
+|`attention`|naive: `gemm_strided_batched`, `where` with -inf, `softmax`, `gemm_strided_batched`; Bool mask and causal flag; fully masked queries give zeros; forward only|—|—|
+|`sgd`, `adam`, `adamw`|OpenMP, F32, AVX2 kernels chosen at run time (bit-identical to the portable loop), one fused pass over parameter and state, in place (SGD with momentum and weight decay; Adam with bias correction and L2 decay; AdamW with decoupled decay); PyTorch's formulation; same bits at every thread count; no autograd (the step after backward)|—|—|
+|`layer_norm`, `rms_norm`|OpenMP over lines (one line per thread; line sums in 8 float lanes combined in double), any number of trailing normalized dimensions, optional weight/bias; forward/backward and CPU autograd for input, weight and bias; weight/bias gradients added in 64 fixed blocks, so the same bits at every thread count|—|—|
+|`batch_norm`|OpenMP over planes (`[N,C,...]`, NCHW) or row blocks (`[N,C]`); training (batch statistics, running mean/unbiased variance updated in place) and evaluation (running statistics); forward/backward and CPU autograd; per-channel sums added in a fixed order, so the same bits at every thread count|—|—|
 |`split`|views (no kernel)|views|views|
 |`transpose`, `permute`, `slice`, `expand`, `unsqueeze`, `view`|views (no kernel); `contiguous()` packs them, with a tiled kernel for 2D transposes|—|—|
 
-CUDA was tested on an RTX 3060; Metal has never been built on real hardware. The
+CUDA was tested on an RTX 3060; Metal is built and tested on an M3 Pro (`dot`, the elementwise ops
+and `matmul` pass the device tests). The
 older `axpy`/`matmul` code on the `prs::` API (CUDA, Metal, OpenCL) was removed in the restart and
 exists only in git history.
 
@@ -141,6 +159,143 @@ autograd; their explicit backward calls also work without recording a graph. Vie
 before dispatch. Index validation rejects negative and out-of-range IDs, including for empty
 feature dimensions. GPU kernels and general gather backward are still pending.
 
+## CPU convolution and pooling
+
+Declared in `include/mensurflow/ops/conv.hpp`, kernels in `src/backends/cpu/ops/conv/`. Float32,
+CPU, sequential (`*_sequential`) and parallel (`*_parallel`, strategies in the table above) kernels. Inputs may be views; they are
+packed before the kernel runs.
+
+**`conv2d(x, weight, bias, stride, padding, dilation, groups)`**
+
+* Layout NCHW: `x[N, C_in, H, W]`, `weight[C_out, C_in, kH, kW]`, optional `bias[C_out]` (a
+  pointer, `nullptr` for none), output `[N, C_out, H_out, W_out]`.
+* `stride = {stride_h, stride_w}` (each at least 1, default `{1, 1}`) and zero
+  `padding = {pad_h, pad_w}` (each at least 0, default `{0, 0}`), separately per dimension and
+  added on both sides.
+* `H_out = floor((H + 2 * pad_h - kH) / stride_h) + 1`, `W_out` likewise. A kernel larger than the
+  padded input (output size below 1) and a kernel dimension of 0 are rejected.
+* Only `dilation = {1, 1}` and `groups = 1`. Other values throw `invalid_argument`; they are not
+  silently ignored.
+* Cross-correlation (the kernel is not flipped), as in PyTorch.
+* Computed with im2col and the existing packed GEMM, one image at a time; the strided GEMM entry
+  point reads the transposed operands of the backward pass in place, without copies. Float32
+  accumulation, so results differ from a direct loop in the last bits.
+* Backward: `conv2d_backward_data` (weight^T times the output gradient, then col2im; overlapping
+  windows add up), `conv2d_backward_weight` (output gradient times the im2col matrix transposed,
+  summed over the batch) and `conv2d_backward_bias` (sum over batch and space, in double). The
+  forward op records autograd for `x`, `weight` and `bias` with these functions.
+* Empty batch or `C_out = 0` gives an empty output (and zero weight and bias gradients);
+  `C_in = 0` gives the bias, or zeros.
+* Tested against a direct-loop double reference (`tests/reference/conv.hpp`) and with central
+  finite differences for all three gradients (`tests/ops/conv2d_test.cpp`).
+
+**Pooling, shared conventions**
+
+* NCHW input `[N, C, H, W]` with `H, W >= 1`; each channel is pooled on its own; output
+  `[N, C, H_out, W_out]`.
+* `kernel_size = {kH, kW}` (at least 1); `stride` at least 1 per dimension, or `{0, 0}` (the
+  default) for `stride = kernel_size`; zero `padding` with `0 <= pad <= kernel / 2` per dimension
+  (PyTorch's rule), so every window holds at least one input cell.
+* `H_out = floor((H + 2 * pad_h - kH) / stride_h) + 1` (`ceil_mode = false`); an output size below
+  1 is rejected. Dilation is always 1.
+
+**`max_pool2d(x, kernel_size, stride, padding)`** returns `{output, indices}`.
+
+* `indices` are I64 with the output's shape: the position `ih * W + iw` of the chosen cell within
+  its own `[H, W]` plane, as in PyTorch.
+* Padded cells are never chosen (an all-negative input stays negative next to the padding).
+* Ties go to the first cell of the window in row-major order.
+* NaN as in `argmax` and `max`: a NaN beats every number, including `+inf`; the first NaN of the
+  window is chosen and the output is NaN.
+* `max_pool2d_backward(grad_output, indices, input_shape)` adds each output gradient to the cell
+  its index names; a cell chosen by several overlapping windows gets the sum. Indices are checked
+  to lie in `[0, H * W)`. Autograd keeps a private copy of the indices, so changing the returned
+  ones does not move the gradient.
+* Tests: `tests/ops/max_pool2d_test.cpp` against `tests/reference/pooling.hpp`, including the tie,
+  padding and NaN rules, overlapping windows and a finite-difference check on inputs whose values
+  are 0.1 apart (so a small step cannot change which cell wins).
+
+**`avg_pool2d(x, kernel_size, stride, padding)`**
+
+* The sum of each window's input cells (accumulated in double) divided by `kH * kW`.
+* Padded cells count in the divisor as zeros, matching PyTorch's default
+  `count_include_pad = true`: a 3 x 3 window with padding 1 over all-ones gives 4/9 in a corner.
+  `count_include_pad = false` and `divisor_override` are not offered.
+* `ceil_mode = false`, so no window reaches past the padding and the divisor is always `kH * kW`.
+* NaN and infinities propagate to every window that contains them.
+* `avg_pool2d_backward(grad_output, input_shape, kernel_size, stride, padding)` divides each output
+  gradient by `kH * kW` and adds it to every input cell of the window; padding takes no gradient.
+* Tests: `tests/ops/avg_pool2d_test.cpp` against `tests/reference/pooling.hpp`, including the
+  divisor convention and a finite-difference check.
+
+## CPU variance and standard deviation
+
+Declared in `include/mensurflow/ops/reduction.hpp`, kernels in
+`src/backends/cpu/ops/reduction/`. Float32, CPU, sequential kernels only so far.
+
+**`var(x, axis, keepdim = false, correction = 1)`**
+
+* Along any one axis (negative counts from the end); `keepdim` keeps it as a size-one dimension.
+  There is no whole-tensor overload yet; reshape to 1-D for that.
+* `var = sum((x - mean)^2) / (count - correction)`, `count` the size of the axis. `correction = 1`
+  (the default, as in PyTorch) is the unbiased sample variance, `correction = 0` the population
+  variance; negative values are rejected.
+* **`count - correction <= 0` gives NaN**: one element with the default correction, a correction at
+  or above the count, and any empty axis (even with `correction = 0`). The gradient is NaN there
+  too. (PyTorch gives NaN or inf here depending on the case; we always give NaN.)
+* One pass with Welford's update, mean and M2 in double, so a large mean with a small spread keeps
+  its precision: on `1e8 + 8 * {0, 1, 2, 3}` (1000 values) the naive `sum(x^2) - n * mean^2` in
+  double is off by 0.16% and in float32 is meaningless, while Welford matches the exact 80.08 to
+  float precision (`test_var_large_mean`).
+* A NaN or infinity among the reduced elements gives NaN; a constant row gives exactly 0.
+* `var_backward(grad_output, x, axis, keepdim, correction)` = `grad * 2 * (x - mean) /
+  (count - correction)`, with the mean recomputed by the same Welford pass. The forward op records
+  autograd with it.
+* Tests: `tests/ops/var_std_test.cpp` against a two-pass double reference
+  (`tests/reference/reduction.hpp`) for every axis, `keepdim` and `correction` in {0, 1, 2}, plus
+  finite differences, views, empty shapes and errors.
+
+**`std(x, axis, keepdim = false, correction = 1)`**
+
+* `sqrt(var(x, axis, keepdim, correction))` (the root taken in double), with all of `var`'s
+  conventions: default `correction = 1`, NaN when `count - correction <= 0`, Welford in one pass.
+* `std_backward(grad_output, x, axis, keepdim, correction)` =
+  `grad * (x - mean) / ((count - correction) * std)`. Where `std` is 0 (all elements equal) the
+  gradient is 0, as in PyTorch, not 0 / 0; NaN where `count - correction <= 0` or the row holds a
+  NaN. The forward op records autograd with it.
+* Called as `mensurflow::std(...)` (qualified; inside the library's namespace `std::` still means
+  the standard library, since lookup before `::` ignores functions).
+* Same test file; the finite-difference check uses a smaller step because `std` is not quadratic.
+
+## CPU softmax, losses and attention
+
+```cpp
+softmax(x);                          // last axis; softmax(x, 0) for another axis
+log_softmax(x);                      // (x - max) - log(sum(exp(x - max)))
+cross_entropy(logits, labels);       // logits [N, C] F32, labels [N] I64; mean over N
+cross_entropy(logits, labels, Reduction::None);   // [N] losses
+mse_loss(prediction, target);        // same shapes, no broadcasting
+binary_cross_entropy_with_logits(x, t, Reduction::Sum);
+attention(q, k, v, &mask, /*causal=*/true);       // softmax(q k^T / sqrt(D) masked) v
+```
+
+Softmax and log-softmax subtract each line's maximum and sum in double, so logits of +-1000 are
+exact. A line that is entirely -inf (every position masked) gives zeros from softmax and -inf from
+log-softmax rather than NaN; a NaN anywhere in a line makes the whole line NaN. One line is one
+thread's work, so the result does not depend on the thread count.
+
+Losses take `Reduction::None`, `Sum` or `Mean` (default). Mean of an empty input is NaN, as in
+PyTorch; Sum is 0. Reduced losses sum fixed 16,384-element chunks in parallel and then the chunk
+sums in order, so they are bit-identical at every thread count. Labels are checked on the host
+before the kernel runs (0 <= label < C). The binary cross-entropy gradient is computed as
+(1 - t) - e/(1+e) or e/(1+e) - t with e = exp(-|x|), which keeps sigmoid(x) - t exact where it is
+tiny (PyTorch rounds sigmoid(30) - 1 to 0; this gives -9.36e-14).
+
+`attention` is the naive algorithm built from `gemm_strided_batched`, `where` and `softmax`: it
+materializes the [..., Lq, Lk] scores. Masks are Bool tensors that broadcast to the scores (true
+keeps a position); `causal` is top-left aligned like PyTorch's `is_causal`. It is not differentiable
+yet because `gemm_strided_batched` has no backward.
+
 ## P0 — Minimum useful dense inference library
 
 This is the first implementation target: linear regression, logistic regression,
@@ -177,9 +332,9 @@ rectangular matrices and dimensions not divisible by tile sizes.
 * \[x] `min(x)` and `prod(x)` — full-tensor minimum/product reductions.
 * \[x] `relu(x)` — negative values become +0; NaNs and signed zeros are preserved (CPU, float32).
 * \[x] `sigmoid(x)` — stable logistic function (CPU, float32).
-* \[ ] `softmax(x, axis)` — normalized exponentials (removed; to be redone).
-* \[ ] `mse_loss`, `log_softmax`, and index-target `cross_entropy` (removed; MSE can be written
-as `mean(square(sub(p, t)))`).
+* \[x] `softmax(x, axis)` — normalized exponentials along any axis, stable; forward and backward
+(CPU, float32).
+* \[x] `mse_loss`, `log_softmax`, and index-target `cross_entropy` — see Losses and evaluation below.
 
 ### Tensor plumbing
 
@@ -204,8 +359,10 @@ with a reference. This supports inference, not training by itself.
 autograd for the implemented elementwise, reduction, bias, and matrix multiply
 operations, and a runnable MLP example (`examples/mlp_xor.cpp`) that writes its
 loss and update step from those operations. The five additional activations below currently
-provide forward support only. Softmax, the loss operations, and
-the SGD optimizer were removed. GPU backends,
+provide forward support only. Softmax, log-softmax and the losses (cross-entropy, MSE, binary
+cross-entropy with logits) are back, with backward and autograd; SGD (with momentum and weight
+decay), Adam and AdamW are back as fused in-place updates, and layer, RMS and batch normalization
+have forward, backward and autograd. GPU backends,
 backend-independent correctness infrastructure, and the broader vendor-kernel
 coverage table remain separate work.
 
@@ -247,13 +404,16 @@ integer masks and unpacking int4 weights.
 ### Additional reductions and linear algebra
 
 * \[x] `min` and `prod`; `argmin`, `sum\_of\_squares`, `any`, and `all` remain.
+* \[x] `argmin(x, axis)` — last axis only, like `argmax`; ties select the first index and the
+first NaN of a row is selected (CPU, float32 input, int64 output, sequential kernel).
 * \[ ] `cumsum` along an axis — top-p sampling and state-space models.
 * \[ ] `logsumexp` as a standalone reduction.
 * \[ ] `sort` and `argsort`, with defined tie and stability rules.
 * \[ ] L1/L2 norms, with explicit axes.
 * \[ ] Lp normalization, e.g. L2 `x / ||x||` — embedding and retrieval models.
-* \[ ] Variance and standard deviation; specify population/sample convention and
-use a numerically stable algorithm where practical.
+* \[x] Variance and standard deviation; specify population/sample convention and
+use a numerically stable algorithm where practical — `var` and `std`, Welford, `correction`
+default 1; see [CPU variance and standard deviation](#cpu-variance-and-standard-deviation).
 * \[x] Batched `matmul` (`gemm_strided_batched`), with NumPy-style batch broadcasting.
 * \[x] `outer(x, y)` — outer product, as `ger(1, x, y)`; also appears in gradient formulas.
 * \[ ] `einsum` — lowered to permute, reshape, and batched GEMM.
@@ -293,18 +453,21 @@ of a tensor, e.g. KV-cache updates.
 
 ### Losses and evaluation
 
-* \[ ] Mean squared error (MSE) as an op (removed; `examples/mlp\_xor.cpp` writes it as
-`mean(square(sub(p, t)))`).
-* \[ ] Binary cross-entropy **with logits**, using a stable formula.
-* \[ ] `log\_softmax`, using stable log-sum-exp (removed).
-* \[ ] Multiclass cross-entropy **with logits**, with integer class labels (removed).
+* \[x] Mean squared error (MSE) as an op: `mse_loss` (CPU, float32, forward and backward).
+* \[x] Binary cross-entropy **with logits**, using a stable formula:
+`binary_cross_entropy_with_logits` = max(x, 0) - x t + log1p(exp(-|x|)).
+* \[x] `log\_softmax`, using stable log-sum-exp: computed as (x - max) - log(sum exp(x - max)).
+* \[x] Multiclass cross-entropy **with logits**, with integer class labels: `cross_entropy`, fused
+log-softmax and NLL per row.
 * \[ ] Negative log-likelihood loss on log-probabilities.
 * \[ ] Huber / smooth-L1 loss and KL divergence.
 * \[ ] Label smoothing for cross-entropy.
 * \[ ] Accuracy, composed from `argmax`, comparisons, and reductions.
 
 Loss APIs should expose `none`, `sum`, and `mean` reduction modes. The initial
-version can choose one mode if it is explicit and tested.
+version can choose one mode if it is explicit and tested. Done: every loss takes
+`Reduction::None`, `Sum` or `Mean` (the default); reduced losses add fixed chunks in order, so they
+give the same bits at every thread count.
 
 ## P2 — Training small dense models
 
@@ -317,8 +480,10 @@ graphs if a full automatic differentiation system would exceed scope.
 * \[x] Elementwise gradients for arithmetic, ReLU, sigmoid, and tanh.
 * \[x] GEMM gradients using transposed GEMMs.
 * \[x] Bias gradients and reduction gradients using sum/broadcast.
-* \[ ] MSE and cross-entropy-with-logits gradients (removed with the losses).
-* \[ ] Softmax/log-softmax backward when required independently of fused losses (removed).
+* \[x] MSE and cross-entropy-with-logits gradients (`mse_loss_backward`, `cross_entropy_backward`,
+`binary_cross_entropy_with_logits_backward`), also recorded by autograd.
+* \[x] Softmax/log-softmax backward when required independently of fused losses
+(`softmax_backward`, `log_softmax_backward`).
 * \[ ] `sum\_to\_shape` — reduce broadcasted gradients back to an input's shape.
 * \[ ] Gradient accumulation for parameters used by multiple graph branches.
 * \[x] Embedding indexing gradients use deterministic scatter-add; repeated indices accumulate.
@@ -333,11 +498,10 @@ kernel. For example, GEMM backward can dispatch two existing GEMM operations.
 * \[x] `bernoulli` sampling — CPU F32 zeros/ones with explicit probability.
 * \[ ] `randperm` — data shuffling.
 * \[ ] Xavier/He initialization built from random generation and scaling.
-* \[ ] SGD parameter update (removed).
-* \[ ] Optional momentum SGD, followed by Adam with optimizer state and bias
-correction.
-* \[ ] AdamW — Adam with decoupled weight decay; the usual optimizer for
-transformer training.
+* \[x] `sgd` parameter update, in place, with optional momentum and weight decay (CPU, F32).
+* \[x] `adam` with optimizer state and bias correction (CPU, F32, fused single pass).
+* \[x] `adamw` — Adam with decoupled weight decay; the usual optimizer for
+transformer training (CPU, F32, fused single pass).
 * \[ ] Gradient zeroing and optional global-norm clipping.
 * \[x] Optional dropout forward/backward with saved masks and explicit train/eval
 behavior.
@@ -362,13 +526,17 @@ loss on a controlled dataset.
 
 ### Convolution and pooling
 
-* \[ ] `conv2d` forward, with one documented layout, e.g. NCHW.
-* \[ ] Stride and padding, then dilation and groups if needed.
-* \[ ] Simple direct convolution reference implementation.
-* \[ ] Optional im2col + GEMM implementation; account for temporary memory costs.
+* \[x] `conv2d` forward, with one documented layout, e.g. NCHW — CPU float32, NCHW; see
+[CPU convolution and pooling](#cpu-convolution-and-pooling).
+* \[x] Stride and padding, then dilation and groups if needed — stride and zero padding per
+dimension; dilation and groups other than 1 are rejected.
+* \[x] Simple direct convolution reference implementation — the double-precision test reference
+in `tests/reference/conv.hpp`.
+* \[x] Optional im2col + GEMM implementation; account for temporary memory costs — the column
+matrix is `C_in * kH * kW` by `H_out * W_out` floats, one image at a time.
 `col2im` is its inverse, used by transposed convolution and backward.
-* \[ ] Max pooling (returning indices, for backward and `max\_unpool`) and average
-pooling.
+* \[x] Max pooling (returning indices, for backward and `max\_unpool`) and average
+pooling — `max_pool2d` and `avg_pool2d`, CPU float32, forward and backward.
 * \[ ] Adaptive / global average pooling — classifier heads, e.g. ResNet. Also
 global max pooling and Lp pooling.
 * \[ ] `conv1d` — audio and sequence models, e.g. Whisper's front end and Mamba's
@@ -384,17 +552,21 @@ medical imaging.
 * \[ ] `grid\_sample` — bilinear sampling at given coordinates; spatial
 transformers and optical flow. `affine\_grid` builds the coordinates.
 * \[ ] Non-maximum suppression, ROI Align, and ROI pooling — object detection.
-* \[ ] Convolution and pooling backward if training is in scope.
+* \[x] Convolution and pooling backward if training is in scope — `conv2d` (data, weight, bias),
+`max_pool2d` and `avg_pool2d`, with CPU autograd.
 
 ### Normalization
 
-* \[ ] Layer normalization forward, including epsilon and learned scale/bias.
-* \[ ] Batch normalization inference using stored running statistics.
-* \[ ] Batch normalization training and running-statistic updates, if needed.
+* \[x] `layer_norm` forward, including epsilon and learned scale/bias, over any number of trailing
+dimensions (CPU, F32); `rms_norm` likewise, without centering or bias.
+* \[x] `batch_norm` inference using stored running statistics (`[N, C, ...]`, CPU, F32).
+* \[x] `batch_norm` training and running-statistic updates (batch statistics; running variance gets
+the unbiased estimate, as in PyTorch).
 * \[ ] Group normalization — diffusion U-Nets and small-batch training. Instance
 normalization is the case of one group per channel.
 * \[ ] Local response normalization — older CNNs such as AlexNet.
-* \[ ] Normalization backward for whichever training operations are supported.
+* \[x] Normalization backward for `layer_norm`, `rms_norm` and `batch_norm` (training and
+evaluation), with CPU autograd.
 
 ### Additional activations
 
@@ -424,15 +596,18 @@ This is a stretch tier. Reuse earlier primitives before writing specialized fuse
 kernels.
 
 * \[x] Embedding row lookup and backward; CPU F32 with I64 indices and repeated-index accumulation.
-* \[ ] Batched GEMM with transpose support for attention scores and weighted sums.
-* \[ ] Scaled dot-product attention: `softmax(QK^T / sqrt(d) + mask) V`.
-* \[ ] Causal, padding, and sliding-window masks, with defined all-masked-row
-behavior.
+* \[x] Batched GEMM with transpose support for attention scores and weighted sums
+(`gemm_strided_batched`).
+* \[x] Scaled dot-product attention: `softmax(QK^T / sqrt(d) + mask) V` — `attention`, the naive
+algorithm from existing ops, forward only.
+* \[x] Causal, padding, and sliding-window masks, with defined all-masked-row
+behavior: a `causal` flag and any Bool mask (padding and sliding windows are masks); a query whose
+keys are all masked gets zeros.
 * \[ ] Relative position bias and ALiBi — biases added to attention scores
 (T5, SAM, BLOOM).
 * \[ ] Window partition / unpartition for windowed attention (Swin, SAM).
 * \[x] GELU activation — exact and tanh approximation, CPU F32 forward only.
-* \[ ] LayerNorm or RMSNorm as required by the chosen model. Variants: Gemma's
+* \[x] LayerNorm and RMSNorm (`layer_norm`, `rms_norm`, forward and backward). Not done: Gemma's
 `(1 + w)` scale and gated RMSNorm.
 * \[ ] Positional encodings or rotary positional embeddings, model-dependent.
 * \[ ] Gated MLP activations: SwiGLU and GeGLU, `act(xW) \* (xV)` — standard in

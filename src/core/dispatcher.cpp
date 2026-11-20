@@ -2,6 +2,7 @@
 #include "core/dispatcher.hpp"
 
 #include "core/registry.hpp"
+#include "core/tuning.hpp"
 #include "mensurflow/trace.hpp"
 
 namespace mensurflow::detail {
@@ -156,6 +157,70 @@ const char* op_name(OpId op) {
         return "embedding";
     case OpId::EmbeddingBackward:
         return "embedding_backward";
+    case OpId::Conv2d:
+        return "conv2d";
+    case OpId::Conv2dBackwardData:
+        return "conv2d_backward_data";
+    case OpId::Conv2dBackwardWeight:
+        return "conv2d_backward_weight";
+    case OpId::Conv2dBackwardBias:
+        return "conv2d_backward_bias";
+    case OpId::MaxPool2d:
+        return "max_pool2d";
+    case OpId::MaxPool2dBackward:
+        return "max_pool2d_backward";
+    case OpId::AvgPool2d:
+        return "avg_pool2d";
+    case OpId::AvgPool2dBackward:
+        return "avg_pool2d_backward";
+    case OpId::Argmin:
+        return "argmin";
+    case OpId::Var:
+        return "var";
+    case OpId::VarBackward:
+        return "var_backward";
+    case OpId::Std:
+        return "std";
+    case OpId::StdBackward:
+        return "std_backward";
+    case OpId::Softmax:
+        return "softmax";
+    case OpId::LogSoftmax:
+        return "log_softmax";
+    case OpId::SoftmaxBackward:
+        return "softmax_backward";
+    case OpId::LogSoftmaxBackward:
+        return "log_softmax_backward";
+    case OpId::CrossEntropy:
+        return "cross_entropy";
+    case OpId::CrossEntropyBackward:
+        return "cross_entropy_backward";
+    case OpId::MseLoss:
+        return "mse_loss";
+    case OpId::MseLossBackward:
+        return "mse_loss_backward";
+    case OpId::BceWithLogits:
+        return "binary_cross_entropy_with_logits";
+    case OpId::BceWithLogitsBackward:
+        return "binary_cross_entropy_with_logits_backward";
+    case OpId::Sgd:
+        return "sgd";
+    case OpId::Adam:
+        return "adam";
+    case OpId::AdamW:
+        return "adamw";
+    case OpId::LayerNorm:
+        return "layer_norm";
+    case OpId::LayerNormBackward:
+        return "layer_norm_backward";
+    case OpId::RmsNorm:
+        return "rms_norm";
+    case OpId::RmsNormBackward:
+        return "rms_norm_backward";
+    case OpId::BatchNorm:
+        return "batch_norm";
+    case OpId::BatchNormBackward:
+        return "batch_norm_backward";
     }
     throw std::invalid_argument("invalid OpId");
 }
@@ -173,6 +238,26 @@ void Dispatcher::register_kernel(KernelKey key, KernelFn kernel) {
 KernelFn Dispatcher::find(KernelKey key) const {
     const auto it = kernels_.find(key);
     return it == kernels_.end() ? nullptr : it->second;
+}
+
+void Dispatcher::register_tunable(KernelKey key, TunableKernel tunable) {
+    if (tunable.key == nullptr || tunable.defaults == nullptr || tunable.space == nullptr ||
+        tunable.allowed == nullptr) {
+        throw std::invalid_argument("register_tunable: " + tunable.name + " is missing a function");
+    }
+    if (tunable.params.size() > static_cast<std::size_t>(TuningConfig::capacity)) {
+        throw std::invalid_argument("register_tunable: " + tunable.name + " has more than " +
+                                    std::to_string(TuningConfig::capacity) + " parameters");
+    }
+    const std::string name = tunable.name;
+    if (!tunables_.emplace(key, std::move(tunable)).second) {
+        throw std::logic_error("tunable kernel registered twice: " + name);
+    }
+}
+
+const TunableKernel* Dispatcher::tunable(KernelKey key) const {
+    const auto it = tunables_.find(key);
+    return it == tunables_.end() ? nullptr : &it->second;
 }
 
 KernelFn Dispatcher::lookup(KernelKey key) const {
@@ -204,24 +289,12 @@ Device execution_device(Execution execution, Device data_device) {
     throw std::invalid_argument("invalid Execution value");
 }
 
-void dispatch(OpId op, const OpArgs& args, Execution execution) {
-    const bool factory = op == OpId::Uniform || op == OpId::Normal || op == OpId::Bernoulli;
-    if (args.inputs.empty() && (!factory || args.outputs.empty())) {
-        throw std::invalid_argument(std::string(op_name(op)) + ": no input tensors");
-    }
-    const Tensor& source = args.inputs.empty() ? args.outputs[0] : args.inputs[0];
-    const Device data_device = source.device();
-    for (const auto* group : {&args.inputs, &args.outputs}) {
-        for (const Tensor& t : *group) {
-            if (t.device() != data_device) {
-                throw std::invalid_argument(std::string(op_name(op)) + ": tensors are on " +
-                                            to_string(data_device) + " and " +
-                                            to_string(t.device()) + "; move one with Tensor::to()");
-            }
-        }
-    }
+namespace {
 
-    const Device target = execution_device(execution, data_device);
+// Runs the kernel for `op` on `target`, copying the inputs there and the outputs back when the data
+// lives elsewhere.
+void run_on(OpId op, const OpArgs& args, Device target, Device data_device) {
+    const Tensor& source = args.inputs.empty() ? args.outputs[0] : args.inputs[0];
     MENSURFLOW_TRACE(op_name(op), target, args.inputs, args.outputs);
     Registry& registry = Registry::instance();
     Backend& backend = registry.get(target);
@@ -248,6 +321,35 @@ void dispatch(OpId op, const OpArgs& args, Execution execution) {
         Tensor destination = args.outputs[i]; // shares storage with the caller's output
         destination.copy_from(moved.outputs[i].to(data_device));
     }
+}
+
+} // namespace
+
+void dispatch(OpId op, const OpArgs& args, Execution execution) {
+    const bool factory = op == OpId::Uniform || op == OpId::Normal || op == OpId::Bernoulli;
+    if (args.inputs.empty() && (!factory || args.outputs.empty())) {
+        throw std::invalid_argument(std::string(op_name(op)) + ": no input tensors");
+    }
+    const Tensor& source = args.inputs.empty() ? args.outputs[0] : args.inputs[0];
+    const Device data_device = source.device();
+    for (const auto* group : {&args.inputs, &args.outputs}) {
+        for (const Tensor& t : *group) {
+            if (t.device() != data_device) {
+                throw std::invalid_argument(std::string(op_name(op)) + ": tensors are on " +
+                                            to_string(data_device) + " and " +
+                                            to_string(t.device()) + "; move one with Tensor::to()");
+            }
+        }
+    }
+    // Inside a tuned algorithm the tuner may choose the device (for Execution::Auto) and the
+    // kernel's settings (see core/tuning.hpp).
+    if (tuning_active()) {
+        OpArgs tuned = args;
+        const Device target = apply_tuning(op, execution, data_device, tuned);
+        run_on(op, tuned, target, data_device);
+        return;
+    }
+    run_on(op, args, execution_device(execution, data_device), data_device);
 }
 
 } // namespace mensurflow::detail

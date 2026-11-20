@@ -1,0 +1,283 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1130" viewBox="0 0 1600 1130" role="img" aria-label="mensurflow auto-tuning: Tuner::tune records the algorithm's calls, and for each distinct call searches the kernel's space of settings with binary sampling, timing each point (checked against the default's result, median of samples, early stop), confirms the fastest few against the default, chooses devices for Execution::Auto ops, checks the whole algorithm and saves a text file; Algorithm::run with the tuner applies the stored settings and devices in dispatch.">
+  <style>
+.bg { fill: #ffffff; }
+.band { fill: #f0f3f6; }
+.box { fill: #ffffff; stroke: #c6ced7; stroke-width: 1.2; }
+.box-hot { fill: #ffffff; stroke: #0a7a72; stroke-width: 1.8; }
+.box-tune { fill: #fbf7ef; stroke: #b9842c; stroke-width: 1.8; }
+.box-soft { fill: #f7f9fb; stroke: #c6ced7; stroke-width: 1; }
+.step-badge { fill: #0a7a72; }
+.a-hot { stroke: #0a7a72; stroke-width: 2.4; fill: none; }
+.a-thin { stroke: #5d6875; stroke-width: 1.4; fill: none; }
+.a-tune { stroke: #b9842c; stroke-width: 2; fill: none; }
+.a-move { stroke: #1f8a3c; stroke-width: 2.2; fill: none; }
+.m-hot { fill: #0a7a72; }
+.m-thin { fill: #5d6875; }
+.m-tune { fill: #b9842c; }
+.m-move { fill: #1f8a3c; }
+.grid-l { stroke: #dfe4ea; stroke-width: 1; }
+text { fill: #15202b; font-family: "IBM Plex Sans", "Helvetica Neue", Helvetica, Arial, sans-serif; white-space: pre; }
+.title { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
+.sub { font-size: 15px; fill: #5d6875; }
+.layer { font-size: 12.5px; font-weight: 700; letter-spacing: 0.12em; }
+.path { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
+.h { font-size: 16px; font-weight: 600; }
+.h-sm { font-size: 14px; font-weight: 600; }
+.b { font-size: 13px; }
+.s { font-size: 12px; fill: #5d6875; }
+.m { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.mf { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; }
+.mm { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
+.hot-t { fill: #0a7a72; font-weight: 600; }
+.tune-t { fill: #9a6a1c; font-weight: 600; }
+.bad-t { fill: #b4372b; font-weight: 600; }
+.good-t { fill: #1f8a3c; font-weight: 600; }
+.badge-t { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; font-weight: 600; fill: #ffffff; }
+.lbl { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
+.lbl-tune { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11.5px; fill: #9a6a1c; font-weight: 500; }
+.ax { font-family: "JetBrains Mono", Menlo, Consolas, monospace; font-size: 11px; fill: #5d6875; }
+  </style>
+  <defs>
+    <marker id="ah-hot" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-hot" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="ah-thin" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-thin" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="ah-tune" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-tune" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="ah-move" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="m-move" d="M0 0 L10 5 L0 10 z"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1600" height="1130"/>
+
+  <text class="title" x="24" y="46">Auto-tuning: minimizing time(arguments ; kernel parameters)</text>
+  <text class="sub" x="24" y="72">For each call, the parameters (m, n, k, threads) are fixed and the arguments (the kernel's settings) take a few ordered values each. Offline, on this machine; results go to a text file.</text>
+
+  <!-- ============================================================ LEFT: tune() steps -->
+  <rect class="band" x="16" y="88" width="800" height="854" rx="6"/>
+  <text class="layer" x="30" y="114">1 · TUNING, ONCE</text>
+  <text class="m" x="200" y="114">tuner.tune(algorithm, inputs, options)</text>
+  <text class="path" x="600" y="114">src/core/tuning.cpp</text>
+
+  <!-- S1 -->
+  <rect class="box" x="30" y="128" width="772" height="84" rx="6"/>
+  <circle class="step-badge" cx="50" cy="148" r="10"/><text class="badge-t" x="46.5" y="152">1</text>
+  <text class="h-sm" x="68" y="153">Record the calls</text>
+  <text class="b" x="68" y="176">algorithm.run(inputs) once, inside a <tspan class="m">TuningScope{record}</tspan>: dispatch() records every op call:</text>
+  <text class="b" x="68" y="196">the op, the execution asked for, where the data is, where it ran, its arguments (<tspan class="m">RecordedCall</tspan>).</text>
+
+  <!-- S2 -->
+  <rect class="box" x="30" y="230" width="772" height="66" rx="6"/>
+  <circle class="step-badge" cx="50" cy="250" r="10"/><text class="badge-t" x="46.5" y="254">2</text>
+  <text class="h-sm" x="68" y="255">Each distinct call</text>
+  <text class="b" x="200" y="255">key: machine · op · device · kernel version · m n k (+ threads on the CPU)</text>
+  <text class="s" x="68" y="280">Already in the file (and not <tspan class="m">retune</tspan>) → reused, nothing is measured. Otherwise steps 3 to 6.</text>
+
+  <!-- S3 -->
+  <rect class="box" x="30" y="314" width="772" height="112" rx="6"/>
+  <circle class="step-badge" cx="50" cy="334" r="10"/><text class="badge-t" x="46.5" y="338">3</text>
+  <text class="h-sm" x="68" y="339">The space of the call</text>
+  <text class="b" x="68" y="362"><tspan class="m">space(args)</tspan>: one region per kernel variant, each with ordered axes (the arguments);</text>
+  <text class="b" x="68" y="381"><tspan class="m">allowed(args, config)</tspan>: drops points the kernel cannot run or that make no sense for the call.</text>
+  <text class="s" x="68" y="402">Metal matmul: simdgroup (bm bn bk sg_m sg_n) · tiled (bm bn bk tm tn) · MPS: 1,114 points at 1024³</text>
+  <text class="s" x="68" y="418">CPU matmul: rows · depth · cols, values cut to the matrix: 80 points at 512³</text>
+
+  <!-- S4 -->
+  <rect class="box" x="30" y="444" width="772" height="66" rx="6"/>
+  <circle class="step-badge" cx="50" cy="464" r="10"/><text class="badge-t" x="46.5" y="468">4</text>
+  <text class="h-sm" x="68" y="469">Reference</text>
+  <text class="b" x="160" y="469">a GPU is kept busy for 1 s first: its clock rises only under load</text>
+  <text class="s" x="68" y="494">The defaults run once; their outputs are the result every other point must match.</text>
+
+  <!-- S5 -->
+  <rect class="box-hot" x="30" y="528" width="772" height="96" rx="6"/>
+  <circle class="step-badge" cx="50" cy="548" r="10"/><text class="badge-t" x="46.5" y="552">5</text>
+  <text class="h-sm" x="68" y="553">Search</text>
+  <text class="m" x="140" y="553">detail::search(space, method, measure)</text>
+  <text class="b" x="68" y="576">The method asks for points in batches (the samples of one line, or a region's grid);</text>
+  <text class="b" x="68" y="595">each new point goes to the objective <tspan class="hot-t">(A)</tspan>, and the search keeps the lowest time.</text>
+  <text class="s" x="68" y="614">binary sampling, the default <tspan class="hot-t">(B)</tspan> · exhaustive: every allowed point</text>
+
+  <!-- S6 -->
+  <rect class="box" x="30" y="642" width="772" height="88" rx="6"/>
+  <circle class="step-badge" cx="50" cy="662" r="10"/><text class="badge-t" x="46.5" y="666">6</text>
+  <text class="h-sm" x="68" y="667">Confirm</text>
+  <text class="b" x="140" y="667">the default and the 3 fastest points, timed again together</text>
+  <text class="b" x="68" y="690">3 rounds, the order rotated each round; the median of the rounds picks the winner and</text>
+  <text class="b" x="68" y="709">gives default_ms → best_ms. Points were timed seconds apart, and a GPU's clock moves</text>
+  <text class="s" x="68" y="725">(a 1024³ Metal default: 0.85 to 1.21 ms between runs). The winner is stored for the call.</text>
+
+  <!-- S7 -->
+  <rect class="box" x="30" y="748" width="772" height="88" rx="6"/>
+  <circle class="step-badge" cx="50" cy="768" r="10"/><text class="badge-t" x="46.5" y="772">7</text>
+  <text class="h-sm" x="68" y="773">Device choice</text>
+  <text class="b" x="180" y="773">for every op called with <tspan class="m">Execution::Auto</tspan></text>
+  <text class="b" x="68" y="796">Each device with a kernel is timed through dispatch(), copies there and back included,</text>
+  <text class="b" x="68" y="815">after its own settings were tuned; it must agree with the CPU's result. Fastest → <tspan class="m">gpu=0</tspan> or <tspan class="m">gpu=1</tspan>.</text>
+  <text class="s" x="68" y="831">512³ matmul with the data on the CPU: gpu 0.77 ms vs cpu 1.68 ms; a 65,536-element add stays on the CPU.</text>
+
+  <!-- S8 -->
+  <rect class="box" x="30" y="854" width="772" height="76" rx="6"/>
+  <circle class="step-badge" cx="50" cy="874" r="10"/><text class="badge-t" x="46.5" y="878">8</text>
+  <text class="h-sm" x="68" y="879">Check the whole algorithm, save</text>
+  <text class="b" x="68" y="902">Timed without and with the results (at least 0.2 s each, median). Slower with them →</text>
+  <text class="b" x="68" y="921">everything this tune added is dropped. Then the file is written.</text>
+
+  <!-- step arrows -->
+  <path class="a-thin" d="M416 212 L416 226" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M416 296 L416 310" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M416 426 L416 440" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M416 510 L416 524" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M416 624 L416 638" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M416 730 L416 744" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M416 836 L416 850" marker-end="url(#ah-thin)"/>
+
+  <!-- ============================================================ RIGHT A: the objective -->
+  <rect class="box-hot" x="836" y="96" width="740" height="342" rx="6"/>
+  <text class="h" x="854" y="122"><tspan class="hot-t">A</tspan>  The objective: the time at one point</text>
+  <text class="path" x="1180" y="122">measure() → median_ms()</text>
+
+  <rect class="box-soft" x="854" y="136" width="704" height="40" rx="5"/>
+  <text class="b" x="868" y="161">Measured already?</text>
+  <text class="s" x="1010" y="161">yes → the remembered time (the search may ask for a point twice)</text>
+  <path class="a-thin" d="M1206 176 L1206 186" marker-end="url(#ah-thin)"/>
+
+  <rect class="box-soft" x="854" y="190" width="704" height="40" rx="5"/>
+  <text class="b" x="868" y="215">Run once: same result as the default?</text>
+  <text class="s" x="1124" y="215">no → <tspan class="bad-t">rejected</tspan>: ∞, never timed (within 1e-3 · max|value|)</text>
+  <path class="a-thin" d="M1206 230 L1206 240" marker-end="url(#ah-thin)"/>
+
+  <rect class="box-soft" x="854" y="244" width="704" height="180" rx="5"/>
+  <text class="b" x="868" y="268" font-weight="600">Time it: the median of samples</text>
+  <text class="b" x="868" y="292">1 warm-up run</text><text class="s" x="1060" y="292">caches; on Metal, the pipeline compiled for these tiles</text>
+  <text class="b" x="868" y="314">1 run to estimate</text><text class="s" x="1060" y="314">repeats per sample so that one sample lasts at least 1 ms</text>
+  <text class="b" x="868" y="336">samples</text><text class="s" x="1060" y="336">until at least 3 samples and 50 ms (at most 1,000); each run waits for the GPU</text>
+  <text class="b" x="868" y="358"><tspan class="tune-t">early stop</tspan></text><text class="s" x="1060" y="358">after 3 samples, fastest &gt; 1.3 × the best median so far → stop: it cannot win</text>
+  <text class="b" x="868" y="380">result</text><text class="s" x="1060" y="380">the median sample, so one slow sample does not move it</text>
+  <text class="s" x="868" y="408">512³ CPU matmul (≈1.4 ms): ≈35 samples, ≈38 runs a point. Early stop: 1024³ Metal search 2.0–2.7 s → 0.9–1.1 s.</text>
+
+  <!-- ============================================================ RIGHT B: binary sampling -->
+  <rect class="box-hot" x="836" y="456" width="740" height="350" rx="6"/>
+  <text class="h" x="854" y="482"><tspan class="hot-t">B</tspan>  Binary sampling, on two of the CPU matmul's arguments</text>
+
+  <!-- grid: depth across (x), cols up (y) -->
+  <g>
+    <line class="grid-l" x1="920" y1="530" x2="1200" y2="530"/>
+    <line class="grid-l" x1="920" y1="600" x2="1200" y2="600"/>
+    <line class="grid-l" x1="920" y1="670" x2="1200" y2="670"/>
+    <line class="grid-l" x1="920" y1="740" x2="1200" y2="740"/>
+    <line class="grid-l" x1="930" y1="516" x2="930" y2="754"/>
+    <line class="grid-l" x1="995" y1="516" x2="995" y2="754"/>
+    <line class="grid-l" x1="1060" y1="516" x2="1060" y2="754"/>
+    <line class="grid-l" x1="1125" y1="516" x2="1125" y2="754"/>
+    <line class="grid-l" x1="1190" y1="516" x2="1190" y2="754"/>
+    <text class="ax" x="930" y="772" text-anchor="middle">32</text>
+    <text class="ax" x="995" y="772" text-anchor="middle">64</text>
+    <text class="ax" x="1060" y="772" text-anchor="middle">128</text>
+    <text class="ax" x="1125" y="772" text-anchor="middle">256</text>
+    <text class="ax" x="1190" y="772" text-anchor="middle">512</text>
+    <text class="ax" x="1060" y="792" text-anchor="middle" style="font-weight:600;fill:#15202b">depth →</text>
+    <text class="ax" x="912" y="534" text-anchor="end">512</text>
+    <text class="ax" x="912" y="604" text-anchor="end">256</text>
+    <text class="ax" x="912" y="674" text-anchor="end">128</text>
+    <text class="ax" x="912" y="744" text-anchor="end">64</text>
+    <text class="ax" x="870" y="510" style="font-weight:600;fill:#15202b">cols ↑</text>
+  </g>
+  <!-- points not measured -->
+  <g fill="#c6ced7">
+    <circle cx="995" cy="670" r="3"/><circle cx="1060" cy="670" r="3"/><circle cx="1125" cy="670" r="3"/><circle cx="1190" cy="670" r="3"/>
+    <circle cx="995" cy="740" r="3"/><circle cx="1060" cy="740" r="3"/><circle cx="1125" cy="740" r="3"/><circle cx="1190" cy="740" r="3"/>
+  </g>
+  <!-- pass 2 (hollow) -->
+  <g fill="#ffffff" stroke="#0a7a72" stroke-width="1.6">
+    <circle cx="995" cy="530" r="6"/><circle cx="1060" cy="530" r="6"/><circle cx="1125" cy="530" r="6"/><circle cx="1190" cy="530" r="6"/>
+  </g>
+  <!-- pass 1, depth line at cols 256: ends (level 0), quarters (level 2); the middle is the start -->
+  <circle cx="1060" cy="600" r="8" fill="#15202b"/><text x="1060" y="604" text-anchor="middle" style="fill:#fff;font-size:10px;font-weight:700">S</text>
+  <circle cx="930" cy="600" r="7" fill="#0a5d57"/><circle cx="1190" cy="600" r="7" fill="#0a5d57"/>
+  <circle cx="995" cy="600" r="7" fill="#7cc4bd"/><circle cx="1125" cy="600" r="7" fill="#7cc4bd"/>
+  <!-- pass 1, cols line at depth 32 -->
+  <circle cx="930" cy="740" r="7" fill="#0a5d57"/>
+  <circle cx="930" cy="670" r="7" fill="#7cc4bd"/>
+  <circle cx="930" cy="530" r="9" fill="#0a5d57" stroke="#1f8a3c" stroke-width="3"/>
+  <!-- moves -->
+  <path class="a-move" d="M1052 594 Q995 566 940 592" marker-end="url(#ah-move)"/>
+  <path class="a-move" d="M944 594 Q966 565 941 541" marker-end="url(#ah-move)"/>
+
+  <!-- explanation -->
+  <g>
+    <text class="b" x="1236" y="516" font-weight="600">512³, rows held; start S = the default</text>
+    <text class="b" x="1236" y="542"><tspan class="hot-t">Pass 1, depth:</tspan> sample the row through S</text>
+    <text class="s" x="1236" y="560">coarse to fine; S is the middle (level 1)</text>
+    <circle cx="1244" cy="576" r="6" fill="#0a5d57"/><text class="s" x="1256" y="580">level 0: the two ends</text>
+    <circle cx="1394" cy="576" r="6" fill="#7cc4bd"/><text class="s" x="1406" y="580">level 2: quarters</text>
+    <text class="s" x="1236" y="600">all measured → move to the fastest: depth 32</text>
+    <text class="b" x="1236" y="626"><tspan class="hot-t">Pass 1, cols:</tspan> the column through it</text>
+    <text class="s" x="1236" y="644">→ move to cols 512 (ringed: the argmin)</text>
+    <circle cx="1244" cy="662" r="5.5" fill="#fff" stroke="#0a7a72" stroke-width="1.6"/>
+    <text class="s" x="1256" y="666">pass 2: lines through the new point;</text>
+    <text class="s" x="1256" y="682">nothing moves → stop</text>
+    <text class="b" x="1236" y="712">21 of 80 points measured, 2 s; 5 of 5 runs</text>
+    <text class="b" x="1236" y="730">agree (depth 32, cols 512, 1.37–1.39×)</text>
+    <text class="s" x="1236" y="756">Every sample is measured; no comparison of two</text>
+    <text class="s" x="1236" y="772">noisy times throws half a line away (a binary</text>
+    <text class="s" x="1236" y="788">search did, on a plateau, and ended at 1.65 ms).</text>
+  </g>
+
+  <!-- ============================================================ RIGHT C: results file -->
+  <rect class="box-tune" x="836" y="824" width="740" height="118" rx="6"/>
+  <text class="h-sm" x="854" y="846">C  The results file</text>
+  <text class="s" x="1000" y="846">plain text, one line per call under its machine; readable and editable</text>
+  <text class="mm" x="854" y="870"># mensurflow tuning results</text>
+  <text class="mf" x="854" y="887">machine Apple M3 Pro | Apple M3 Pro</text>
+  <text class="mf" x="854" y="904">matmul cpu v1 m=512 n=512 k=512 threads=11 -&gt; rows=0 depth=32 cols=512 | 1.44 ms (default 2.02 ms) tested</text>
+  <text class="mf" x="854" y="921">matmul auto v1 data=cpu f32 512x512 512x512 -&gt; gpu=1 | 0.77 ms (default 1.68 ms) tested</text>
+  <text class="s" x="854" y="937">one form for both: a device choice is device "auto", setting gpu; keyed exactly (size ranges: not done yet)</text>
+
+  <!-- left to right arrows -->
+  <path class="a-hot" d="M802 560 L818 560 L818 300 L832 300" marker-end="url(#ah-hot)"/>
+  <path class="a-hot" d="M802 600 L818 600 L818 640 L832 640" marker-end="url(#ah-hot)"/>
+  <path class="a-tune" d="M802 690 L824 690 L824 900" />
+  <path class="a-tune" d="M824 880 L832 880" marker-end="url(#ah-tune)"/>
+  <path class="a-tune" d="M802 800 L824 800" />
+  <path class="a-tune" d="M802 900 L824 900" />
+
+  <!-- ============================================================ BOTTOM: using the results -->
+  <rect class="band" x="16" y="958" width="1568" height="152" rx="6"/>
+  <text class="layer" x="30" y="984">2 · USING THE RESULTS, EVERY RUN</text>
+  <text class="m" x="330" y="984">algorithm.run(inputs, tuner)</text>
+  <text class="path" x="560" y="984">dispatch() in src/core/dispatcher.cpp</text>
+
+  <rect class="box" x="30" y="998" width="280" height="96" rx="6"/>
+  <text class="h-sm" x="46" y="1020">TuningScope{cache}</text>
+  <text class="s" x="46" y="1042">opened by run(); thread_local, so</text>
+  <text class="s" x="46" y="1058">only this run's ops see the results</text>
+  <text class="s" x="46" y="1080">the algorithm's code is unchanged</text>
+
+  <rect class="box-tune" x="340" y="998" width="300" height="96" rx="6"/>
+  <text class="h-sm" x="356" y="1020">Execution::Auto ops</text>
+  <text class="s" x="356" y="1042">a stored "auto" line for the op, data</text>
+  <text class="s" x="356" y="1058">device, dtype, shapes → gpu=0 or gpu=1</text>
+  <text class="s" x="356" y="1080">none stored → the CPU, as without a tuner</text>
+
+  <rect class="box-tune" x="670" y="998" width="300" height="96" rx="6"/>
+  <text class="h-sm" x="686" y="1020">Tunable kernel</text>
+  <text class="s" x="686" y="1042">apply_tuning(): find(machine, op, device,</text>
+  <text class="s" x="686" y="1058">version, key) in the file</text>
+  <text class="s" x="686" y="1080">none → the kernel's defaults</text>
+
+  <rect class="box" x="1000" y="998" width="260" height="96" rx="6"/>
+  <text class="h-sm" x="1016" y="1020">OpArgs::tuning</text>
+  <text class="s" x="1016" y="1042">the settings as values in the</text>
+  <text class="s" x="1016" y="1058">kernel's parameter order</text>
+  <text class="s" x="1016" y="1080">(TuningConfig, up to 8)</text>
+
+  <rect class="box-hot" x="1290" y="998" width="286" height="96" rx="6"/>
+  <text class="h-sm" x="1306" y="1020">The kernel reads them</text>
+  <text class="s" x="1306" y="1042">CPU: rows, depth, cols tile sizes</text>
+  <text class="s" x="1306" y="1058">Metal: variant and tiles; its pipeline</text>
+  <text class="s" x="1306" y="1080">is compiled once and cached</text>
+
+  <path class="a-thin" d="M310 1046 L336 1046" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M640 1046 L666 1046" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M970 1046 L996 1046" marker-end="url(#ah-thin)"/>
+  <path class="a-thin" d="M1260 1046 L1286 1046" marker-end="url(#ah-thin)"/>
+  <path class="a-tune" d="M900 942 L900 994" marker-end="url(#ah-tune)"/>
+  <text class="lbl-tune" x="908" y="972">read when the Tuner is made</text>
+
+</svg>

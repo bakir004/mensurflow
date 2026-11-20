@@ -50,7 +50,7 @@ Tensor ger(float alpha, const Tensor& x, const Tensor& y, const Tensor* a = null
 // Matrix product of a [M, K] and a [K, N] tensor, giving a new contiguous [M, N] tensor on the same
 // device. Both inputs must have the same dtype and device. Transposed or sliced views are accepted
 // and made contiguous first. An empty M or N gives an empty result; K == 0 gives zeros.
-// Only float32, and only on the CPU so far: a GPU device reports NotImplemented.
+// Only float32, on the CPU and on Metal; a CUDA device reports NotImplemented.
 // Throws invalid_argument for non-2-D inputs, mismatched inner dimensions, dtypes or devices.
 Tensor matmul(const Tensor& a, const Tensor& b, Execution execution = Execution::Auto);
 

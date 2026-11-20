@@ -39,12 +39,32 @@ void gemv_f32(const float* a, const float* x, float* y, std::int64_t rows, std::
 void ger_f32(float alpha, const float* x, const float* y, const float* a, float* out,
              std::int64_t m, std::int64_t n);
 
+// Tile sizes of matmul_f32_parallel. Each thread owns a band of rows of C and walks it in tiles of
+// `rows` x `cols` of C over `depth`-long slices of the inner dimension: a depth x cols block of B is
+// meant to stay in L2 while the rows of the tile reuse it, and one row of the tile (cols floats)
+// in L1 while the depth loop runs. rows == 0 means the whole band at once. The tile sizes never
+// change the result: every C[i,j] still adds its products in increasing p.
+struct MatmulBlocking {
+    std::int64_t rows = 0;
+    std::int64_t depth = 128;
+    std::int64_t cols = 256;
+};
+
+// The tile sizes used when none are passed. The setter is for tuning and benchmarks: it is not
+// thread-safe and must not be called while a matmul is running. Throws std::invalid_argument
+// unless depth and cols are positive and rows is not negative.
+MatmulBlocking matmul_blocking();
+void set_matmul_blocking(MatmulBlocking blocking);
+
 // Row-major C[m,n] = A[m,k] * B[k,n]. C is overwritten and must not overlap A or B. k == 0 fills
 // C with zeros. Every C[i,j] adds its products in increasing p in both versions, so they agree.
-// The parallel version also works through B in cache-sized blocks.
+// The parallel version also works through B in cache-sized blocks (see MatmulBlocking; the
+// overload without one uses matmul_blocking()).
 void matmul_f32_sequential(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
                            std::int64_t k);
 void matmul_f32_parallel(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
                          std::int64_t k);
+void matmul_f32_parallel(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
+                         std::int64_t k, const MatmulBlocking& blocking);
 
 } // namespace mensurflow::cpu

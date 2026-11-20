@@ -17,6 +17,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -25,6 +26,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DATABASE = HERE / "results" / "observe.db"
+# The auto-tuner's results file (format: src/core/tuning.hpp); `observe tune` reads and extends it.
+TUNING_FILE = HERE / "results" / "tuning.txt"
 OLD_HISTORY = HERE / "results" / "history.jsonl"  # earlier text format, imported once
 CANDIDATES = ["build/observability/observe", "build-trace/observability/observe",
               "build/observability/Release/observe.exe", "build/observability/observe.exe"]
@@ -46,6 +49,10 @@ class Runner:
         # Built next to observe from the same sources without auto-vectorization (see CMakeLists.txt).
         self.scalar = binary.with_name(binary.name.replace("observe", "observe_scalar", 1))
         self.listing = None
+        self.listing_stamp = None  # modification times of the binaries the listing came from
+
+    def stamp(self):
+        return tuple(b.stat().st_mtime if b.exists() else None for b in (self.binary, self.scalar))
 
     def call(self, args, threads=None, scalar=False):
         env = dict(os.environ)
@@ -61,6 +68,34 @@ class Runner:
         except json.JSONDecodeError:
             return {"fatal": f"observe exited with {result.returncode}: "
                              f"{result.stderr.strip() or result.stdout.strip()[:500]}"}
+
+
+def tuning_file():
+    """The tuning results file as {"path", "machines": {name: [entry, ...]}}. An entry is a dict with
+    op, device ("auto" for a device choice), version, key (text), settings ([name, value] pairs),
+    best_ms, default_ms and mode."""
+    result = {"path": str(TUNING_FILE.relative_to(ROOT)), "machines": {}}
+    if not TUNING_FILE.exists():
+        return result
+    machine = None
+    line_re = re.compile(r"^(\S+) (\S+) v(\d+) (.*?) -> (.*?) \| ([\d.]+) ms \(default ([\d.]+) ms\) (\S+)$")
+    pairs = lambda text: [[k, int(v)] for k, v in (item.split("=", 1) for item in text.split())]
+    for line in TUNING_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("machine "):
+            machine = line[8:].strip()
+            result["machines"].setdefault(machine, [])
+            continue
+        match = line_re.match(line)
+        if machine is None or not match:
+            continue  # the library reports malformed lines when it reads the file
+        op, device, version, key, settings, best, default, mode = match.groups()
+        result["machines"][machine].append({
+            "op": op, "device": device, "version": int(version), "key": key,
+            "settings": pairs(settings), "best_ms": float(best), "default_ms": float(default), "mode": mode})
+    return result
 
 
 def demo_source():
@@ -118,11 +153,13 @@ def op_docs():
 
 
 class Store:
-    """Results in one SQLite file. kind is "run" (kernels and sweeps), "call" or "program"."""
+    """Results in one SQLite file. kind is "run" (kernels and sweeps), "call", "program" or "tune"."""
 
     def __init__(self, path):
         path.parent.mkdir(exist_ok=True)
-        self.db = sqlite3.connect(str(path))
+        # The connection is shared between the server's threads, with a lock around each use.
+        self.db = sqlite3.connect(str(path), check_same_thread=False)
+        self.lock = threading.Lock()
         self.db.execute("CREATE TABLE IF NOT EXISTS results (id INTEGER PRIMARY KEY, time REAL, kind TEXT,"
                         " op TEXT, device TEXT, payload BLOB)")
         self.db.commit()
@@ -135,28 +172,33 @@ class Store:
     def add(self, kind, result):
         result.setdefault("time", time.time())
         blob = zlib.compress(json.dumps(result).encode())
-        self.db.execute("INSERT INTO results (time, kind, op, device, payload) VALUES (?, ?, ?, ?, ?)",
-                        (result["time"], kind, result.get("op"), result.get("device"), blob))
-        self.db.commit()
+        with self.lock:
+            self.db.execute("INSERT INTO results (time, kind, op, device, payload) VALUES (?, ?, ?, ?, ?)",
+                            (result["time"], kind, result.get("op"), result.get("device"), blob))
+            self.db.commit()
 
     def all(self, kind):
-        rows = self.db.execute("SELECT payload FROM results WHERE kind = ? ORDER BY id", (kind,))
+        with self.lock:
+            rows = self.db.execute("SELECT payload FROM results WHERE kind = ? ORDER BY id", (kind,)).fetchall()
         return [json.loads(zlib.decompress(row[0])) for row in rows]
 
     def latest(self, kind):
-        row = self.db.execute("SELECT payload FROM results WHERE kind = ? ORDER BY id DESC LIMIT 1",
-                              (kind,)).fetchone()
+        with self.lock:
+            row = self.db.execute("SELECT payload FROM results WHERE kind = ? ORDER BY id DESC LIMIT 1",
+                                  (kind,)).fetchone()
         return json.loads(zlib.decompress(row[0])) if row else None
 
     def latest_per_op(self, kind):
-        rows = self.db.execute("SELECT op, payload FROM results WHERE id IN"
-                               " (SELECT MAX(id) FROM results WHERE kind = ? GROUP BY op)", (kind,))
+        with self.lock:
+            rows = self.db.execute("SELECT op, payload FROM results WHERE id IN"
+                                   " (SELECT MAX(id) FROM results WHERE kind = ? GROUP BY op)", (kind,)).fetchall()
         return {op: json.loads(zlib.decompress(payload)) for op, payload in rows}
 
     def clear(self):
-        self.db.execute("DELETE FROM results")
-        self.db.commit()
-        self.db.execute("VACUUM")
+        with self.lock:
+            self.db.execute("DELETE FROM results")
+            self.db.commit()
+            self.db.execute("VACUUM")
 
 
 def make_handler(runner, store):
@@ -181,13 +223,18 @@ def make_handler(runner, store):
             if self.path in ("/", "/index.html"):
                 self.send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
             elif self.path.startswith("/api/list"):
-                if runner.listing is None or "refresh" in self.path:
+                # Listed again after a rebuild: which ops run on which device changes with the code.
+                if (runner.listing is None or "refresh" in self.path
+                        or runner.listing_stamp != runner.stamp()):
+                    runner.listing_stamp = runner.stamp()
                     runner.listing = runner.call(["list"])
                     runner.listing["scalar_build"] = runner.scalar.exists()
                 docs = op_docs()  # read fresh, so edited header comments show up on reload
                 for op in runner.listing.get("ops", []):
                     op["doc"] = docs.get(op["name"])
                 self.send(200, runner.listing)
+            elif self.path == "/api/tuning":
+                self.send(200, {"file": tuning_file(), "tunes": store.all("tune")})
             elif self.path == "/api/history":
                 self.send(200, store.all("run"))
             elif self.path == "/api/latest":
@@ -225,6 +272,22 @@ def make_handler(runner, store):
                 if "fatal" not in result:
                     store.add("call", result)
                 self.send(200, result)
+            elif self.path == "/api/tune":
+                TUNING_FILE.parent.mkdir(exist_ok=True)
+                args = ["tune", "--op", request["op"], "--device", request["device"],
+                        "--execution", request.get("execution") or "default",
+                        "--file", str(TUNING_FILE), "--retune", "1" if request.get("retune") else "0",
+                        "--min-time", str(request.get("min_time", 0.05)),
+                        "--search", "exhaustive" if request.get("search") == "exhaustive" else "binary",
+                        "--give-up", str(float(request.get("give_up", 1.3)))]
+                if request.get("size"):
+                    args += ["--size", str(int(request["size"]))]
+                result = runner.call(args, threads)
+                if "fatal" not in result:
+                    result["threads_requested"] = threads
+                    store.add("tune", result)
+                result["tuning_file"] = tuning_file()
+                self.send(200, result)
             elif self.path == "/api/program":
                 args = ["program", "--device", request.get("device", "cpu:0"),
                         "--execution", request.get("execution") or "default",
@@ -249,7 +312,8 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     options = parser.parse_args()
     runner = Runner(find_binary(options.bin))
-    server = HTTPServer(("127.0.0.1", options.port), make_handler(runner, Store(DATABASE)))
+    store = Store(DATABASE)
+    server = HTTPServer(("127.0.0.1", options.port), make_handler(runner, store))
     print(f"observe binary: {runner.binary}")
     print(f"dashboard: http://localhost:{options.port}")
     try:

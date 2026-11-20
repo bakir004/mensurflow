@@ -44,4 +44,42 @@ Tensor prod(const Tensor& x, int axis, bool keepdim = false, Execution execution
 // invalid. Only float32 input and CPU execution are supported so far.
 Tensor argmax(const Tensor& x, int axis = -1, Execution execution = Execution::Auto);
 
+// Returns the index of the smallest element independently along the last axis, with argmax's
+// rules: only the last axis (axis -1 or dim - 1; others are invalid), ties select the first index,
+// and a NaN counts as the extreme value, so the first NaN of a row is selected. The result has the
+// input shape with its last dimension removed and dtype int64. Empty axes and scalars are invalid.
+// Not differentiable. Only float32 input and CPU execution are supported so far.
+Tensor argmin(const Tensor& x, int axis = -1, Execution execution = Execution::Auto);
+
+// Variance along one axis (any axis; negative counts from the end), optionally keeping it as a
+// size-one dimension:
+//   var = sum((x - mean)^2) / (count - correction)
+// with count the size of the axis. correction = 1 (the default, as in PyTorch) is the unbiased
+// sample variance, correction = 0 the population variance; it must be >= 0. Computed in one pass
+// with Welford's algorithm (mean and M2 in double), so a large mean with a small spread does not
+// lose precision as sum(x^2) - count * mean^2 would.
+// When count - correction <= 0 (for example one element with correction 1, or an empty axis) the
+// result is NaN. A NaN or infinity among the reduced elements gives NaN. Records autograd for x;
+// the backward pass is var_backward.
+Tensor var(const Tensor& x, int axis, bool keepdim = false, std::int64_t correction = 1,
+           Execution execution = Execution::Auto);
+
+// The gradient of var(x, axis, keepdim, correction) with respect to x, given the gradient of its
+// output (with var's output shape): grad * 2 * (x - mean) / (count - correction); NaN where
+// count - correction <= 0.
+Tensor var_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim = false,
+                    std::int64_t correction = 1, Execution execution = Execution::Auto);
+
+// Standard deviation along one axis: sqrt(var(x, axis, keepdim, correction)), with var's
+// conventions (correction default 1, NaN when count - correction <= 0, Welford in double).
+// Records autograd for x; the backward pass is std_backward.
+Tensor std(const Tensor& x, int axis, bool keepdim = false, std::int64_t correction = 1,
+           Execution execution = Execution::Auto);
+
+// The gradient of std(x, axis, keepdim, correction) with respect to x:
+// grad * (x - mean) / ((count - correction) * std). Where std is 0 (all elements equal) the
+// gradient is 0, as in PyTorch, rather than 0 / 0; NaN where count - correction <= 0.
+Tensor std_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim = false,
+                    std::int64_t correction = 1, Execution execution = Execution::Auto);
+
 } // namespace mensurflow

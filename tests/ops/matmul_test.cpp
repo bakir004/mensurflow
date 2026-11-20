@@ -218,9 +218,9 @@ void test_strided_large(Device device) {
                 const Tensor va = make_view(a, s.m, s.k, kind_a, device);
                 const Tensor vb = make_view(b, s.k, s.n, kind_b, device);
                 check_against_reference(matmul(va, vb, on).to_vector<float>(), a, b, s.m, s.n, s.k,
-                                        "strided " + std::to_string(s.m) + "x" + std::to_string(s.n) +
-                                            "x" + std::to_string(s.k) + " A" + std::to_string(kind_a) +
-                                            " B" + std::to_string(kind_b));
+                                        "strided " + std::to_string(s.m) + "x" +
+                                            std::to_string(s.n) + "x" + std::to_string(s.k) + " A" +
+                                            std::to_string(kind_a) + " B" + std::to_string(kind_b));
             }
         }
     }
@@ -315,7 +315,7 @@ int main() {
         for (Device device : list_devices()) {
             std::cout << "  matmul on " << to_string(device) << '\n';
             if (!supported(device)) {
-                // Only the CPU has a matmul kernel so far; the others must say so clearly.
+                // Devices without a matmul kernel (CUDA so far) must say so clearly.
                 test_unsupported(device);
                 continue;
             }

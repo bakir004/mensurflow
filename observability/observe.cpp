@@ -16,6 +16,13 @@
 //       same calls with tracing detached, so the tracing overhead is visible.
 //   observe program --device cpu:0 [--execution ...] [--iterations 3]
 //       runs a small MLP step (forward and backward) and returns its full trace.
+//   observe tune --op NAME --device cpu:0 [--execution ...] [--size N] [--file tuning.txt]
+//                [--retune 0|1] [--min-time 0.05] [--search binary|exhaustive]
+//                [--give-up 1.3]
+//       auto-tunes the op at one size with mf::Tuner (offline, tested): every call it makes to a
+//       tunable kernel, with each candidate's time, the chosen and default settings, and the op's
+//       time with and without them. With --execution auto it also chooses the device of each call
+//       (every device timed with its copies). Results are stored in the file and reused next time.
 //
 // The thread count comes from OMP_NUM_THREADS, which serve.py sets per request.
 #include "mensurflow/mensurflow.hpp"
@@ -333,6 +340,86 @@ std::vector<OpSpec> make_ops() {
                 Tensor mask = dropout(rnd({n}, 2), 0.5f, true, 42, 0, Execution::CPU).mask.to(d);
                 return Case{{g, mask}, [=] { return dropout_backward(g, mask, 0.5f, true, e); }};
             }});
+    // Softmax and losses: [rows, 1000] logits (a 1000-class head) and per-element losses.
+    const auto classes_1000 = [](std::int64_t n) {
+        return Shape{std::max<std::int64_t>(1, n / 1000), 1000};
+    };
+    add_op({"softmax", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd(classes_1000(n), 1, d);
+                return Case{{x}, [=] { return softmax(x, -1, e); }};
+            }});
+    add_op({"log_softmax", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd(classes_1000(n), 1, d);
+                return Case{{x}, [=] { return log_softmax(x, -1, e); }};
+            }});
+    add_op({"softmax_backward", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor y = softmax(rnd(classes_1000(n), 1), -1, Execution::CPU).to(d);
+                Tensor g = rnd(classes_1000(n), 2, d);
+                return Case{{y, g}, [=] { return softmax_backward(y, g, -1, e); }};
+            }});
+    add_op({"log_softmax_backward", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                Tensor y = log_softmax(rnd(classes_1000(n), 1), -1, Execution::CPU).to(d);
+                Tensor g = rnd(classes_1000(n), 2, d);
+                return Case{{y, g}, [=] { return log_softmax_backward(y, g, -1, e); }};
+            }});
+    add_op({"cross_entropy", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                const Shape shape = classes_1000(n);
+                Tensor x = rnd(shape, 1, d), labels = indices({shape[0]}, shape[1], 7, d);
+                return Case{{x, labels},
+                            [=] { return cross_entropy(x, labels, Reduction::Mean, e); }};
+            }});
+    add_op({"cross_entropy_backward", "softmax & loss", elements, element_sizes,
+            [classes_1000](std::int64_t n, Device d, Execution e) {
+                const Shape shape = classes_1000(n);
+                Tensor x = rnd(shape, 1, d), labels = indices({shape[0]}, shape[1], 7, d);
+                Tensor g = Tensor::ones({}, DType::F32, d);
+                return Case{{x, labels, g}, [=] {
+                                return cross_entropy_backward(x, labels, g, Reduction::Mean, e);
+                            }};
+            }});
+    add_op({"mse_loss", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d);
+                return Case{{x, t}, [=] { return mse_loss(x, t, Reduction::Mean, e); }};
+            }});
+    add_op({"mse_loss_backward", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d), g = Tensor::ones({}, DType::F32, d);
+                return Case{{x, t, g},
+                            [=] { return mse_loss_backward(x, t, g, Reduction::Mean, e); }};
+            }});
+    add_op({"binary_cross_entropy_with_logits", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d);
+                return Case{{x, t}, [=] {
+                                return binary_cross_entropy_with_logits(x, t, Reduction::Mean, e);
+                            }};
+            }});
+    add_op({"binary_cross_entropy_with_logits_backward", "softmax & loss", elements, element_sizes,
+            [](std::int64_t n, Device d, Execution e) {
+                Tensor x = rnd({n}, 1, d), t = rnd({n}, 2, d), g = Tensor::ones({}, DType::F32, d);
+                return Case{{x, t, g}, [=] {
+                                return binary_cross_entropy_with_logits_backward(
+                                    x, t, g, Reduction::Mean, e);
+                            }};
+            }});
+    // Attention: [1, 8, L, 64], causal; size is the sequence length L. Rate: GFLOP/s of the two GEMMs.
+    add_op({"attention",
+            "attention",
+            "sequence length L ([1, 8, L, 64])",
+            {64, 128, 256, 512, 1024},
+            [](std::int64_t length, Device d, Execution e) {
+                Tensor q = rnd({1, 8, length, 64}, 1, d), k = rnd({1, 8, length, 64}, 2, d),
+                       v = rnd({1, 8, length, 64}, 3, d);
+                return Case{{q, k, v},
+                            [=] { return attention(q, k, v, nullptr, true, 0.0f, e); },
+                            4.0 * 8 * static_cast<double>(length) * length * 64};
+            }});
     return ops;
 }
 
@@ -484,8 +571,37 @@ std::string header_json() {
 
 // ---- commands -------------------------------------------------------------------------------------
 
+std::string names_json(const std::vector<std::string>& names) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        out += (i ? ",\"" : "\"") + json_escape(names[i]) + "\"";
+    }
+    return out + "]";
+}
+
+std::string values_json(const TuningValues& values) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        out += (i ? ",[\"" : "[\"") + json_escape(values[i].first) + "\"," +
+               std::to_string(values[i].second) + "]";
+    }
+    return out + "]";
+}
+
+std::string tunable_json() {
+    std::string out = "[";
+    const std::vector<TunableKernelInfo> kernels = tunable_kernels();
+    for (std::size_t i = 0; i < kernels.size(); ++i) {
+        const TunableKernelInfo& k = kernels[i];
+        out += (i ? "," : "") + std::string("{\"name\":\"") + json_escape(k.name) +
+               "\",\"device\":\"" + k.device + "\",\"key\":" + names_json(k.key) +
+               ",\"params\":" + names_json(k.params) + "}";
+    }
+    return out + "]";
+}
+
 int cmd_list(const std::vector<OpSpec>& ops) {
-    std::cout << "{" << header_json() << ",\"ops\":[";
+    std::cout << "{" << header_json() << ",\"tunable\":" << tunable_json() << ",\"ops\":[";
     const std::vector<Device> devices = list_devices();
     for (std::size_t i = 0; i < ops.size(); ++i) {
         const OpSpec& op = ops[i];
@@ -702,6 +818,69 @@ int cmd_program(const std::map<std::string, std::string>& flags) {
     return 0;
 }
 
+// The op at one size as an mf::Algorithm, tuned with mf::Tuner.
+int cmd_tune(const std::vector<OpSpec>& ops, const std::map<std::string, std::string>& flags) {
+    const OpSpec& op = find_op(ops, get(flags, "op", ""));
+    const Device device = parse_device(get(flags, "device", "cpu:0"));
+    const Execution execution = parse_execution(get(flags, "execution", "default"), device);
+    const std::string size_text = get(flags, "size", "");
+    const std::int64_t size =
+        size_text.empty() ? op.sizes[op.sizes.size() / 2] : std::stoll(size_text);
+    const std::string file = get(flags, "file", "mensurflow_tuning.txt");
+
+    Case c = op.make(size, device, execution);
+    std::string shapes = "[";
+    for (std::size_t k = 0; k < c.inputs.size(); ++k) {
+        shapes += (k ? "," : "") + shape_json(c.inputs[k].shape());
+    }
+    shapes += "]";
+    // The case's function already holds its inputs; the algorithm passes them through unused.
+    const Algorithm algorithm(
+        [&c](const std::vector<Tensor>&) { return std::vector<Tensor>{c.run()}; });
+    TuneOptions options;
+    options.retune = get(flags, "retune", "0") == "1";
+    options.min_time_s = std::stod(get(flags, "min-time", "0.05"));
+    options.search = parse_search_method(get(flags, "search", "binary"));
+    options.give_up = std::stod(get(flags, "give-up", "1.3"));
+    Tuner tuner(file);
+    const auto begin = Clock::now();
+    const TuneReport report = tuner.tune(algorithm, c.inputs, options);
+    const double seconds = std::chrono::duration<double>(Clock::now() - begin).count();
+
+    std::cout << "{" << header_json() << ",\"op\":\"" << json_escape(op.name) << "\",\"unit\":\""
+              << op.unit << "\",\"size\":" << size << ",\"inputs\":" << shapes << ",\"device\":\""
+              << to_string(device) << "\",\"execution\":\"" << execution_label(execution)
+              << "\",\"file\":\"" << json_escape(file)
+              << "\",\"retune\":" << (options.retune ? "true" : "false") << ",\"search\":\""
+              << search_method_name(options.search) << "\""
+              << ",\"give_up\":" << num(options.give_up) << ",\"seconds\":" << num(seconds)
+              << ",\"default_ms\":" << num(report.default_ms)
+              << ",\"tuned_ms\":" << num(report.tuned_ms)
+              << ",\"kept\":" << (report.kept ? "true" : "false") << ",\"calls\":[";
+    for (std::size_t i = 0; i < report.calls.size(); ++i) {
+        const TunedCall& call = report.calls[i];
+        std::cout << (i ? ",\n" : "\n") << "{\"op\":\"" << json_escape(call.op)
+                  << "\",\"device\":\"" << call.device << "\",\"key\":\"" << json_escape(call.key)
+                  << "\",\"default\":" << values_json(call.default_settings)
+                  << ",\"best\":" << values_json(call.best_settings)
+                  << ",\"best_ms\":" << num(call.best_ms)
+                  << ",\"default_ms\":" << num(call.default_ms)
+                  << ",\"reused\":" << (call.reused ? "true" : "false")
+                  << ",\"space_size\":" << call.space_size << ",\"search_s\":" << num(call.search_s)
+                  << ",\"points\":[";
+        for (std::size_t k = 0; k < call.points.size(); ++k) {
+            const TunedPoint& point = call.points[k];
+            std::cout << (k ? "," : "") << "{\"settings\":" << values_json(point.settings)
+                      << ",\"ms\":" << (point.rejected ? "null" : num(point.ms))
+                      << ",\"rejected\":" << (point.rejected ? "true" : "false")
+                      << ",\"stopped\":" << (point.stopped ? "true" : "false") << "}";
+        }
+        std::cout << "]}";
+    }
+    std::cout << "]}\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -721,8 +900,11 @@ int main(int argc, char** argv) {
         if (command == "program") {
             return cmd_program(flags);
         }
+        if (command == "tune") {
+            return cmd_tune(ops, flags);
+        }
         throw std::invalid_argument("unknown command: " + command +
-                                    " (list, run, call or program)");
+                                    " (list, run, call, program or tune)");
     } catch (const std::exception& error) {
         std::cout << "{\"fatal\":\"" << json_escape(error.what()) << "\"}\n";
         return 1;

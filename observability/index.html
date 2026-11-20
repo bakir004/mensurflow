@@ -265,6 +265,36 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       <p class="note">Self time is a span's time minus the spans inside it. For example, the op function's self time
         is its argument checks and setup. The self times add up to the whole call.</p>
     </div>
+
+    <h2 class="sec">Autotune</h2>
+    <div class="doc" id="a-about"></div>
+    <div class="bar">
+      <label class="f">Device (data)<select id="a-device"></select></label>
+      <label class="f" title="auto: the tuner also chooses the device of each call; cpu/gpu/where the data is: only the kernel settings on that device">Execution<select id="a-exec">
+        <option value="auto" selected>auto: choose the device too</option>
+        <option value="default">where the data is</option>
+        <option value="cpu">cpu</option><option value="gpu">gpu</option>
+      </select></label>
+      <div class="f" style="flex-basis:100%"><label class="f"><span>Size, <span id="a-unit">elements</span> (2<sup>k</sup>, pick one): the input the op is tuned for</span></label>
+        <div class="p2s" id="a-size"></div></div>
+      <label class="f" title="How the arguments that minimize the time are searched for">Search<select id="a-search">
+        <option value="binary" selected>binary sampling along each argument, keep the best</option>
+        <option value="exhaustive">every point (exhaustive, slow: up to ~1,100 points on Metal)</option>
+      </select></label>
+      <label class="f" title="Stop timing a point after 3 samples when even its fastest sample is 1.3× the best time so far: it cannot win">Early stop<input type="checkbox" id="a-giveup" checked></label>
+      <label class="f" title="Measure again even if a result is stored for this call">Measure again<input type="checkbox" id="a-retune"></label>
+      <button class="b primary" id="a-run">Autotune</button>
+      <span class="progress" id="a-progress"></span>
+    </div>
+    <div id="a-result"></div>
+    <div class="panel scroll">
+      <h2>Stored results for this op <span class="note mono" id="a-file" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+      <table id="a-stored"></table>
+      <h2 style="margin-top:14px">Stored device choices for this op</h2>
+      <table id="a-placed"></table>
+      <p class="note">The tuning file, which later runs (and <span class="mono">Algorithm::run(inputs, tuner)</span>) apply.
+        A result is used only for exactly its key on its machine; see <span class="mono">docs/AUTOTUNING.md</span>.</p>
+    </div>
   </section>
 
   <!-- Trace: timeline of every traced kernel call -->
@@ -321,7 +351,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { info: null, ops: [], results: {}, sized: {}, history: [], running: false, stop: false, trace: [],
+const state = { info: null, ops: [], results: {}, sized: {}, history: [], running: false, stop: false, trace: [], tunes: {}, tuningFile: null,
   calls: {}, current: null };
 // Latest result per op|column (any size) and per op|column|size.
 function keep(key, r) { state.results[key] = r; if (r && r.size != null) state.sized[key + "|" + r.size] = r; }
@@ -472,6 +502,7 @@ function docHtml(op) {
 // ---------- kernels tab ----------
 function scaleSize(op) {
   const k = Number($("k-scale").value);
+  if (op.unit.startsWith("sequence")) return [64, 256, 1024][k];
   if (op.unit.includes("batch")) return [16, 64, 256][k];
   if (op.unit.startsWith("matrix")) return [64, 256, 1024][k];
   return [1 << 14, 1 << 20, 1 << 24][k];
@@ -621,6 +652,7 @@ $("threads").addEventListener("input", () => { renderKernels(); renderOpResults(
 // ---------- power-of-two size pickers ----------
 // Sizes are picked as 2^k toggles: several for a sweep (data-multi), one for a call breakdown.
 function exponentRange(op) {
+  if (op.unit.startsWith("sequence")) return [4, 12]; // attention sequence length
   if (op.unit.includes("batch")) return [1, 10];   // matrix side, batch of 16
   if (op.unit.startsWith("matrix")) return [3, 12]; // matrix side N
   return [6, 26];                                   // elements: 64 to 64M
@@ -1074,6 +1106,346 @@ $("h-clear").addEventListener("click", async () => {
   renderHistory(); renderCells();
 });
 
+// ---------- autotune ----------
+// What each key and setting means, for the tables (kernels without an entry show just the name).
+const TUNE_HELP = {
+  m: "rows of A and C", n: "columns of B and C", k: "inner dimension: columns of A, rows of B",
+  threads: "CPU threads (the Threads setting)",
+  kernel: "0 tiled, 1 simdgroup_matrix, 2 MPS", bm: "rows of C per threadgroup", bn: "columns of C per threadgroup",
+  bk: "depth of the A and B slices in threadgroup memory", tm: "tiled: rows of C per thread",
+  tn: "tiled: columns of C per thread", sg_m: "simdgroup: simdgroups along the rows of the tile",
+  sg_n: "simdgroup: simdgroups along the columns", rows: "rows of C per tile (0: the thread's whole band)",
+  depth: "slice of k per tile", cols: "columns of C per tile",
+};
+const METAL_KERNELS = { 0: "tiled", 1: "simdgroup", 2: "MPS" };
+const asObj = (pairs) => Object.fromEntries(pairs || []);
+// A short name for a configuration, and the group it is coloured by.
+function candLabel(settings) {
+  const s = asObj(settings);
+  if ("kernel" in s) {
+    if (s.kernel === 2) return "MPS";
+    if (s.kernel === 1) return `simd ${s.bm}×${s.bn}×${s.bk} sg ${s.sg_m}×${s.sg_n}`;
+    return `tiled ${s.bm}×${s.bn}×${s.bk} t ${s.tm}×${s.tn}`;
+  }
+  if ("rows" in s) return `${s.rows || "band"} × ${s.depth} × ${s.cols}`;
+  return (settings || []).map(([k, v]) => `${k}=${v}`).join(" ");
+}
+function candGroup(settings) {
+  const s = asObj(settings);
+  if ("kernel" in s) return METAL_KERNELS[s.kernel] ?? "kernel " + s.kernel;
+  if ("rows" in s) return s.rows ? `${s.rows}-row tiles` : "whole band";
+  return settings?.length ? `${settings[0][0]}=${settings[0][1]}` : "";
+}
+function groupColors(groups) {
+  const palette = [css("--accent"), css("--metal"), css("--cuda"), css("--other"), css("--bad"), css("--muted")];
+  return Object.fromEntries(groups.map((g, i) => [g, palette[i % palette.length]]));
+}
+const pairsText = (pairs) => (pairs || []).map(([k, v]) => `${k}=${v}`).join(" ");
+
+let tuneData = null;
+function onTuneOp() {
+  const op = opByName(state.current);
+  if (!op) return;
+  $("a-unit").textContent = op.unit;
+  setPow2("a-size", op, [op.sizes[Math.floor(op.sizes.length / 2)]]);
+  $("a-device").innerHTML = state.info.devices.map((d) => `<option ${op.support[d] === "ok" ? "" : "disabled"}>${d}</option>`).join("");
+  // The device tuned last for this op, with its size.
+  const last = state.tunes[op.name];
+  if (last) { $("a-device").value = last.device; setPow2("a-size", op, [last.size]); }
+  tuneData = last || null;
+}
+$("a-device").addEventListener("change", () => {
+  tuneData = state.tunes[state.current + "|" + $("a-device").value] || null;
+  renderTuneResult();
+});
+$("a-run").addEventListener("click", async () => {
+  const op = opByName(state.current);
+  $("a-run").disabled = true;
+  $("a-progress").textContent = $("a-search").value === "exhaustive"
+    ? "tuning… measuring every point of the space (this can take a few minutes)"
+    : "tuning… binary sampling along each argument (a few seconds per call)";
+  try {
+    const data = await api("/api/tune", { op: op.name, device: $("a-device").value, execution: $("a-exec").value,
+      size: getPow2("a-size")[0] || null, retune: $("a-retune").checked, search: $("a-search").value,
+      give_up: $("a-giveup").checked ? 1.3 : 0, threads: Number($("threads").value) || null });
+    if (data.tuning_file) state.tuningFile = data.tuning_file;
+    state.tunes[data.op] = state.tunes[data.op + "|" + data.device] = tuneData = data;
+    $("a-progress").textContent = `done in ${data.seconds.toFixed(1)} s`;
+  } catch (e) { $("a-progress").textContent = "error: " + e.message; }
+  $("a-run").disabled = false;
+  renderTune();
+});
+
+function renderTune() {
+  const op = opByName(state.current);
+  if (!op || !state.info) return;
+  // What can be tuned here: the tunable kernels named after this op, per device.
+  const kernels = (state.info.tunable || []).filter((k) => k.name === op.name);
+  const deviceChoiceNote = state.info.devices.length > 1
+    ? `<br>With execution <b>auto</b>, it also chooses the <b>device</b> for each call made with <code>Execution::Auto</code>:
+        every device with a kernel for it is timed, including copying the inputs there and the result back, and the
+        fastest is stored (without a stored choice, Auto runs on the CPU).`
+    : "";
+  $("a-about").innerHTML = kernels.length
+    ? `Tuning is the minimization of a function. For one call, the <b>kernel parameters</b> are fixed by the inputs
+        and the <b>arguments</b> are the kernel's settings; the objective is the time per call:` +
+      kernels.map((k) => `<div class="mono" style="margin:6px 0 6px 12px">${esc(k.device)}: time(<b>${k.params.map(esc).join(", ")}</b> ; ${k.key.map(esc).join(", ")}) → min</div>`).join("") +
+      `<span class="note">Each argument takes a few discrete values in order. A kernel variant (Metal: tiled, simdgroup,
+        MPS) is a category rather than an axis, so each variant is its own region of the space with its own arguments.
+        <b>Binary sampling</b>: from a start point, along one argument at a time with the others held, sample its
+        values coarse to fine (the two ends, then the middle, then the quarter points), measure every sample and move to
+        the best; repeat over every argument until a pass changes nothing. Nothing is ruled out by comparing two noisy
+        times; it can miss a minimum that needs two arguments changed together.
+        <b>Exhaustive</b> measures every allowed point. A point whose result differs from the default's is rejected.
+        More methods can be added in <span class="mono">detail::search</span>.</span>` + deviceChoiceNote
+    : `<span class="note">No tunable kernel is named after <code>${esc(op.name)}</code> on this build, so there are no
+        settings to tune; so far only <code>matmul</code> has some.</span>` + deviceChoiceNote;
+  renderTuneResult();
+  renderStored();
+}
+
+function renderTuneResult() {
+  const el = $("a-result");
+  const d = tuneData;
+  if (!d) { el.innerHTML = '<p class="note">Not tuned yet: pick a device and size and press Autotune.</p>'; return; }
+  if (d.calls.some((c) => !c.points)) {
+    el.innerHTML = '<p class="note">This result was stored by an older version of the tuner; press Autotune to tune again.</p>';
+    return;
+  }
+  const placed = d.calls.filter((c) => c.device === "auto");
+  const kernels = d.calls.filter((c) => c.device !== "auto");
+  if (!d.calls.length) {
+    el.innerHTML = `<div class="panel"><p class="note">${esc(d.op)} at ${fmtSize(d.size)} on ${esc(d.device)} (${esc(d.execution)})
+      made no calls to a tunable kernel${d.execution === "auto" ? " and had no device to choose between" : ""}, so there
+      was nothing to tune (op: ${fmtMs(d.default_ms)} per call).</p></div>`;
+    return;
+  }
+  let html = `<div class="panel"><div class="stats">${[
+    [fmtMs(d.default_ms) + " → " + fmtMs(d.tuned_ms), `${d.op} per call, default → tuned`],
+    [(d.default_ms / d.tuned_ms).toFixed(2) + "×", "whole op"],
+    [d.kept ? "kept" : "dropped", d.kept ? "results stored in the file" : "tuned op was slower: results dropped"],
+    [d.seconds.toFixed(1) + " s", "time spent tuning"],
+    [`${d.op} on ${d.device} (${d.execution})`, shapes(d.inputs)],
+  ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span class="mono">${esc(l)}</span></div>`).join("")}</div></div>`;
+  if (placed.length) html += placementPanel(placed);
+  kernels.forEach((c, i) => { html += callPanel(c, i); });
+  el.innerHTML = html;
+  el.querySelectorAll(".a-trace").forEach((chart) => traceChart(chart, kernels[Number(chart.dataset.i)], Number(chart.dataset.i)));
+  el.querySelectorAll(".a-slice").forEach((chart) => sliceChart(chart, kernels[Number(chart.dataset.i)], chart.dataset.arg));
+}
+
+// "m=256 n=512 threads=11" -> [["m", "256"], ...]; a word without "=" keeps an empty value.
+const keyPairs = (key) => (key || "").split(" ").filter(Boolean).map((w) => (w.includes("=") ? w.split("=") : [w, ""]));
+
+// Every argument and the values it took among the measured points, in increasing order (or the
+// chosen settings alone, for a result found earlier).
+function argumentValues(call) {
+  const values = {};
+  for (const [k, v] of call.best) values[k] = new Set([v]);
+  for (const p of call.points) for (const [k, v] of p.settings) (values[k] ??= new Set()).add(v);
+  return Object.entries(values).map(([name, set]) => ({ name, values: [...set].sort((a, b) => a - b) }));
+}
+
+const showValue = (name, v) => (v === 0 && name === "rows" ? "band" : name === "kernel" ? METAL_KERNELS[v] ?? v : v);
+
+function callPanel(c, i) {
+  const best = asObj(c.best), def = asObj(c.default);
+  const args = argumentValues(c);
+  const key = keyPairs(c.key);
+  const measured = c.points.length;
+  const rejected = c.points.filter((p) => p.rejected).length;
+  const stopped = c.points.filter((p) => p.stopped).length;
+  const signature = `time(${args.map((a) => a.name).join(", ")} ; ${key.map(([k]) => k).join(", ")})`;
+  const chip = (a, v) => `<span class="mono" style="display:inline-block;min-width:22px;text-align:center;padding:1px 4px;margin:1px;border-radius:3px;
+      ${best[a.name] === v ? "background:var(--good);color:var(--panel);font-weight:700;" : ""}${def[a.name] === v ? "box-shadow:inset 0 0 0 1.5px var(--ink);" : ""}">${showValue(a.name, v)}</span>`;
+  const argRows = args.map((a) => `<tr><td class="mono"><b>${esc(a.name)}</b></td><td>${a.values.map((v) => chip(a, v)).join("")}</td>
+      <td class="num mono">${def[a.name] != null ? showValue(a.name, def[a.name]) : "–"}</td>
+      <td class="num mono" style="font-weight:700;${best[a.name] !== def[a.name] ? "color:var(--good)" : ""}">${showValue(a.name, best[a.name])}</td>
+      <td class="note">${esc(TUNE_HELP[a.name] || "")}</td></tr>`).join("");
+  const sliced = args.filter((a) => a.values.length > 1);
+  return `<div class="panel"><h2>call ${i + 1}: ${esc(c.op)} on ${esc(c.device)}</h2>
+    <div class="mono" style="font-size:15px;margin:2px 0 10px">${esc(signature)} → min &nbsp;<span class="note">with ${esc(c.key)}</span></div>
+    <div class="stats">${[
+      [fmtMs(c.default_ms) + " → " + fmtMs(c.best_ms), "default → argmin"],
+      [(c.default_ms / c.best_ms).toFixed(2) + "×", "speedup of this call"],
+      [c.reused ? "stored" : `${measured} of ${(c.space_size || 0).toLocaleString()}`, c.reused ? "found earlier, not searched again" : "points measured" + (rejected ? ` (${rejected} rejected)` : "")],
+      ...(c.reused ? [] : [[c.search_s.toFixed(2) + " s", "search" + (stopped ? `; ${stopped} stopped early` : "")]]),
+    ].map(([v, l]) => `<div class="stat"><b>${esc(v)}</b><span class="mono">${esc(l)}</span></div>`).join("")}</div>
+    <div class="charts">
+      <div><h2>Kernel parameters (fixed by the call)</h2><table>
+        <thead><tr><th>parameter</th><th class="num">value</th><th>meaning</th></tr></thead><tbody>
+        ${key.map(([k, v]) => `<tr><td class="mono">${esc(k)}</td><td class="num mono"><b>${esc(v)}</b></td><td class="note">${esc(TUNE_HELP[k] || "")}</td></tr>`).join("")}
+        </tbody></table>
+        <p class="note">The result is stored under these values and applied only to calls with exactly them.</p></div>
+      <div><h2>Arguments that minimize the time</h2><table>
+        <thead><tr><th>argument</th><th>values measured</th><th class="num">default</th><th class="num">argmin</th><th>meaning</th></tr></thead><tbody>
+        ${argRows}</tbody></table>
+        <p class="note">Filled: the argmin; outlined: the default. Green: changed by tuning.</p></div>
+    </div>
+    ${measured ? `<h2 style="margin-top:14px">The search, in the order points were measured</h2><div class="a-trace" data-i="${i}"></div>
+      <div class="legend" id="a-legend-${i}"></div>
+      ${sliced.length ? `<h2 style="margin-top:14px">Slices through the argmin: the time along one argument, the others held at the argmin</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+        ${sliced.map((a) => `<div><div class="mono" style="font-weight:700">${esc(a.name)}</div><div class="a-slice" data-i="${i}" data-arg="${esc(a.name)}"></div></div>`).join("")}</div>
+        <p class="note">Only measured points are drawn; a value the search did not visit on this line has no dot.</p>` : ""}
+      <details style="margin-top:10px"><summary class="note">Every measured point (${measured})</summary>
+        <table><thead><tr><th class="num">#</th><th>settings</th><th class="num">ms</th></tr></thead><tbody>
+        ${c.points.map((p, k) => `<tr><td class="num">${k + 1}</td>
+          <td class="mono">${esc(candLabel(p.settings))}${k === 0 ? ' <span class="note">default</span>' : ""}</td>
+          <td class="num">${p.rejected ? '<span class="err">rejected</span>' : fmtMs(p.ms) + (p.stopped ? ' <span class="note">stopped early</span>' : "")}</td></tr>`).join("")}
+        </tbody></table></details>`
+      : `<p class="note">Found earlier, so nothing was measured this time; tick <i>Measure again</i> to see the search.</p>`}
+  </div>`;
+}
+
+// The device of each Execution::Auto call: the setting gpu, 0 or 1. "data=cpu f32 8x8 8x8" is the key.
+const deviceName = (settings) => (asObj(settings).gpu ? "gpu" : "cpu");
+function placementPanel(calls) {
+  const execColor = (name) => name === "cpu" ? css("--cpu") : deviceColor(state.info.devices.find((x) => !x.startsWith("cpu")) || "gpu");
+  return `<div class="panel"><h2>Device choice (Execution::Auto)</h2>
+    <table><thead><tr><th>op</th><th>input</th><th>data on</th><th>time per call on each device (copies included)</th><th>chosen</th><th class="num">vs cpu</th></tr></thead><tbody>
+    ${calls.map((c) => {
+      const [data, ...input] = c.key.split(" ");
+      const times = c.points.length ? c.points : [{ settings: [["gpu", 0]], ms: c.default_ms }, { settings: c.best, ms: c.best_ms }];
+      const top = Math.max(...times.filter((p) => !p.rejected).map((p) => p.ms), 1e-9);
+      const chosen = deviceName(c.best);
+      const bars = times.map((p) => {
+        const name = deviceName(p.settings);
+        if (p.rejected) return `<div class="err">${esc(name)}: rejected (result differed from the CPU's)</div>`;
+        return `<div style="display:flex;align-items:center;gap:8px;margin:2px 0">
+          <span class="mono" style="width:28px">${esc(name)}</span>
+          <div style="flex:1;max-width:340px;background:var(--soft);border-radius:3px">
+            <div style="width:${(100 * p.ms / top).toFixed(1)}%;height:12px;border-radius:3px;background:${execColor(name)};${name === chosen ? `box-shadow:0 0 0 2px ${css("--good")}` : "opacity:.6"}"></div></div>
+          <span class="mono">${fmtMs(p.ms)}</span></div>`;
+      }).join("");
+      return `<tr><td class="mono">${esc(c.op)}</td><td class="mono">${esc(input.join(" "))}</td><td>${esc(data.replace("data=", ""))}</td>
+        <td>${bars}${c.reused ? '<div class="note">stored earlier; tick <i>Measure again</i> to re-measure</div>' : ""}</td>
+        <td><b>${chosen}</b></td><td class="num"><b>${c.default_ms && c.best_ms ? (c.default_ms / c.best_ms).toFixed(2) + "×" : "–"}</b></td></tr>`;
+    }).join("")}</tbody></table>
+    <p class="note">Without a stored choice, Execution::Auto runs on the CPU. Times on another device include copying the
+      inputs there and the result back, since the data stays where it lives. A device's tunable kernel settings are
+      tuned before it is timed (listed below, if the op has any), so each device is compared at its best.</p></div>`;
+}
+
+// The search as it went: each measured point's time in the order measured, coloured by kernel
+// variant; the step line is the best time so far, the dashed line the default (the first point).
+// Rejected points sit on the top edge.
+function traceChart(el, call, index) {
+  const ps = call.points;
+  const ok = ps.filter((p) => !p.rejected && p.ms != null);
+  if (!ok.length) { el.innerHTML = '<p class="note">Every point was rejected.</p>'; return; }
+  const groups = [...new Set(ps.map((p) => candGroup(p.settings)))];
+  const palette = [css("--accent"), css("--metal"), css("--other"), css("--cuda"), css("--muted")];
+  const color = Object.fromEntries(groups.map((g, i) => [g, palette[i % palette.length]]));
+  const W = Math.max(el.clientWidth, 400), H = 250, L = 58, R = 12, T = 12, B = 30;
+  const defMs = !ps[0].rejected ? ps[0].ms : call.default_ms;
+  const values = ok.map((p) => p.ms);
+  const lo = Math.min(...values) * 0.97, hi = Math.max(...values, defMs) * 1.08;
+  const log = hi / lo > 4;
+  const Y = log ? (v) => T + (H - T - B) * (1 - Math.log(v / lo) / Math.log(hi / lo)) : (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  const X = (k) => L + (W - L - R) * (ps.length === 1 ? 0.5 : k / (ps.length - 1));
+  let svg = `<svg width="${W}" height="${H}">`;
+  const ticks = log ? logTicksMs(lo, hi) : linTicks(lo, hi);
+  for (const v of ticks) svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${fmtMs(v)}</text>`;
+  let best = Infinity, path = "";
+  ps.forEach((p, k) => {
+    if (!p.rejected && p.ms < best) { path += `${path ? "L" : "M"}${X(k)},${path ? Y(best) : Y(p.ms)}L${X(k)},${Y(p.ms)}`; best = p.ms; }
+  });
+  path += `L${X(ps.length - 1)},${Y(best)}`;
+  svg += `<path d="${path}" fill="none" stroke="${css("--good")}" stroke-width="2"/>`;
+  svg += `<line x1="${L}" x2="${W - R}" y1="${Y(defMs)}" y2="${Y(defMs)}" stroke="${css("--ink")}" stroke-dasharray="5 4"/>`;
+  const argmin = pairsText(call.best);
+  ps.forEach((p, k) => {
+    const g = candGroup(p.settings);
+    const chosen = !p.rejected && pairsText(p.settings) === argmin;
+    if (p.rejected) svg += `<text data-k="${k}" x="${X(k)}" y="${T + 4}" text-anchor="middle" style="fill:var(--bad);font-weight:700">×</text>`;
+    else if (p.stopped) svg += `<circle data-k="${k}" cx="${X(k)}" cy="${Y(p.ms)}" r="4" fill="${css("--panel")}" stroke="${color[g]}" stroke-width="1.5"/>`;
+    else svg += `<circle data-k="${k}" cx="${X(k)}" cy="${Y(p.ms)}" r="${chosen ? 6 : 4}" fill="${color[g]}" ${chosen ? `stroke="${css("--good")}" stroke-width="2.5"` : `fill-opacity="0.85"`}/>`;
+  });
+  svg += `<text x="${L + 4}" y="${Y(defMs) - 5}" style="fill:var(--ink);paint-order:stroke;stroke:var(--panel);stroke-width:3px">default ${fmtMs(defMs)}</text>
+    <text x="${L}" y="${H - 6}">first measured</text><text x="${W - R}" y="${H - 6}" text-anchor="end">last (${ps.length} points${log ? ", log scale" : ""})</text></svg>`;
+  el.innerHTML = svg;
+  el.querySelectorAll("[data-k]").forEach((m) => {
+    const k = Number(m.dataset.k), p = ps[k];
+    m.addEventListener("mousemove", (e) => showTip(e, `<b>#${k + 1} ${esc(candLabel(p.settings))}</b>${k === 0 ? " (the default)" : ""}<br>
+      ${p.rejected ? "rejected: result differed from the default's" : `${fmtMs(p.ms)} per call · ${(defMs / p.ms).toFixed(2)}× the default${p.stopped ? " · stopped early (already slower than 1.3× the best)" : ""}`}`));
+    m.addEventListener("mouseleave", hideTip);
+  });
+  $("a-legend-" + index).innerHTML = groups.map((g) => `<span><i style="background:${color[g]}"></i>${esc(g)}</span>`).join("") +
+    `<span><i style="background:${css("--good")}"></i>best so far</span><span><i style="background:${css("--ink")}"></i>default (dashed)</span><span>ringed: the argmin</span><span>hollow: stopped early</span>`;
+}
+
+function logTicksMs(lo, hi) {
+  const out = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+    for (const m of [1, 2, 5]) { const v = m * 10 ** e; if (v >= lo && v <= hi) out.push(v); }
+  return out.length >= 2 ? out : linTicks(lo, hi);
+}
+
+// One argument's slice through the argmin: the measured points that equal the argmin in every other setting.
+function sliceChart(el, call, name) {
+  const best = asObj(call.best);
+  const arg = argumentValues(call).find((a) => a.name === name);
+  const pts = arg.values.map((v) => {
+    const p = call.points.find((c) => !c.rejected && asObj(c.settings)[name] === v &&
+      Object.entries(best).every(([k, bv]) => k === name || asObj(c.settings)[k] === bv));
+    return { v, ms: p ? p.ms : null };
+  });
+  const got = pts.filter((p) => p.ms != null);
+  const W = Math.max(el.clientWidth, 200), H = 120, L = 50, R = 22, T = 8, B = 20;
+  if (!got.length) { el.innerHTML = '<p class="note">nothing measured on this line</p>'; return; }
+  const lo = Math.min(...got.map((p) => p.ms)) * 0.95, hi = Math.max(...got.map((p) => p.ms)) * 1.05;
+  const Y = (v) => T + (H - T - B) * (1 - (v - lo) / Math.max(hi - lo, 1e-12));
+  const X = (k) => L + (W - L - R) * (pts.length === 1 ? 0.5 : k / (pts.length - 1));
+  let svg = `<svg width="${W}" height="${H}">`;
+  for (const v of [lo, hi]) svg += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${L - 4}" y="${Y(v) + 4}" text-anchor="end">${fmtMs(v)}</text>`;
+  let line = "";
+  pts.forEach((p, k) => {
+    svg += `<text x="${X(k)}" y="${H - 5}" text-anchor="middle" style="${p.v === best[name] ? "font-weight:700;fill:var(--good)" : ""}">${showValue(name, p.v)}</text>`;
+    if (p.ms != null) line += `${line ? "L" : "M"}${X(k)},${Y(p.ms)}`;
+  });
+  svg += `<path d="${line}" fill="none" stroke="${css("--muted")}" stroke-width="1.5"/>`;
+  pts.forEach((p, k) => {
+    if (p.ms == null) return;
+    const at = p.v === best[name];
+    svg += `<circle cx="${X(k)}" cy="${Y(p.ms)}" r="${at ? 5.5 : 4}" fill="${at ? css("--good") : css("--accent")}"><title>${name}=${p.v}: ${fmtMs(p.ms)}</title></circle>`;
+  });
+  el.innerHTML = svg + "</svg>";
+}
+
+function renderStored() {
+  const op = opByName(state.current);
+  const file = state.tuningFile;
+  $("a-file").textContent = file ? file.path : "";
+  const rows = [], placed = [];
+  for (const [machine, entries] of Object.entries(file?.machines || {}))
+    for (const e of entries) if (e.op === op.name) (e.device === "auto" ? placed : rows).push({ machine, ...e });
+  $("a-stored").innerHTML = rows.length
+    ? `<thead><tr><th>device</th><th>input (key)</th><th>tuned settings</th><th class="num">tuned</th><th class="num">default</th><th class="num">speedup</th><th>machine</th></tr></thead><tbody>` +
+      rows.map((r) => `<tr><td>${esc(r.device)}</td><td class="mono">${esc(r.key)}</td>
+        <td><b>${esc(candLabel(r.settings))}</b><div class="note mono">${esc(pairsText(r.settings))}</div></td>
+        <td class="num">${fmtMs(r.best_ms)}</td><td class="num">${fmtMs(r.default_ms)}</td>
+        <td class="num"><b>${(r.default_ms / r.best_ms).toFixed(2)}×</b></td><td class="note">${esc(r.machine)}</td></tr>`).join("") + "</tbody>"
+    : '<tbody><tr><td class="note">Nothing stored for this op yet.</td></tr></tbody>';
+  $("a-placed").innerHTML = placed.length
+    ? `<thead><tr><th>data on</th><th>input</th><th>chosen</th><th class="num">chosen</th><th class="num">cpu</th><th class="num">vs cpu</th><th>machine</th></tr></thead><tbody>` +
+      placed.map((r) => {
+        const [data, ...input] = r.key.split(" ");
+        return `<tr><td>${esc(data.replace("data=", ""))}</td><td class="mono">${esc(input.join(" "))}</td><td><b>${deviceName(r.settings)}</b></td>
+          <td class="num">${fmtMs(r.best_ms)}</td><td class="num">${fmtMs(r.default_ms)}</td>
+          <td class="num"><b>${(r.default_ms / r.best_ms).toFixed(2)}×</b></td><td class="note">${esc(r.machine)}</td></tr>`;
+      }).join("") + "</tbody>"
+    : '<tbody><tr><td class="note">No device choice stored for this op (tune with execution auto).</td></tr></tbody>';
+}
+async function loadTuning() {
+  state.tunes = {};
+  try {
+    const data = await api("/api/tuning");
+    state.tuningFile = data.file;
+    for (const t of data.tunes || []) state.tunes[t.op] = state.tunes[t.op + "|" + t.device] = t; // the latest per op and per op and device
+  } catch { state.tuningFile = null; }
+}
+
 // ---------- op page ----------
 const opByName = (name) => state.ops.find((o) => o.name === name);
 function renderOpPage() {
@@ -1087,6 +1459,7 @@ function renderOpPage() {
   renderOpResults();
   renderSweep();
   renderCall();
+  renderTune();
 }
 // Every device and CPU version for the current op, one row each, plus the gains between the versions.
 function renderOpResults() {
@@ -1157,6 +1530,7 @@ function route() {
       state.current = name;
       $("s-op").value = name; onSweepOp();
       $("c-op").value = name; onCallOp();
+      onTuneOp();
     }
     window.scrollTo(0, 0);
   }
@@ -1169,7 +1543,7 @@ $("tabs").addEventListener("click", (e) => {
 });
 window.addEventListener("resize", () => {
   const page = currentPage();
-  if (page === "op") { renderSweep(); renderCall(); } else if (page === "trace") renderTrace(); else if (page === "history") renderHistory();
+  if (page === "op") { renderSweep(); renderCall(); renderTuneResult(); } else if (page === "trace") renderTrace(); else if (page === "history") renderHistory();
 });
 
 (async function start() {
@@ -1190,6 +1564,7 @@ window.addEventListener("resize", () => {
   $("c-op").innerHTML = state.ops.map((o) => `<option>${esc(o.name)}</option>`).join("");
   $("t-device").innerHTML = state.info.devices.map((d) => `<option>${d}</option>`).join("");
   await loadHistory();
+  await loadTuning();
   route();
 })();
 </script>

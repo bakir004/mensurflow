@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace mensurflow::cpu {
 
@@ -115,18 +116,45 @@ void matmul_f32_sequential(const float* a, const float* b, float* c, std::int64_
     }
 }
 
-// The same i-k-j products, but each thread takes one contiguous band of rows of C and walks B in
-// blocks: a block of B (128 x 256 floats = 128 KB) fits a typical 256 KB L2 cache and is reused by
-// every row of the band, and the 256 floats of one row of C stay in L1 while the depth loop runs.
+namespace {
+
+// The defaults: a block of B (128 x 256 floats = 128 KB) fits a typical 256 KB L2 cache and is
+// reused by every row of the band, and the 256 floats of one row of C stay in L1 while the depth
+// loop runs.
+MatmulBlocking& matmul_blocking_state() {
+    static MatmulBlocking blocking;
+    return blocking;
+}
+
+} // namespace
+
+MatmulBlocking matmul_blocking() { return matmul_blocking_state(); }
+
+void set_matmul_blocking(MatmulBlocking blocking) {
+    if (blocking.rows < 0 || blocking.depth <= 0 || blocking.cols <= 0) {
+        throw std::invalid_argument("matmul blocking: depth and cols must be positive and rows "
+                                    "must not be negative");
+    }
+    matmul_blocking_state() = blocking;
+}
+
 void matmul_f32_parallel(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
                          std::int64_t k) {
-    constexpr std::int64_t block_depth = 128;
-    constexpr std::int64_t block_cols = 256;
+    matmul_f32_parallel(a, b, c, m, n, k, matmul_blocking_state());
+}
+
+// The same i-k-j products, but each thread takes one contiguous band of rows of C and walks it in
+// tiles of blocking.rows x blocking.cols over blocking.depth-long slices of B (see MatmulBlocking).
+void matmul_f32_parallel(const float* a, const float* b, float* c, std::int64_t m, std::int64_t n,
+                         std::int64_t k, const MatmulBlocking& blocking) {
+    const std::int64_t block_depth = blocking.depth;
+    const std::int64_t block_cols = blocking.cols;
     const bool parallel = static_cast<double>(m) * static_cast<double>(n) * static_cast<double>(k) >
                           static_cast<double>(parallel_work_threshold);
     const std::int64_t threads = parallel ? max_threads() : 1;
     const std::int64_t band_rows = std::max<std::int64_t>((m + threads - 1) / threads, 1);
     const std::int64_t bands = (m + band_rows - 1) / band_rows;
+    const std::int64_t block_rows = blocking.rows > 0 ? blocking.rows : band_rows;
     MENSURFLOW_PARALLEL_FOR(if (parallel))
     for (std::int64_t band = 0; band < bands; ++band) {
         const std::int64_t row_begin = band * band_rows;
@@ -136,18 +164,21 @@ void matmul_f32_parallel(const float* a, const float* b, float* c, std::int64_t 
                 c[i * n + j] = 0.0f;
             }
         }
-        for (std::int64_t j0 = 0; j0 < n; j0 += block_cols) {
-            const std::int64_t cols = std::min(block_cols, n - j0);
-            for (std::int64_t p0 = 0; p0 < k; p0 += block_depth) {
-                const std::int64_t depth = std::min(block_depth, k - p0);
-                for (std::int64_t i = row_begin; i < row_end; ++i) {
-                    float* ci = c + i * n + j0;
-                    const float* ai = a + i * k + p0;
-                    for (std::int64_t p = 0; p < depth; ++p) {
-                        const float aip = ai[p];
-                        const float* bp = b + (p0 + p) * n + j0;
-                        for (std::int64_t j = 0; j < cols; ++j) {
-                            ci[j] += aip * bp[j];
+        for (std::int64_t i0 = row_begin; i0 < row_end; i0 += block_rows) {
+            const std::int64_t i1 = std::min(i0 + block_rows, row_end);
+            for (std::int64_t j0 = 0; j0 < n; j0 += block_cols) {
+                const std::int64_t cols = std::min(block_cols, n - j0);
+                for (std::int64_t p0 = 0; p0 < k; p0 += block_depth) {
+                    const std::int64_t depth = std::min(block_depth, k - p0);
+                    for (std::int64_t i = i0; i < i1; ++i) {
+                        float* ci = c + i * n + j0;
+                        const float* ai = a + i * k + p0;
+                        for (std::int64_t p = 0; p < depth; ++p) {
+                            const float aip = ai[p];
+                            const float* bp = b + (p0 + p) * n + j0;
+                            for (std::int64_t j = 0; j < cols; ++j) {
+                                ci[j] += aip * bp[j];
+                            }
                         }
                     }
                 }

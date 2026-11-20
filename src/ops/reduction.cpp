@@ -159,26 +159,147 @@ Tensor prod(const Tensor& x, int axis, bool keepdim, Execution execution) {
     return reduce_axis(detail::OpId::AxisProd, x, axis, keepdim, execution);
 }
 
-Tensor argmax(const Tensor& x, int axis, Execution execution) {
+namespace {
+
+// argmax and argmin: the same validation (last axis only, non-empty) and an I64 result.
+Tensor arg_reduce(detail::OpId op, const Tensor& x, int axis, Execution execution) {
+    const std::string name = detail::op_name(op);
     if (!x.defined()) {
-        throw std::invalid_argument("argmax: undefined tensor");
+        throw std::invalid_argument(name + ": undefined tensor");
     }
     if (x.dim() == 0) {
-        throw std::invalid_argument("argmax: input must have at least one dimension");
+        throw std::invalid_argument(name + ": input must have at least one dimension");
     }
     const int normalized_axis = axis < 0 ? axis + x.dim() : axis;
     if (normalized_axis != x.dim() - 1) {
-        throw std::invalid_argument("argmax: only the last axis is supported");
+        throw std::invalid_argument(name + ": only the last axis is supported");
     }
     const std::int64_t width = x.size(x.dim() - 1);
     if (width == 0) {
-        throw std::invalid_argument("argmax: empty axis");
+        throw std::invalid_argument(name + ": empty axis");
     }
     Shape output_shape(x.shape().begin(), x.shape().end() - 1);
     Tensor out = Tensor::empty(std::move(output_shape), DType::I64, x.device());
     const Tensor input = x.is_contiguous() ? x : x.contiguous();
-    detail::dispatch(detail::OpId::Argmax, {{input}, {out}}, execution);
+    detail::dispatch(op, {{input}, {out}}, execution);
     return out;
+}
+
+} // namespace
+
+Tensor argmax(const Tensor& x, int axis, Execution execution) {
+    return arg_reduce(detail::OpId::Argmax, x, axis, execution);
+}
+
+Tensor argmin(const Tensor& x, int axis, Execution execution) {
+    return arg_reduce(detail::OpId::Argmin, x, axis, execution);
+}
+
+namespace {
+
+// Validation shared by var and std and their backward passes: returns the normalized axis and
+// sets out_shape to the reduced shape.
+int moment_axis(const std::string& name, const Tensor& x, int axis, bool keepdim,
+                std::int64_t correction, Shape& out_shape) {
+    if (!x.defined()) {
+        throw std::invalid_argument(name + ": undefined tensor");
+    }
+    if (x.dim() == 0) {
+        throw std::invalid_argument(name + ": input must have at least one dimension");
+    }
+    const int normalized_axis = axis < 0 ? axis + x.dim() : axis;
+    if (normalized_axis < 0 || normalized_axis >= x.dim()) {
+        throw std::invalid_argument(name + ": axis " + std::to_string(axis) +
+                                    " out of range for " + std::to_string(x.dim()) +
+                                    " dimensions");
+    }
+    if (correction < 0) {
+        throw std::invalid_argument(name + ": correction must be non-negative, got " +
+                                    std::to_string(correction));
+    }
+    out_shape = x.shape();
+    if (keepdim) {
+        out_shape[static_cast<std::size_t>(normalized_axis)] = 1;
+    } else {
+        out_shape.erase(out_shape.begin() + normalized_axis);
+    }
+    return normalized_axis;
+}
+
+detail::OpArgs moment_args(std::vector<Tensor> inputs, Tensor out, int axis,
+                           std::int64_t correction) {
+    detail::OpArgs args{std::move(inputs), {std::move(out)}};
+    args.axis = axis;
+    args.correction = correction;
+    return args;
+}
+
+// The gradient of var or std (backward_op) with respect to x.
+Tensor moment_backward(detail::OpId backward_op, const Tensor& grad_output, const Tensor& x,
+                       int axis, bool keepdim, std::int64_t correction, Execution execution) {
+    const std::string name = detail::op_name(backward_op);
+    Shape out_shape;
+    const int normalized_axis = moment_axis(name, x, axis, keepdim, correction, out_shape);
+    if (!grad_output.defined()) {
+        throw std::invalid_argument(name + ": undefined grad_output");
+    }
+    if (grad_output.shape() != out_shape) {
+        throw std::invalid_argument(name + ": grad_output has shape " +
+                                    to_string(grad_output.shape()) + ", expected " +
+                                    to_string(out_shape));
+    }
+    if (grad_output.dtype() != x.dtype() || grad_output.device() != x.device()) {
+        throw std::invalid_argument(name + ": grad_output and x differ in dtype or device");
+    }
+    Tensor out = Tensor::empty(x.shape(), x.dtype(), x.device());
+    detail::dispatch(backward_op,
+                     moment_args({x.contiguous(), grad_output.contiguous()}, out,
+                                 normalized_axis, correction),
+                     execution);
+    return out;
+}
+
+// var or std (op) along one axis, recording autograd through `backward`.
+template <typename Backward>
+Tensor moment(detail::OpId op, const Tensor& x, int axis, bool keepdim, std::int64_t correction,
+              Execution execution, Backward backward) {
+    Shape out_shape;
+    const int normalized_axis =
+        moment_axis(detail::op_name(op), x, axis, keepdim, correction, out_shape);
+    Tensor out = Tensor::empty(out_shape, x.dtype(), x.device());
+    detail::dispatch(op, moment_args({x.contiguous()}, out, normalized_axis, correction),
+                     execution);
+    if (x.requires_grad()) {
+        detail::AutogradAccess::record(
+            out, {x}, [x, axis, keepdim, correction, execution, backward](const Tensor& gradient) {
+                detail::autograd::NoGradGuard guard;
+                detail::autograd::propagate(
+                    x, backward(gradient, x, axis, keepdim, correction, execution));
+            });
+    }
+    return out;
+}
+
+} // namespace
+
+Tensor var(const Tensor& x, int axis, bool keepdim, std::int64_t correction, Execution execution) {
+    return moment(detail::OpId::Var, x, axis, keepdim, correction, execution, var_backward);
+}
+
+Tensor var_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim,
+                    std::int64_t correction, Execution execution) {
+    return moment_backward(detail::OpId::VarBackward, grad_output, x, axis, keepdim, correction,
+                           execution);
+}
+
+Tensor std(const Tensor& x, int axis, bool keepdim, std::int64_t correction, Execution execution) {
+    return moment(detail::OpId::Std, x, axis, keepdim, correction, execution, std_backward);
+}
+
+Tensor std_backward(const Tensor& grad_output, const Tensor& x, int axis, bool keepdim,
+                    std::int64_t correction, Execution execution) {
+    return moment_backward(detail::OpId::StdBackward, grad_output, x, axis, keepdim, correction,
+                           execution);
 }
 
 } // namespace mensurflow

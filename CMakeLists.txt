@@ -40,25 +40,38 @@ add_library(mensurflow
     src/core/storage.cpp
     src/core/autograd.cpp
     src/core/tensor.cpp
+    src/core/tuning.cpp
     src/ops/blas.cpp
+    src/ops/conv.cpp
     src/ops/elementwise.cpp
+    src/ops/attention.cpp
     src/ops/indexing.cpp
+    src/ops/loss.cpp
     src/ops/movement.cpp
     src/ops/random.cpp
     src/ops/reduction.cpp
+    src/ops/softmax.cpp
+    src/ops/optimizers.cpp
+    src/ops/normalization.cpp
     src/backends/cpu/backend.cpp
     src/backends/cpu/affinity.cpp
     src/backends/cpu/thread_pool.cpp
     src/backends/cpu/ops/blas/blas.cpp
+    src/backends/cpu/ops/conv/conv2d.cpp
+    src/backends/cpu/ops/conv/pooling.cpp
     src/backends/cpu/ops/gemm/gemm_batched.cpp
     src/backends/cpu/ops/gemm/gemm_packed.cpp
     src/backends/cpu/ops/elementwise/parallel_cutoffs.cpp
     src/backends/cpu/ops/elementwise/elementwise.cpp
     src/backends/cpu/ops/elementwise/cast.cpp
     src/backends/cpu/ops/indexing/indexing.cpp
+    src/backends/cpu/ops/loss/loss.cpp
     src/backends/cpu/ops/movement/movement.cpp
     src/backends/cpu/ops/random/random.cpp
-    src/backends/cpu/ops/reduction/reduction.cpp)
+    src/backends/cpu/ops/reduction/reduction.cpp
+    src/backends/cpu/ops/softmax/softmax.cpp
+    src/backends/cpu/ops/optimizer.cpp
+    src/backends/cpu/ops/normalization.cpp)
 # PUBLIC requirements also apply to programs that link against the library.
 target_include_directories(mensurflow
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -69,6 +82,11 @@ if(NOT MSVC)
     if(MENSURFLOW_NATIVE)
         target_compile_options(mensurflow PRIVATE -march=native)
     endif()
+    # The optimizer kernels promise the same bits with and without their AVX2 version. When FMA is on for
+    # the whole file (-march=native, -mfma) GCC and Clang contract a * b + c differently in the portable
+    # loop and in the intrinsics, so contraction is switched off for this one file.
+    set_source_files_properties(src/backends/cpu/ops/optimizer.cpp PROPERTIES
+                                COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
 # OpenMP is optional: without it the CPU backend runs the sequential kernels.
@@ -105,8 +123,10 @@ if(NOT MENSURFLOW_METAL STREQUAL "OFF")
         find_library(MENSURFLOW_METAL_FW Metal)
         find_library(MENSURFLOW_MPS MetalPerformanceShaders)
         find_library(MENSURFLOW_MPSGRAPH MetalPerformanceShadersGraph)
-        target_sources(mensurflow PRIVATE src/backends/metal/backend.mm)
-        set_source_files_properties(src/backends/metal/backend.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+        target_sources(mensurflow PRIVATE src/backends/metal/backend.mm src/backends/metal/gemm.mm)
+        set_source_files_properties(src/backends/metal/backend.mm src/backends/metal/gemm.mm
+                                    PROPERTIES COMPILE_FLAGS -fobjc-arc)
+        set(MENSURFLOW_HAS_METAL ON)
         target_link_libraries(mensurflow PRIVATE ${MENSURFLOW_FOUNDATION} ${MENSURFLOW_METAL_FW}
                               ${MENSURFLOW_MPS} ${MENSURFLOW_MPSGRAPH})
         target_compile_definitions(mensurflow PRIVATE MENSURFLOW_HAS_METAL=1)
@@ -134,6 +154,7 @@ mensurflow_add_test(tensor_test tests/core/tensor_test.cpp)
 mensurflow_add_test(view_test tests/core/view_test.cpp)
 mensurflow_add_test(device_selection_test tests/core/device_selection_test.cpp)
 mensurflow_add_test(dispatcher_test tests/core/dispatcher_test.cpp)
+mensurflow_add_test(tuning_test tests/core/tuning_test.cpp)
 mensurflow_add_test(transfer_test tests/core/transfer_test.cpp)
 mensurflow_add_test(elementwise_test tests/ops/elementwise_test.cpp)
 mensurflow_add_test(dot_test tests/ops/dot_test.cpp)
@@ -144,6 +165,10 @@ mensurflow_add_test(parallel_cutoff_test tests/ops/parallel_cutoff_test.cpp)
 mensurflow_add_test(cast_test tests/ops/cast_test.cpp)
 mensurflow_add_test(thread_count_test tests/ops/thread_count_test.cpp)
 mensurflow_add_test(matmul_test tests/ops/matmul_test.cpp)
+mensurflow_add_test(matmul_tile_test tests/ops/matmul_tile_test.cpp)
+if(MENSURFLOW_HAS_METAL)
+    target_compile_definitions(matmul_tile_test PRIVATE MENSURFLOW_TEST_METAL=1)
+endif()
 mensurflow_add_test(affinity_test tests/core/affinity_test.cpp)
 mensurflow_add_test(thread_pool_test tests/core/thread_pool_test.cpp)
 mensurflow_add_test(gemm_packed_test tests/ops/gemm_packed_test.cpp)
@@ -158,6 +183,13 @@ mensurflow_add_test(movement_test tests/ops/movement_test.cpp)
 mensurflow_add_test(activation_movement_test tests/ops/activation_movement_test.cpp)
 mensurflow_add_test(random_test tests/ops/random_test.cpp)
 mensurflow_add_test(indexing_test tests/ops/indexing_test.cpp)
+mensurflow_add_test(conv2d_test tests/ops/conv2d_test.cpp)
+mensurflow_add_test(max_pool2d_test tests/ops/max_pool2d_test.cpp)
+mensurflow_add_test(avg_pool2d_test tests/ops/avg_pool2d_test.cpp)
+mensurflow_add_test(argmin_test tests/ops/argmin_test.cpp)
+mensurflow_add_test(var_std_test tests/ops/var_std_test.cpp)
+mensurflow_add_test(softmax_loss_test tests/ops/softmax_loss_test.cpp)
+mensurflow_add_test(optimizer_normalization_test tests/ops/optimizer_normalization_test.cpp)
 
 # Benchmarks are not tests: run them by hand, e.g. ./elementwise_benchmark.
 # The shared harness every benchmark uses (timing, checks, header, table): benchmarks/bench.hpp.
@@ -175,8 +207,13 @@ endfunction()
 mensurflow_add_benchmark(elementwise_benchmark benchmarks/elementwise_benchmark.cpp)
 mensurflow_add_benchmark(bandwidth_benchmark benchmarks/bandwidth_benchmark.cpp)
 mensurflow_add_benchmark(activation_movement_benchmark benchmarks/activation_movement_benchmark.cpp)
+mensurflow_add_benchmark(optimizer_normalization_benchmark benchmarks/optimizer_normalization_benchmark.cpp)
 mensurflow_add_benchmark(dot_benchmark benchmarks/blas/dot_benchmark.cpp)
 mensurflow_add_benchmark(matmul_benchmark benchmarks/blas/matmul_benchmark.cpp)
+mensurflow_add_benchmark(matmul_tile_benchmark benchmarks/blas/matmul_tile_benchmark.cpp)
+if(MENSURFLOW_HAS_METAL)
+    target_compile_definitions(matmul_tile_benchmark PRIVATE MENSURFLOW_BENCH_METAL=1)
+endif()
 # Optional reference: matmul against OpenBLAS. AUTO builds it when OpenBLAS is found, ON requires
 # it, OFF skips it. Point CMake at an install with -DOPENBLAS_ROOT=<dir containing include/ lib/ bin/>
 # (the prebuilt Windows zip from the OpenBLAS releases works) or with vcpkg's toolchain file.
@@ -258,6 +295,10 @@ mensurflow_add_benchmark(gemm_kernel_benchmark benchmarks/blas/gemm_kernel_bench
 mensurflow_add_benchmark(fma_peak_benchmark benchmarks/blas/fma_peak_benchmark.cpp)
 mensurflow_add_benchmark(matvec_benchmark benchmarks/blas/matvec_benchmark.cpp)
 mensurflow_add_benchmark(argmax_benchmark benchmarks/blas/argmax_benchmark.cpp)
+mensurflow_add_benchmark(conv2d_benchmark benchmarks/conv/conv2d_benchmark.cpp)
+mensurflow_add_benchmark(pooling_benchmark benchmarks/conv/pooling_benchmark.cpp)
+mensurflow_add_benchmark(argmin_var_std_benchmark benchmarks/blas/argmin_var_std_benchmark.cpp)
+mensurflow_add_benchmark(profile_driver benchmarks/profile_driver.cpp)
 mensurflow_add_benchmark(reduction_benchmark benchmarks/blas/reduction_benchmark.cpp)
 mensurflow_add_benchmark(cpu_parallel_benchmark benchmarks/cpu_parallel_benchmark.cpp)
 mensurflow_add_benchmark(selection_benchmark benchmarks/selection_benchmark.cpp)
@@ -266,6 +307,7 @@ mensurflow_add_benchmark(gemm_batched_benchmark benchmarks/blas/gemm_batched_ben
 mensurflow_add_benchmark(ger_benchmark benchmarks/blas/ger_benchmark.cpp)
 mensurflow_add_benchmark(movement_benchmark benchmarks/movement_benchmark.cpp)
 mensurflow_add_benchmark(random_indexing_benchmark benchmarks/random_indexing_benchmark.cpp)
+mensurflow_add_benchmark(softmax_loss_benchmark benchmarks/softmax_loss_benchmark.cpp)
 
 # LibTorch from a CPU PyTorch wheel is an optional native reference, not a core dependency.
 # Configure a separate build directory with Torch's CMake prefix when enabling this target.
@@ -290,12 +332,20 @@ endif()
 
 add_executable(mlp_xor examples/mlp_xor.cpp)
 target_link_libraries(mlp_xor PRIVATE mensurflow)
+add_executable(tune_mlp examples/tune_mlp.cpp)
+target_link_libraries(tune_mlp PRIVATE mensurflow)
 
 add_executable(client client/main.cpp)
 target_link_libraries(client PRIVATE mensurflow)
 
 add_executable(client_perf client/perf.cpp)
 target_link_libraries(client_perf PRIVATE mensurflow)
+
+add_executable(client_tune client/tune.cpp)
+target_link_libraries(client_tune PRIVATE mensurflow)
+
+add_executable(client_tune_simple client/tune_simple.cpp)
+target_link_libraries(client_tune_simple PRIVATE mensurflow)
 
 # Tracing and the observability dashboard (observability/README.md).
 add_subdirectory(observability)

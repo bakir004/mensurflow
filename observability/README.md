@@ -32,6 +32,7 @@ name, add `MENSURFLOW_TRACE(__func__, device, inputs, outputs);` at its start.
 | `serve.py` | standard-library HTTP server: serves the page and runs `observe` for it |
 | `index.html` | the dashboard (no external scripts) |
 | `results/observe.db` | every result, stored by `serve.py` (created on first run, not committed) |
+| `results/tuning.txt` | the auto-tuner's results file for the dashboard's tunes ([format](../docs/AUTOTUNING.md#the-results-file), not committed) |
 
 ## Run it
 
@@ -49,11 +50,12 @@ Programs page are empty. Turning it on adds about one atomic load per op call wh
 
 `serve.py` stores every result in `results/observe.db`, a SQLite file. Each row holds the time, the kind, the
 op, the device, and the full result as zlib-compressed JSON. The kinds are `run` (Kernels and Sweep cells,
-tagged with the tab and column), `call` and `program`. When the page loads, it restores:
+tagged with the tab and column), `call`, `program` and `tune`. When the page loads, it restores:
 - the Kernels cells: the latest result per op, column and size
 - the sweeps: the latest per op, column and execution
 - the last call breakdown
 - the last demo trace
+- the last autotune per op and device (the tuned settings themselves live in `results/tuning.txt`)
 
 *Clear history* empties the file. An older `results/history.jsonl` is imported once and renamed. To look at the
 data outside the dashboard:
@@ -93,12 +95,12 @@ address bar keeps the page (`#kernels`, `#programs`, `#history`, `#op/<name>`), 
   Hand-written intrinsics (the x86 AVX2 GEMM micro-kernel) and libc's `memcpy` stay vectorized even in the
   sequential build. MSVC has no switch to turn auto-vectorization off, so there the sequential column is
   unavailable. Gains are only shown when all three results are at the same size.
-- **Op page** (`#op/<name>`): everything about one op, in three sections:
+- **Op page** (`#op/<name>`): everything about one op, in four sections:
   - **Results**: the op's Kernels cells, one row each (the CPU three ways, then the other devices), with *Run
     all*, *CPU (3 ways)*, *GPU devices* and *Stop*, and the SIMD, thread and total gains.
-  - **Sweep** and **Call breakdown**, described in the next two items.
+  - **Sweep**, **Call breakdown** and **Autotune**, described in the next three items.
 
-  Each op keeps its own last sweep and call breakdown, so switching ops doesn't lose them.
+  Each op keeps its own last sweep, call breakdown and autotune, so switching ops doesn't lose them.
 - **Sweep** (on the op page): chosen devices and sizes. The two single-thread CPU versions can be checked next to the
   devices to plot all three versions against size. It shows rate and time charts, p10/median/p90, and the kernels
   the call dispatched (from the trace). *Execution* can differ from where the data is: data on `cpu:0` with
@@ -110,6 +112,19 @@ address bar keeps the page (`#kernels`, `#programs`, `#history`, `#op/<name>`), 
   (its time minus the spans inside it) averaged over the calls. That separates argument checks and setup (the
   op function's self time), dispatch, allocation, host-device copies, the kernel, and waiting for the result.
   It also times the same calls with tracing detached, which shows the tracing overhead.
+- **Autotune** (on the op page): tunes the op for one device and size with `mf::Tuner` (`observe tune`). The
+  section first lists, per device, what the op's tunable kernel is keyed on (the *input parameters*, for
+  matmul `m, n, k`, plus the thread count on the CPU) and which *settings* it tunes. *Autotune* runs the op once,
+  checks every candidate setting against the default's result, times each one, and keeps the fastest in
+  `results/tuning.txt`; *Measure again* re-measures a call that is already stored. For each tuned call it shows:
+  the input parameters with their values, the tuned parameters next to their defaults (changed ones in green),
+  the call's and the whole op's time before and after, the search as a chart of every measured point in order
+  (coloured by kernel variant, hollow when timing stopped early) against the default, and slices of the time along
+  each argument through the best point. Below that, every stored result
+  for the op (all devices and machines in the file). With execution **auto** (the default here) it also chooses
+  the device for each `Execution::Auto` call and shows a *Device choice* panel: each device's time per call
+  including the copies there and back, the chosen one, and the speedup over the CPU; stored choices are listed too.
+  So far only `matmul` has tunable settings; every op can have its device chosen.
 - **Programs**: a timeline of kernel calls, one lane per thread, with totals per op. *Trace demo program* runs an
   MLP training step (forward, backward, concat, pad, dropout) on the chosen device. *Open trace file* loads any
   file written by `TraceCollector::write()`. The same files also open in chrome://tracing and in
