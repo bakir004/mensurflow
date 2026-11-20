@@ -33,15 +33,14 @@ bit-identical CPU/GPU reductions.
 What exists today. Operations take `Tensor`s (`mensurflow::` namespace; arithmetic uses float32) and an
 optional `Execution` (`CPU`, `GPU`, or `Auto`, which picks the CPU for now) that tells the
 dispatcher where to run. CPU kernels are in
-`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv,softmax,loss}/` (the optimizers and normalization are `optimizer.cpp` and `normalization.cpp` there); each is one loop that OpenMP
+`src/backends/cpu/ops/{blas,gemm,elementwise,reduction,movement,random,indexing,conv,softmax,loss}/` (the optimizers and normalization are `src/backends/cpu/ops/optimizer.cpp` and `normalization.cpp`); each is one loop that OpenMP
 parallelizes through `MENSURFLOW_PARALLEL_FOR`, except `matmul`, `max`, `min` and the batched GEMM,
 which have separate sequential and parallel versions. The functions added in the week of 2026-11-11
 by Asja (`conv2d`, `max_pool2d`, `avg_pool2d`, `argmin`, `var`, `std`) have a `*_sequential` kernel
 (the correctness baseline) and a `*_parallel` one built on `parallel_for` / `parallel_sum` in
 `src/backends/cpu/parallel.hpp` (no pragmas in the kernels; the pieces run on the GEMM's thread
 pool). Their splits depend only on the shape, so each gives the same bits at every thread count.
-Measured results: [docs/benchmarks/asja-ryzen9-5900x-2026-11-14.md](benchmarks/asja-ryzen9-5900x-2026-11-14.md).
-Measured results are in [BENCHMARKS.md](BENCHMARKS.md).
+Measured results are in [BENCHMARKS.md](BENCHMARKS.md) and the per-person files in [docs/benchmarks/](benchmarks/), e.g. [asja-ryzen9-5900x-2026-11-14.md](benchmarks/asja-ryzen9-5900x-2026-11-14.md).
 
 |Operation|CPU|CUDA|Metal|
 |-|-|-|-|
@@ -346,7 +345,7 @@ variants — construct tensors. `f16` and `bf16` value construction remain unsup
 separate operation.
 * \[x] Host/device upload, download, and device-to-device copy where applicable.
 * \[x] `reshape` and `flatten` — available through contiguous `view`.
-* \[x] `transpose` / `permute` — two-dimension transpose views are supported.
+* \[x] `transpose` / `permute` — views for any axis order (`Tensor::permute`); `contiguous()` packs them.
 * \[x] `contiguous` — copy a strided view into a packed row-major buffer.
 * \[x] `argmax(x, axis)` — last-axis integer predictions for classification; ties select the first
 index and the first NaN selects its index (CPU, float32 input, int64 output).
@@ -358,8 +357,8 @@ with a reference. This supports inference, not training by itself.
 **Current project status:** the CPU float32 path now includes reverse-mode
 autograd for the implemented elementwise, reduction, bias, and matrix multiply
 operations, and a runnable MLP example (`examples/mlp_xor.cpp`) that writes its
-loss and update step from those operations. The five additional activations below currently
-provide forward support only. Softmax, log-softmax and the losses (cross-entropy, MSE, binary
+loss and update step from those operations. Of the five additional activations below, `gelu` and
+`silu` have explicit backward functions without autograd and the other three are forward only. Softmax, log-softmax and the losses (cross-entropy, MSE, binary
 cross-entropy with logits) are back, with backward and autograd; SGD (with momentum and weight
 decay), Adam and AdamW are back as fused in-place updates, and layer, RMS and batch normalization
 have forward, backward and autograd. GPU backends,
@@ -403,9 +402,10 @@ integer masks and unpacking int4 weights.
 
 ### Additional reductions and linear algebra
 
-* \[x] `min` and `prod`; `argmin`, `sum\_of\_squares`, `any`, and `all` remain.
+* \[x] `min` and `prod`.
+* \[ ] `sum\_of\_squares`, `any`, and `all`.
 * \[x] `argmin(x, axis)` — last axis only, like `argmax`; ties select the first index and the
-first NaN of a row is selected (CPU, float32 input, int64 output, sequential kernel).
+first NaN of a row is selected (CPU, float32 input, int64 output, sequential and parallel kernels).
 * \[ ] `cumsum` along an axis — top-p sampling and state-space models.
 * \[ ] `logsumexp` as a standalone reduction.
 * \[ ] `sort` and `argsort`, with defined tie and stability rules.
@@ -484,8 +484,12 @@ graphs if a full automatic differentiation system would exceed scope.
 `binary_cross_entropy_with_logits_backward`), also recorded by autograd.
 * \[x] Softmax/log-softmax backward when required independently of fused losses
 (`softmax_backward`, `log_softmax_backward`).
-* \[ ] `sum\_to\_shape` — reduce broadcasted gradients back to an input's shape.
-* \[ ] Gradient accumulation for parameters used by multiple graph branches.
+* \[ ] `sum\_to\_shape` — reduce broadcasted gradients back to an input's shape. Autograd does this
+internally (`reduce_gradient` in `src/core/autograd.cpp`); there is no public op.
+* \[ ] Gradient accumulation for parameters used by multiple graph branches. Leaf tensors
+accumulate (`propagate` in `src/core/autograd.cpp` adds into an existing `grad`), but an
+intermediate tensor used twice seems to pass only its first gradient upstream, because backward
+does not run in topological order. Read from the code; no test confirms it yet.
 * \[x] Embedding indexing gradients use deterministic scatter-add; repeated indices accumulate.
 * \[ ] Backward for general `gather` / `index_select`.
 
@@ -502,7 +506,8 @@ kernel. For example, GEMM backward can dispatch two existing GEMM operations.
 * \[x] `adam` with optimizer state and bias correction (CPU, F32, fused single pass).
 * \[x] `adamw` — Adam with decoupled weight decay; the usual optimizer for
 transformer training (CPU, F32, fused single pass).
-* \[ ] Gradient zeroing and optional global-norm clipping.
+* \[ ] Gradient zeroing and optional global-norm clipping. Zeroing exists (`Tensor::zero_grad()`);
+clipping remains.
 * \[x] Optional dropout forward/backward with saved masks and explicit train/eval
 behavior.
 
@@ -580,7 +585,7 @@ evaluation), with CPU autograd.
 * \[ ] Squared ReLU, `relu(x)^2` — used in some recent LLMs.
 * \[ ] `selu`, `celu`, `mish`, `softsign`, `shrink`, and `thresholded\_relu`.
 
-The five implemented activations currently provide forward execution only.
+`gelu` and `silu` have explicit `gelu_backward` / `silu_backward` but no autograd node yet; `leaky_relu`, `elu` and `softplus` are forward only.
 
 ### Recurrent networks
 
